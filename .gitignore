@@ -1,0 +1,13 @@
+# Rust build output
+target/
+
+# Generated renderer output
+output.ppm
+*.ppm
+
+# Local editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
