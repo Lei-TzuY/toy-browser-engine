@@ -53,6 +53,15 @@ impl ElementData {
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
     }
+
+    /// Set or update an attribute value by name.
+    pub fn set_attr(&mut self, name: &str, val: &str) {
+        if let Some((_, v)) = self.attributes.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
+            *v = val.to_string();
+        } else {
+            self.attributes.push((name.to_string(), val.to_string()));
+        }
+    }
 }
 
 /// A single node in the DOM tree.

@@ -69,6 +69,10 @@ impl<'a> StyledNode<'a> {
             Some(Value::Keyword(s)) => match s.as_str() {
                 "block"        => Display::Block,
                 "flex"         => Display::Flex,
+                "grid"         => Display::Grid,
+                "table"        => Display::Table,
+                "table-row"    => Display::TableRow,
+                "table-cell"   => Display::TableCell,
                 "inline-block" => Display::InlineBlock,
                 "none"         => Display::None,
                 _              => Display::Inline,
@@ -115,9 +119,12 @@ fn default_display(node_type: &NodeType) -> Display {
             "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
             | "ul" | "ol" | "li" | "blockquote" | "pre" | "header" | "footer"
             | "section" | "article" | "nav" | "main" | "aside" | "form"
-            | "table" | "thead" | "tbody" | "tfoot" | "tr" | "th" | "td"
+            | "thead" | "tbody" | "tfoot"
             | "fieldset" | "figcaption" | "figure" | "hr" | "dd" | "dt" | "dl"
             => Display::Block,
+            "table" => Display::Table,
+            "tr" => Display::TableRow,
+            "td" | "th" => Display::TableCell,
             "button" | "input" | "select" | "textarea" | "img"
             => Display::InlineBlock,
             "head" | "script" | "style" | "meta" | "link" | "title" => Display::None,
@@ -129,17 +136,25 @@ fn default_display(node_type: &NodeType) -> Display {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Display { Inline, Block, Flex, InlineBlock, None }
+pub enum Display { Inline, Block, Flex, Grid, Table, TableRow, TableCell, InlineBlock, None }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Position { Static, Relative, Absolute, Fixed, Sticky }
+
+// ── Interactive state context ───────────────────────────────────────────────
+
+#[derive(Clone, Default)]
+pub struct InteractionState<'a> {
+    pub hovered_node: Option<&'a Node>,
+    pub active_node: Option<&'a Node>,
+}
 
 // ── Sibling context (for pseudo-class matching) ───────────────────────────────
 
 /// Information about an element's position among its siblings.
 /// Used to evaluate `:nth-child`, `:first-child`, `:empty`, etc.
 #[derive(Clone)]
-struct SiblingContext {
+struct SiblingContext<'a> {
     /// 1-indexed position among all element siblings.
     position:      usize,
     /// Total element sibling count (including self).
@@ -152,9 +167,11 @@ struct SiblingContext {
     is_empty:      bool,
     /// True when the element is the root element of the document.
     is_root:       bool,
+    /// Current element node reference for interactive pseudo-classes.
+    current_node:  Option<&'a Node>,
 }
 
-impl SiblingContext {
+impl<'a> SiblingContext<'a> {
     /// Fallback context used when sibling information is unavailable (e.g. for
     /// ancestor parts in compound selectors).
     fn unknown() -> Self {
@@ -162,6 +179,7 @@ impl SiblingContext {
             position: 1, total: 1,
             type_position: 1, type_total: 1,
             is_empty: false, is_root: false,
+            current_node: None,
         }
     }
 }
@@ -173,6 +191,7 @@ fn pseudo_class_matches(
     element: &ElementData,
     ancestors: &[&ElementData],
     ctx: &SiblingContext,
+    interaction: &InteractionState,
 ) -> bool {
     match pc {
         PseudoClass::FirstChild      => ctx.position == 1,
@@ -187,11 +206,25 @@ fn pseudo_class_matches(
         PseudoClass::NthLastChild(expr)  => expr.matches(ctx.total + 1 - ctx.position),
         PseudoClass::NthOfType(expr)     => expr.matches(ctx.type_position),
         PseudoClass::NthLastOfType(expr) => expr.matches(ctx.type_total + 1 - ctx.type_position),
-        PseudoClass::Not(inner)      => !simple_part_matches(element, inner, ancestors, ctx),
-        // Non-interactive pseudo-classes never match in a static renderer.
-        PseudoClass::Hover | PseudoClass::Focus | PseudoClass::Active |
-        PseudoClass::Visited | PseudoClass::Link | PseudoClass::Checked |
-        PseudoClass::Disabled | PseudoClass::Enabled => false,
+        PseudoClass::Not(inner)      => !simple_part_matches(element, inner, ancestors, ctx, interaction),
+        PseudoClass::Hover => {
+            if let (Some(cur), Some(target)) = (ctx.current_node, interaction.hovered_node) {
+                std::ptr::eq(cur, target)
+            } else {
+                false
+            }
+        }
+        PseudoClass::Active => {
+            if let (Some(cur), Some(target)) = (ctx.current_node, interaction.active_node) {
+                std::ptr::eq(cur, target)
+            } else {
+                false
+            }
+        }
+        PseudoClass::Checked  => element.get_attr("checked").is_some(),
+        PseudoClass::Disabled => element.get_attr("disabled").is_some(),
+        PseudoClass::Enabled  => element.get_attr("disabled").is_none(),
+        PseudoClass::Focus | PseudoClass::Visited | PseudoClass::Link => false,
     }
 }
 
@@ -200,6 +233,7 @@ fn simple_part_matches(
     part: &SelectorPart,
     ancestors: &[&ElementData],
     ctx: &SiblingContext,
+    interaction: &InteractionState,
 ) -> bool {
     if let Some(ref tag) = part.tag_name {
         if element.tag_name != *tag { return false; }
@@ -214,8 +248,18 @@ fn simple_part_matches(
     for cls in &part.classes {
         if !elem_classes.contains(&cls.as_str()) { return false; }
     }
+    for (attr, expected_val) in &part.attributes {
+        match element.get_attr(attr) {
+            Some(actual_val) => {
+                if let Some(expected) = expected_val {
+                    if actual_val != expected { return false; }
+                }
+            }
+            None => return false,
+        }
+    }
     for pc in &part.pseudo_classes {
-        if !pseudo_class_matches(pc, element, ancestors, ctx) { return false; }
+        if !pseudo_class_matches(pc, element, ancestors, ctx, interaction) { return false; }
     }
     true
 }
@@ -229,11 +273,12 @@ fn selector_matches(
     preceding_siblings: &[&ElementData],
     selector: &Selector,
     ctx: &SiblingContext,
+    interaction: &InteractionState,
 ) -> bool {
     if selector.parts.is_empty() { return false; }
 
     // The last part must match the subject element.
-    if !simple_part_matches(element, selector.parts.last().unwrap(), ancestors, ctx) {
+    if !simple_part_matches(element, selector.parts.last().unwrap(), ancestors, ctx, interaction) {
         return false;
     }
     if selector.parts.len() == 1 { return true; }
@@ -251,7 +296,7 @@ fn selector_matches(
             Combinator::Root => break,
             Combinator::Child => {
                 if cursor >= ancestors.len() { return false; }
-                if !simple_part_matches(ancestors[cursor], part, &ancestors[cursor + 1..], &dummy) {
+                if !simple_part_matches(ancestors[cursor], part, &ancestors[cursor + 1..], &dummy, interaction) {
                     return false;
                 }
                 cursor += 1;
@@ -261,7 +306,7 @@ fn selector_matches(
                 let offset = ancestors[cursor..]
                     .iter()
                     .enumerate()
-                    .position(|(i, a)| simple_part_matches(a, part, &ancestors[cursor + i + 1..], &dummy));
+                    .position(|(i, a)| simple_part_matches(a, part, &ancestors[cursor + i + 1..], &dummy, interaction));
                 match offset {
                     Some(i) => { cursor += i + 1; sibs.clear(); }
                     None    => return false,
@@ -271,12 +316,12 @@ fn selector_matches(
                 // The immediately preceding element sibling must match `part`.
                 if sibs.is_empty() { return false; }
                 let prev = sibs[sibs.len() - 1];
-                if !simple_part_matches(prev, part, ancestors, &dummy) { return false; }
+                if !simple_part_matches(prev, part, ancestors, &dummy, interaction) { return false; }
                 sibs.pop();
             }
             Combinator::GeneralSibling => {
                 // Any preceding element sibling (right-to-left search) must match `part`.
-                let found = sibs.iter().rposition(|s| simple_part_matches(s, part, ancestors, &dummy));
+                let found = sibs.iter().rposition(|s| simple_part_matches(s, part, ancestors, &dummy, interaction));
                 match found {
                     Some(i) => sibs.truncate(i),
                     None    => return false,
@@ -295,6 +340,7 @@ fn matching_rules<'a>(
     stylesheet: &'a Stylesheet,
     ctx: &SiblingContext,
     viewport_w: f32,
+    interaction: &InteractionState,
 ) -> Vec<((usize, usize, usize), &'a [Declaration])> {
     let mut matched = Vec::new();
     for rule in &stylesheet.rules {
@@ -303,7 +349,7 @@ fn matching_rules<'a>(
             if !mq.matches(viewport_w, 600.0) { continue; }
         }
         for selector in &rule.selectors {
-            if selector_matches(element, ancestors, preceding_siblings, selector, ctx) {
+            if selector_matches(element, ancestors, preceding_siblings, selector, ctx, interaction) {
                 matched.push((selector.specificity(), rule.declarations.as_slice()));
                 break;
             }
@@ -345,9 +391,10 @@ fn compute_specified_values(
     inherited: &PropertyMap,
     ctx: &SiblingContext,
     viewport_w: f32,
+    interaction: &InteractionState,
 ) -> PropertyMap {
     let mut map = PropertyMap::new();
-    for (_, declarations) in matching_rules(element, ancestors, preceding_siblings, stylesheet, ctx, viewport_w) {
+    for (_, declarations) in matching_rules(element, ancestors, preceding_siblings, stylesheet, ctx, viewport_w, interaction) {
         for decl in declarations {
             map.insert(decl.name.clone(), decl.value.clone());
         }
@@ -380,13 +427,22 @@ pub fn style_tree<'a>(root: &'a Node, stylesheet: &Stylesheet) -> StyledNode<'a>
     style_tree_for_viewport(root, stylesheet, 800.0)
 }
 
+/// Build a style tree with an interaction state (e.g. hovered node).
+pub fn style_tree_with_interaction<'a>(
+    root: &'a Node,
+    stylesheet: &Stylesheet,
+    interaction: &InteractionState<'a>,
+) -> StyledNode<'a> {
+    style_tree_inner(root, stylesheet, &PropertyMap::new(), &[], &[], SiblingContext::unknown(), 800.0, interaction)
+}
+
 /// Build a style tree with a specific viewport width for @media query evaluation.
 pub fn style_tree_for_viewport<'a>(
     root: &'a Node,
     stylesheet: &Stylesheet,
     viewport_width: f32,
 ) -> StyledNode<'a> {
-    style_tree_inner(root, stylesheet, &PropertyMap::new(), &[], &[], SiblingContext::unknown(), viewport_width)
+    style_tree_inner(root, stylesheet, &PropertyMap::new(), &[], &[], SiblingContext::unknown(), viewport_width, &InteractionState::default())
 }
 
 fn style_tree_inner<'a>(
@@ -395,13 +451,15 @@ fn style_tree_inner<'a>(
     inherited: &PropertyMap,
     ancestors: &[&'a ElementData],
     preceding_siblings: &[&'a ElementData],
-    sibling_ctx: SiblingContext,
+    mut sibling_ctx: SiblingContext<'a>,
     viewport_w: f32,
+    interaction: &InteractionState<'a>,
 ) -> StyledNode<'a> {
+    sibling_ctx.current_node = Some(root);
     // Compute values matched by CSS rules for this element.
     let mut specified_values = match &root.node_type {
         NodeType::Element(e) => {
-            compute_specified_values(e, ancestors, preceding_siblings, stylesheet, inherited, &sibling_ctx, viewport_w)
+            compute_specified_values(e, ancestors, preceding_siblings, stylesheet, inherited, &sibling_ctx, viewport_w, interaction)
         }
         _ => PropertyMap::new(),
     };
@@ -487,7 +545,7 @@ fn style_tree_inner<'a>(
             });
             let is_root = ancestors.is_empty();
 
-            SiblingContext { position, total: elem_count, type_position, type_total, is_empty, is_root }
+            SiblingContext { position, total: elem_count, type_position, type_total, is_empty, is_root, current_node: Some(c) }
         } else {
             SiblingContext::unknown()
         };
@@ -504,7 +562,7 @@ fn style_tree_inner<'a>(
             })
             .collect();
 
-        style_tree_inner(c, stylesheet, &child_inherited, &child_ancestor_vec, &child_preceding, ctx, viewport_w)
+        style_tree_inner(c, stylesheet, &child_inherited, &child_ancestor_vec, &child_preceding, ctx, viewport_w, interaction)
     }).collect();
 
     StyledNode { node: root, specified_values, children }
@@ -874,5 +932,28 @@ mod tests {
         let styled = style_tree(&dom, &ss);
         let span = &styled.children[0].children[0].children[0];
         assert_eq!(span.value("font-size"), Some(&Value::Length(30.0, Unit::Px)));
+    }
+
+    #[test]
+    fn hover_selector_matches_with_interaction() {
+        let dom = parse_html("<button>Click</button>");
+        let ss = parse_css("button:hover { color: red; }");
+        let btn = &dom.children[0];
+        let interaction = InteractionState {
+            hovered_node: Some(btn),
+            active_node: None,
+        };
+        let styled = style_tree_with_interaction(&dom, &ss, &interaction);
+        let styled_btn = &styled.children[0];
+        assert_eq!(styled_btn.value("color"), Some(&Value::Color(Color::rgb(255, 0, 0))));
+    }
+
+    #[test]
+    fn attribute_selector_matches() {
+        let dom = parse_html(r#"<input type="text" value="hi">"#);
+        let ss = parse_css(r#"input[type="text"] { background-color: green; }"#);
+        let styled = style_tree(&dom, &ss);
+        let input = &styled.children[0];
+        assert_eq!(input.value("background-color"), Some(&Value::Color(Color::rgb(0, 128, 0))));
     }
 }

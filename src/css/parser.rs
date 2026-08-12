@@ -52,6 +52,7 @@ pub struct SelectorPart {
     pub id: Option<String>,
     pub classes: Vec<String>,
     pub pseudo_classes: Vec<PseudoClass>,
+    pub attributes: Vec<(String, Option<String>)>,
     /// `::before`, `::after`, etc. (parsed but not yet rendered).
     pub pseudo_element: Option<String>,
 }
@@ -62,6 +63,7 @@ impl SelectorPart {
             && self.id.is_none()
             && self.classes.is_empty()
             && self.pseudo_classes.is_empty()
+            && self.attributes.is_empty()
             && self.pseudo_element.is_none()
     }
 }
@@ -197,6 +199,23 @@ impl MediaQuery {
     }
 }
 
+/// Box shadow specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxShadow {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub color: Color,
+}
+
+/// 2D Transform specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transform {
+    pub translate_x: f32,
+    pub translate_y: f32,
+    pub scale: f32,
+}
+
 // ── Value ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +226,8 @@ pub enum Value {
     /// Unitless number (e.g. `line-height: 1.5`, `opacity: 0.8`, `flex-grow: 2`).
     Number(f32),
     LinearGradient(LinearGradient),
+    BoxShadow(BoxShadow),
+    Transform(Transform),
     /// `var(--name)` or `var(--name, fallback)`.
     Var { name: String, fallback: Option<Box<Value>> },
     /// `calc(expression)`.
@@ -229,6 +250,7 @@ pub enum Unit {
     Px,
     Em,
     Percent,
+    Fr,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -316,7 +338,7 @@ impl Parser {
 
     // ── Selector parsing ──────────────────────────────────────────────────
 
-    /// Parse one simple selector component (tag / #id / .class / * / :pseudo / ::pseudo-elem).
+    /// Parse one simple selector component (tag / #id / .class / * / :pseudo / ::pseudo-elem / [attr]).
     fn parse_simple_part(&mut self) -> SelectorPart {
         let mut part = SelectorPart::default();
         loop {
@@ -324,6 +346,31 @@ impl Parser {
                 '#' => { self.consume(); part.id = Some(self.parse_ident()); }
                 '.' => { self.consume(); part.classes.push(self.parse_ident()); }
                 '*' => { self.consume(); }
+                '[' => {
+                    self.consume();
+                    self.skip_ws_and_comments();
+                    let attr_name = self.parse_ident();
+                    self.skip_ws_and_comments();
+                    let val = if self.peek() == '=' || (self.peek() == '^' && self.chars.get(self.pos + 1) == Some(&'=')) {
+                        if self.peek() == '^' { self.consume(); }
+                        self.consume();
+                        self.skip_ws_and_comments();
+                        let raw_val = if self.peek() == '"' || self.peek() == '\'' {
+                            let quote = self.consume();
+                            let s = self.consume_while(|c| c != quote);
+                            if self.peek() == quote { self.consume(); }
+                            s
+                        } else {
+                            self.consume_while(|c| c != ']' && !c.is_whitespace())
+                        };
+                        Some(raw_val)
+                    } else {
+                        None
+                    };
+                    self.consume_while(|c| c != ']');
+                    if self.peek() == ']' { self.consume(); }
+                    part.attributes.push((attr_name, val));
+                }
                 ':' => {
                     self.consume();
                     if self.peek() == ':' {
@@ -512,6 +559,7 @@ impl Parser {
             "em"  => Value::Length(num, Unit::Em),
             "px"  => Value::Length(num, Unit::Px),
             "rem" => Value::Length(num, Unit::Px),
+            "fr"  => Value::Length(num, Unit::Fr),
             ""    => Value::Number(num),
             _     => Value::Length(num, Unit::Px),
         }
@@ -542,12 +590,19 @@ impl Parser {
             "rgb" | "rgba" => self.parse_rgb_inner(),
             "hsl" | "hsla" => self.parse_hsl_inner(),
             _ => {
-                // Unknown function: skip to matching ')'.
+                // Unknown function: preserve full function call string as Value::Keyword.
+                let mut body = String::new();
                 let mut depth = 1i32;
                 while !self.eof() && depth > 0 {
-                    match self.consume() { '(' => depth += 1, ')' => depth -= 1, _ => {} }
+                    let c = self.consume();
+                    match c {
+                        '(' => depth += 1,
+                        ')' => { depth -= 1; if depth == 0 { break; } }
+                        _ => {}
+                    }
+                    body.push(c);
                 }
-                Value::Keyword("none".into())
+                Value::Keyword(format!("{}({})", name, body))
             }
         }
     }
@@ -848,6 +903,67 @@ impl Parser {
             "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
                 let values = self.parse_shorthand_values(first_value);
                 expand_border_shorthand(&name, values)
+            }
+            "box-shadow" => {
+                let values = self.parse_shorthand_values(first_value);
+                let mut lengths = Vec::new();
+                let mut color = Color::rgba(0, 0, 0, 128);
+                for v in values {
+                    match v {
+                        Value::Length(n, _) | Value::Number(n) => lengths.push(n),
+                        Value::Color(c) => color = c,
+                        _ => {}
+                    }
+                }
+                let offset_x = lengths.first().copied().unwrap_or(0.0);
+                let offset_y = lengths.get(1).copied().unwrap_or(0.0);
+                let blur_radius = lengths.get(2).copied().unwrap_or(0.0);
+                vec![Declaration {
+                    name,
+                    value: Value::BoxShadow(BoxShadow { offset_x, offset_y, blur_radius, color }),
+                }]
+            }
+            "grid-template-columns" | "grid-template-rows" => {
+                let values = self.parse_shorthand_values(first_value);
+                let raw_strs: Vec<String> = values.iter().map(|v| match v {
+                    Value::Length(n, Unit::Px) => format!("{}px", n),
+                    Value::Length(n, Unit::Fr) => format!("{}fr", n),
+                    Value::Length(n, Unit::Em) => format!("{}em", n),
+                    Value::Length(n, Unit::Percent) => format!("{}%", n),
+                    Value::Number(n) => format!("{}", n),
+                    Value::Keyword(s) => s.clone(),
+                    _ => "1fr".to_string(),
+                }).collect();
+                vec![Declaration { name, value: Value::Keyword(raw_strs.join(" ")) }]
+            }
+            "transform" => {
+                let values = self.parse_shorthand_values(first_value);
+                let raw_val: String = values.iter().map(|v| match v {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, _) | Value::Number(n) => format!("{}", n),
+                    _ => "".to_string(),
+                }).collect::<Vec<String>>().join(" ");
+                let mut tx = 0.0f32;
+                let mut ty = 0.0f32;
+                let mut scale = 1.0f32;
+                if let Some(start) = raw_val.find("translate(") {
+                    let inner = &raw_val[start + 10..];
+                    if let Some(end) = inner.find(')') {
+                        let parts: Vec<&str> = inner[..end].split(',').collect();
+                        tx = parts.first().and_then(|p| p.trim().trim_end_matches("px").parse().ok()).unwrap_or(0.0);
+                        ty = parts.get(1).and_then(|p| p.trim().trim_end_matches("px").parse().ok()).unwrap_or(0.0);
+                    }
+                }
+                if let Some(start) = raw_val.find("scale(") {
+                    let inner = &raw_val[start + 6..];
+                    if let Some(end) = inner.find(')') {
+                        scale = inner[..end].trim().parse().unwrap_or(1.0);
+                    }
+                }
+                vec![Declaration {
+                    name,
+                    value: Value::Transform(Transform { translate_x: tx, translate_y: ty, scale }),
+                }]
             }
             _ => vec![Declaration { name, value: first_value }],
         };
@@ -1526,5 +1642,19 @@ mod tests {
         let ss = parse_css("div { width: calc(50% + 10px); }");
         let val = &ss.rules[0].declarations[0].value;
         assert!(matches!(val, Value::Calc(expr) if matches!(expr.as_ref(), CalcExpr::Add(_, _))));
+    }
+
+    #[test]
+    fn transform_translate_and_scale_parsed() {
+        let ss = parse_css("div { transform: translate(15px, 25px) scale(1.5); }");
+        let decl = &ss.rules[0].declarations[0];
+        assert_eq!(decl.name, "transform");
+        if let Value::Transform(t) = &decl.value {
+            assert_eq!(t.translate_x, 15.0);
+            assert_eq!(t.translate_y, 25.0);
+            assert_eq!(t.scale, 1.5);
+        } else {
+            panic!("expected Transform value");
+        }
     }
 }
