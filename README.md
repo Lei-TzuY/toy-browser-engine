@@ -7,10 +7,11 @@ It implements the core browser pipeline:
 - HTML tokenization and tree construction
 - CSS parsing, selectors, cascade, and specificity
 - DOM/style/layout tree construction
-- Block layout with margin, border, and padding
+- Block and CSS Grid layout, including `fr` tracks and gaps
 - Inline text layout and basic line breaking
-- A simple pixel-canvas painter that can write PPM output
-- Optional interactive window rendering through `minifb`
+- Pixel-canvas painting with alpha-blended box shadows and PPM output
+- A small embedded JavaScript interpreter for DOM mutation and click listeners
+- Interactive hit testing, `:hover` styling, clicking, and scrolling through `minifb`
 
 ## Run
 
@@ -36,9 +37,8 @@ cargo run -- --window
 cargo test
 ```
 
-Current local audit: 133 Rust tests passing.
+Current verification: 141 Rust tests passing locally and in GitHub Actions.
 
 ## Notes
 
 This is an educational browser engine, not a production browser. The goal is to make the rendering pipeline inspectable and testable rather than standards-complete.
-
