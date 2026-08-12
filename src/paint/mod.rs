@@ -31,6 +31,29 @@ pub enum DisplayCommand {
     PopClip,
     /// Linear gradient background: (gradient spec, rect, opacity).
     LinearGradient(LinearGradient, Rect, f32),
+    /// Drop shadow around box: (rect, offset_x, offset_y, blur, color, opacity).
+    BoxShadow {
+        rect: Rect,
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        color: Color,
+        opacity: f32,
+    },
+}
+
+impl DisplayCommand {
+    pub fn offset(&mut self, dx: f32, dy: f32) {
+        match self {
+            DisplayCommand::SolidColor(_, rect) => { rect.x += dx; rect.y += dy; }
+            DisplayCommand::RoundedRect(_, rect, _) => { rect.x += dx; rect.y += dy; }
+            DisplayCommand::Text(frag) => { frag.rect.x += dx; frag.rect.y += dy; }
+            DisplayCommand::PushClip(rect) => { rect.x += dx; rect.y += dy; }
+            DisplayCommand::PopClip => {}
+            DisplayCommand::LinearGradient(_, rect, _) => { rect.x += dx; rect.y += dy; }
+            DisplayCommand::BoxShadow { rect, .. } => { rect.x += dx; rect.y += dy; }
+        }
+    }
 }
 
 pub type DisplayList = Vec<DisplayCommand>;
@@ -248,7 +271,30 @@ fn render_subtree_without_contexts_with_opacity(list: &mut DisplayList, lb: &Lay
 
 fn render_box_decorations_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
     render_background_with_opacity(list, lb, opacity);
+    render_image_with_opacity(list, lb, opacity);
     render_borders_with_opacity(list, lb, opacity);
+}
+
+fn render_image_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    if let Some(node) = styled_node(lb).map(|s| s.node) {
+        if let NodeType::Element(ref e) = node.node_type {
+            if e.tag_name == "img" {
+                let rect = lb.dimensions.content;
+                let alt = e.get_attr("alt").unwrap_or("Image");
+                list.push(DisplayCommand::SolidColor(apply_opacity(Color::rgb(224, 231, 239), opacity), rect));
+                let frag = TextFragment {
+                    text: format!("🖼️ [{}]", alt),
+                    rect,
+                    baseline: rect.y + 20.0,
+                    color: apply_opacity(Color::rgb(44, 62, 80), opacity),
+                    font_size: 14.0,
+                    underline: false,
+                    strikethrough: false,
+                };
+                list.push(DisplayCommand::Text(frag));
+            }
+        }
+    }
 }
 
 fn render_text_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
@@ -274,6 +320,18 @@ fn get_border_radius(lb: &LayoutBox) -> f32 {
 }
 
 fn render_background_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    // Box shadow rendered first underneath background
+    if let Some(Value::BoxShadow(bs)) = styled_node(lb).and_then(|s| s.value("box-shadow")) {
+        list.push(DisplayCommand::BoxShadow {
+            rect: lb.dimensions.border_box(),
+            offset_x: bs.offset_x,
+            offset_y: bs.offset_y,
+            blur: bs.blur_radius,
+            color: bs.color,
+            opacity,
+        });
+    }
+
     // Solid background-color first (underneath gradient).
     if let Some(color) = get_color(lb, "background-color") {
         let c    = apply_opacity(color, opacity);
@@ -337,7 +395,7 @@ fn styled_node<'layout, 'style>(
     lb: &'layout LayoutBox<'style>,
 ) -> Option<&'layout StyledNode<'style>> {
     match &lb.box_type {
-        BoxType::Block(s) | BoxType::Flex(s) | BoxType::Inline(s) | BoxType::InlineBlock(s) => Some(*s),
+        BoxType::Block(s) | BoxType::Flex(s) | BoxType::Grid(s) | BoxType::Table(s) | BoxType::TableRow(s) | BoxType::TableCell(s) | BoxType::Inline(s) | BoxType::InlineBlock(s) => Some(*s),
         BoxType::AnonymousBlock => None,
     }
 }
@@ -405,6 +463,55 @@ impl Canvas {
             DisplayCommand::PopClip => { self.clip_stack.pop(); }
             DisplayCommand::LinearGradient(grad, rect, opacity) => {
                 self.paint_linear_gradient(grad, *rect, *opacity);
+            }
+            DisplayCommand::BoxShadow { rect, offset_x, offset_y, blur, color, opacity } => {
+                self.paint_box_shadow(*rect, *offset_x, *offset_y, *blur, *color, *opacity);
+            }
+        }
+    }
+
+    fn paint_box_shadow(
+        &mut self,
+        rect: Rect,
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        color: Color,
+        opacity: f32,
+    ) {
+        let shadow_rect = Rect {
+            x: rect.x + offset_x,
+            y: rect.y + offset_y,
+            width: rect.width,
+            height: rect.height,
+        };
+        let margin = blur.max(0.0) * 1.5;
+        let x0 = clamp((shadow_rect.x - margin) as i32, 0, self.width as i32);
+        let y0 = clamp((shadow_rect.y - margin) as i32, 0, self.height as i32);
+        let x1 = clamp((shadow_rect.x + shadow_rect.width + margin) as i32, 0, self.width as i32);
+        let y1 = clamp((shadow_rect.y + shadow_rect.height + margin) as i32, 0, self.height as i32);
+
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let fx = x as f32 + 0.5;
+                let fy = y as f32 + 0.5;
+
+                let dx = (shadow_rect.x - fx).max(0.0).max(fx - (shadow_rect.x + shadow_rect.width));
+                let dy = (shadow_rect.y - fy).max(0.0).max(fy - (shadow_rect.y + shadow_rect.height));
+                let dist = (dx * dx + dy * dy).sqrt();
+
+                let factor = if blur > 0.0 {
+                    (1.0 - dist / blur).clamp(0.0, 1.0)
+                } else if dist == 0.0 {
+                    1.0
+                } else {
+                    0.0
+                };
+
+                if factor > 0.0 {
+                    let alpha = (color.a as f32 * opacity * factor) as u8;
+                    self.blend_pixel(x, y, color, alpha);
+                }
             }
         }
     }
@@ -586,11 +693,18 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 
 /// Paint `layout_root` onto a canvas of `width × height` with a white background.
 pub fn paint(layout_root: &LayoutBox, width: usize, height: usize) -> Canvas {
+    paint_with_scroll(layout_root, width, height, 0.0, 0.0)
+}
+
+/// Paint `layout_root` onto a canvas of `width × height` with scroll offset.
+pub fn paint_with_scroll(layout_root: &LayoutBox, width: usize, height: usize, scroll_x: f32, scroll_y: f32) -> Canvas {
     let bg = Color::rgb(255, 255, 255);
     let mut canvas = Canvas::new(width, height, bg);
     let list = build_display_list(layout_root);
     for cmd in &list {
-        canvas.paint(cmd);
+        let mut scrolled_cmd = cmd.clone();
+        scrolled_cmd.offset(-scroll_x, -scroll_y);
+        canvas.paint(&scrolled_cmd);
     }
     canvas
 }
@@ -867,5 +981,16 @@ mod tests {
         );
         let idx = (50 * 100 + 50) * 3;
         assert_eq!(&canvas.pixels[idx..idx + 3], &[255, 0, 0]);
+    }
+
+    #[test]
+    fn box_shadow_emits_display_command() {
+        let list = display_list_for(
+            r#"<div class="card"></div>"#,
+            r#".card { display: block; width: 100px; height: 100px; box-shadow: 2px 4px 8px #000000; }"#,
+            200,
+        );
+        let has_shadow = list.iter().any(|cmd| matches!(cmd, DisplayCommand::BoxShadow { .. }));
+        assert!(has_shadow, "box-shadow should emit BoxShadow command");
     }
 }

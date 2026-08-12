@@ -14,5 +14,6 @@ pub mod style;
 pub mod layout;
 pub mod paint;
 pub mod text;
+pub mod script;
 
 pub use html::extract_inline_styles;

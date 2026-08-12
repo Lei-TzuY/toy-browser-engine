@@ -75,6 +75,10 @@ pub enum TextAlign {
 pub enum BoxType<'a> {
     Block(&'a StyledNode<'a>),
     Flex(&'a StyledNode<'a>),
+    Grid(&'a StyledNode<'a>),
+    Table(&'a StyledNode<'a>),
+    TableRow(&'a StyledNode<'a>),
+    TableCell(&'a StyledNode<'a>),
     Inline(&'a StyledNode<'a>),
     /// Inline element with its own block-formatting context.
     InlineBlock(&'a StyledNode<'a>),
@@ -166,9 +170,24 @@ impl<'a> LayoutBox<'a> {
 
     fn style(&self) -> Option<&StyledNode<'a>> {
         match &self.box_type {
-            BoxType::Block(s) | BoxType::Flex(s) | BoxType::Inline(s) | BoxType::InlineBlock(s) => Some(s),
+            BoxType::Block(s) | BoxType::Flex(s) | BoxType::Grid(s) | BoxType::Table(s) | BoxType::TableRow(s) | BoxType::TableCell(s) | BoxType::Inline(s) | BoxType::InlineBlock(s) => Some(s),
             BoxType::AnonymousBlock => None,
         }
+    }
+
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<&'a crate::dom::Node> {
+        let bb = self.dimensions.border_box();
+        if x >= bb.x && x <= bb.x + bb.width && y >= bb.y && y <= bb.y + bb.height {
+            for child in self.children.iter().rev() {
+                if let Some(n) = child.hit_test(x, y) {
+                    return Some(n);
+                }
+            }
+            if let Some(s) = self.style() {
+                return Some(s.node);
+            }
+        }
+        None
     }
 
     /// Return the inline container for this box: itself if inline/anon, or
@@ -176,7 +195,7 @@ impl<'a> LayoutBox<'a> {
     fn inline_container(&mut self) -> &mut LayoutBox<'a> {
         match &self.box_type {
             BoxType::Inline(_) | BoxType::AnonymousBlock | BoxType::InlineBlock(_) => self,
-            BoxType::Block(_) | BoxType::Flex(_) => {
+            BoxType::Block(_) | BoxType::Flex(_) | BoxType::Grid(_) | BoxType::Table(_) | BoxType::TableRow(_) | BoxType::TableCell(_) => {
                 let needs_anon = !matches!(
                     self.children.last(),
                     Some(LayoutBox { box_type: BoxType::AnonymousBlock, .. })
@@ -197,8 +216,10 @@ impl<'a> LayoutBox<'a> {
 
     pub fn layout(&mut self, containing: Dimensions) {
         match &self.box_type {
-            BoxType::Block(_) | BoxType::InlineBlock(_) => self.layout_block(containing),
+            BoxType::Block(_) | BoxType::TableRow(_) | BoxType::TableCell(_) | BoxType::InlineBlock(_) => self.layout_block(containing),
             BoxType::Flex(_)         => self.layout_flex(containing),
+            BoxType::Grid(_)         => self.layout_grid(containing),
+            BoxType::Table(_)        => self.layout_table(containing),
             BoxType::AnonymousBlock  => self.layout_inline(containing),
             BoxType::Inline(_)       => {}
         }
@@ -734,7 +755,7 @@ impl<'a> LayoutBox<'a> {
 
     fn layout_with_assigned_width(&mut self, containing: Dimensions, width: f32) {
         match &self.box_type {
-            BoxType::Block(_) => {
+            BoxType::Block(_) | BoxType::Grid(_) | BoxType::Table(_) | BoxType::TableRow(_) | BoxType::TableCell(_) => {
                 self.calc_width(containing);
                 self.dimensions.content.width = width;
                 self.calc_position(containing);
@@ -853,6 +874,189 @@ impl<'a> LayoutBox<'a> {
     pub fn text_color(&self) -> Color { self.text_style.color }
     /// Font size used for inline content.
     pub fn font_size(&self) -> f32 { self.text_style.font_size }
+
+    fn layout_grid(&mut self, containing: Dimensions) {
+        self.calc_width(containing);
+        self.calc_position(containing);
+
+        let style = match self.style() {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Parse gap / row-gap / column-gap
+        let gap = style.value("gap")
+            .or_else(|| style.value("grid-gap"))
+            .map(|v| v.to_px())
+            .unwrap_or(0.0);
+        let row_gap = style.value("row-gap").map(|v| v.to_px()).unwrap_or(gap);
+        let col_gap = style.value("column-gap").map(|v| v.to_px()).unwrap_or(gap);
+
+        // Parse grid-template-columns
+        let col_spec = match style.value("grid-template-columns") {
+            Some(Value::Keyword(s)) => s.clone(),
+            _ => "1fr 1fr".to_string(), // default 2 equal tracks
+        };
+        let col_tokens: Vec<&str> = col_spec.split_whitespace().collect();
+        let num_cols = col_tokens.len().max(1);
+
+        let container_w = self.dimensions.content.width;
+        let avail_w = (container_w - (num_cols - 1) as f32 * col_gap).max(0.0);
+
+        // Calculate column widths
+        let mut col_widths = vec![0.0f32; num_cols];
+        let mut fr_total = 0.0f32;
+        let mut allocated_w = 0.0f32;
+
+        for (i, tok) in col_tokens.iter().enumerate() {
+            if tok.ends_with("fr") {
+                let weight: f32 = tok.trim_end_matches("fr").parse().unwrap_or(1.0);
+                fr_total += weight;
+            } else if tok.ends_with("px") {
+                let px: f32 = tok.trim_end_matches("px").parse().unwrap_or(0.0);
+                col_widths[i] = px;
+                allocated_w += px;
+            } else if tok.ends_with('%') {
+                let pct: f32 = tok.trim_end_matches('%').parse().unwrap_or(0.0) / 100.0;
+                let px = avail_w * pct;
+                col_widths[i] = px;
+                allocated_w += px;
+            } else {
+                let px: f32 = tok.parse().unwrap_or(0.0);
+                if px > 0.0 {
+                    col_widths[i] = px;
+                    allocated_w += px;
+                } else {
+                    fr_total += 1.0;
+                }
+            }
+        }
+
+        let remaining_w = (avail_w - allocated_w).max(0.0);
+        if fr_total > 0.0 {
+            for (i, tok) in col_tokens.iter().enumerate() {
+                if tok.ends_with("fr") || (!tok.ends_with("px") && !tok.ends_with('%') && tok.parse::<f32>().is_err()) {
+                    let weight: f32 = if tok.ends_with("fr") {
+                        tok.trim_end_matches("fr").parse().unwrap_or(1.0)
+                    } else {
+                        1.0
+                    };
+                    col_widths[i] = remaining_w * (weight / fr_total);
+                }
+            }
+        }
+
+        // Place children into grid cells
+        let mut cur_row = 0usize;
+        let mut cur_col = 0usize;
+        let mut row_heights = Vec::<f32>::new();
+
+        let grid_x = self.dimensions.content.x;
+        let grid_y = self.dimensions.content.y;
+
+        for child in &mut self.children {
+            if cur_col >= num_cols {
+                cur_col = 0;
+                cur_row += 1;
+            }
+
+            let cell_x = grid_x + (0..cur_col).map(|i| col_widths[i] + col_gap).sum::<f32>();
+            let cell_w = col_widths[cur_col];
+            let cell_y = grid_y + (0..cur_row).map(|r| row_heights.get(r).copied().unwrap_or(0.0) + row_gap).sum::<f32>();
+
+            let cell_containing = Dimensions {
+                content: Rect { x: cell_x, y: cell_y, width: cell_w, height: 0.0 },
+                ..Default::default()
+            };
+
+            child.layout(cell_containing);
+            let child_h = child.dimensions.margin_box().height;
+
+            if cur_row >= row_heights.len() {
+                row_heights.push(child_h);
+            } else {
+                row_heights[cur_row] = row_heights[cur_row].max(child_h);
+            }
+
+            cur_col += 1;
+        }
+
+        // Final pass: enforce row heights
+        cur_row = 0;
+        cur_col = 0;
+        for child in &mut self.children {
+            if cur_col >= num_cols {
+                cur_col = 0;
+                cur_row += 1;
+            }
+            let cell_x = grid_x + (0..cur_col).map(|i| col_widths[i] + col_gap).sum::<f32>();
+            let cell_y = grid_y + (0..cur_row).map(|r| row_heights.get(r).copied().unwrap_or(0.0) + row_gap).sum::<f32>();
+            let cell_w = col_widths[cur_col];
+
+            let cell_containing = Dimensions {
+                content: Rect { x: cell_x, y: cell_y, width: cell_w, height: row_heights[cur_row] },
+                ..Default::default()
+            };
+
+            child.layout(cell_containing);
+            cur_col += 1;
+        }
+
+        let total_h: f32 = row_heights.iter().sum::<f32>() + (row_heights.len().saturating_sub(1)) as f32 * row_gap;
+        self.dimensions.content.height = total_h;
+        self.calc_height();
+    }
+
+    fn layout_table(&mut self, containing: Dimensions) {
+        self.calc_width(containing);
+        self.calc_position(containing);
+
+        let mut col_widths = Vec::<f32>::new();
+        for row in &mut self.children {
+            for (col_idx, cell) in row.children.iter_mut().enumerate() {
+                let dummy = Dimensions { content: Rect { x: 0.0, y: 0.0, width: self.dimensions.content.width, height: 0.0 }, ..Default::default() };
+                cell.layout(dummy);
+                let w = cell.dimensions.margin_box().width;
+                if col_idx >= col_widths.len() {
+                    col_widths.push(w);
+                } else {
+                    col_widths[col_idx] = col_widths[col_idx].max(w);
+                }
+            }
+        }
+
+        let table_x = self.dimensions.content.x;
+        let mut cursor_y = self.dimensions.content.y;
+        let mut total_table_h = 0.0f32;
+
+        for row in &mut self.children {
+            row.dimensions.content.x = table_x;
+            row.dimensions.content.y = cursor_y;
+            row.dimensions.content.width = self.dimensions.content.width;
+
+            let mut cell_x = table_x;
+            let mut row_h = 0.0f32;
+
+            for (col_idx, cell) in row.children.iter_mut().enumerate() {
+                let cell_w = col_widths.get(col_idx).copied().unwrap_or(100.0);
+                let cell_containing = Dimensions {
+                    content: Rect { x: cell_x, y: cursor_y, width: cell_w, height: 0.0 },
+                    ..Default::default()
+                };
+                cell.layout(cell_containing);
+                let h = cell.dimensions.margin_box().height;
+                row_h = row_h.max(h);
+                cell_x += cell_w;
+            }
+
+            row.dimensions.content.height = row_h;
+            cursor_y += row_h;
+            total_table_h += row_h;
+        }
+
+        self.dimensions.content.height = total_table_h;
+        self.calc_height();
+    }
 }
 
 // ── Flex helpers ──────────────────────────────────────────────────────────────
@@ -914,6 +1118,10 @@ fn build_layout_tree_inner<'a>(
     let box_type = match node.display() {
         Display::Block       => BoxType::Block(node),
         Display::Flex        => BoxType::Flex(node),
+        Display::Grid        => BoxType::Grid(node),
+        Display::Table       => BoxType::Table(node),
+        Display::TableRow    => BoxType::TableRow(node),
+        Display::TableCell   => BoxType::TableCell(node),
         Display::Inline      => BoxType::Inline(node),
         Display::InlineBlock => BoxType::InlineBlock(node),
         Display::None        => return None,
@@ -924,7 +1132,7 @@ fn build_layout_tree_inner<'a>(
     for child in &node.children {
         match child.display() {
             Display::None => {}
-            Display::Block | Display::Flex => {
+            Display::Block | Display::Flex | Display::Grid | Display::Table | Display::TableRow | Display::TableCell => {
                 if let Some(b) = build_layout_tree_inner(child, text_style, text_align) {
                     root.children.push(b);
                 }
@@ -1215,6 +1423,7 @@ fn eval_calc(expr: &CalcExpr, cw: f32, fs: f32) -> f32 {
         CalcExpr::Literal(n, Unit::Px)      => *n,
         CalcExpr::Literal(n, Unit::Em)      => n * fs,
         CalcExpr::Literal(n, Unit::Percent) => n * cw / 100.0,
+        CalcExpr::Literal(n, Unit::Fr)      => *n,
         CalcExpr::Percent(n)               => n * cw / 100.0,
         CalcExpr::Add(a, b) => eval_calc(a, cw, fs) + eval_calc(b, cw, fs),
         CalcExpr::Sub(a, b) => eval_calc(a, cw, fs) - eval_calc(b, cw, fs),
@@ -1233,6 +1442,8 @@ fn number_value(value: &Value) -> f32 {
         Value::Keyword(s)         => s.parse().unwrap_or(0.0),
         Value::Color(_)           => 0.0,
         Value::LinearGradient(_)  => 0.0,
+        Value::BoxShadow(_)       => 0.0,
+        Value::Transform(_)       => 0.0,
         Value::Var { .. }         => 0.0,
         Value::Calc(expr)         => eval_calc(expr, 0.0, 16.0),
     }
@@ -1647,5 +1858,48 @@ mod tests {
     fn find_flex<'a, 'b>(lb: &'b LayoutBox<'a>) -> Option<&'b LayoutBox<'a>> {
         if matches!(lb.box_type, BoxType::Flex(_)) { return Some(lb); }
         lb.children.iter().find_map(find_flex)
+    }
+
+    #[test]
+    fn grid_layout_distributes_fr_tracks() {
+        let layout = layout_html_css(
+            r#"<div class="grid"><div class="c1"></div><div class="c2"></div></div>"#,
+            r#"
+                .grid { display: grid; grid-template-columns: 1fr 2fr; width: 300px; gap: 0px; }
+                .c1, .c2 { height: 50px; }
+            "#,
+            300.0,
+        );
+        fn find_grid<'a, 'b>(lb: &'b LayoutBox<'a>) -> Option<&'b LayoutBox<'a>> {
+            if matches!(lb.box_type, BoxType::Grid(_)) { return Some(lb); }
+            lb.children.iter().find_map(find_grid)
+        }
+        let grid = find_grid(&layout).expect("grid box not found");
+        assert_eq!(grid.children.len(), 2);
+        assert!((grid.children[0].dimensions.content.width - 100.0).abs() < 1.0);
+        assert!((grid.children[1].dimensions.content.width - 200.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn table_layout_computes_column_widths() {
+        let layout = layout_html_css(
+            r#"<table><tr><td class="c1">A</td><td class="c2">B</td></tr></table>"#,
+            r#"
+                table { display: table; width: 400px; }
+                tr { display: table-row; }
+                td { display: table-cell; }
+                .c1 { width: 150px; }
+                .c2 { width: 250px; }
+            "#,
+            400.0,
+        );
+        fn find_table<'a, 'b>(lb: &'b LayoutBox<'a>) -> Option<&'b LayoutBox<'a>> {
+            if matches!(lb.box_type, BoxType::Table(_)) { return Some(lb); }
+            lb.children.iter().find_map(find_table)
+        }
+        let tbl = find_table(&layout).expect("table box not found");
+        assert_eq!(tbl.children.len(), 1);
+        let row = &tbl.children[0];
+        assert_eq!(row.children.len(), 2);
     }
 }
