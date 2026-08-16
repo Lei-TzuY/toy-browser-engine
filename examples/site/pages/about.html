@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>About — Browser Engine Toy</title>
+    <!-- Both references climb out of pages/ with ../ -->
+    <link rel="stylesheet" href="../css/site.css">
+  </head>
+  <body>
+    <header class="masthead">
+      <img class="logo" src="../logo.png" alt="Toy engine logo">
+      <div class="masthead-text">
+        <h1>About</h1>
+        <p class="tagline">A second document, reached by following a link.</p>
+      </div>
+      <nav class="masthead-nav">
+        <a class="nav-link" href="../index.html">Home</a>
+      </nav>
+    </header>
+
+    <main>
+      <p class="intro">
+        This page was fetched by the browser after a click on a link. Its stylesheet,
+        logo and the icon below are all resolved relative to <code>pages/</code>,
+        so they climb one directory with <code>../</code>.
+      </p>
+
+      <section class="card">
+        <h2>What a navigation does</h2>
+        <ul>
+          <li>Resolve the <code>href</code> against the current document's base URL</li>
+          <li>Fetch the new document through the same resource loader</li>
+          <li>Parse it, load its stylesheets, run its scripts, decode its images</li>
+          <li>Push a history entry so Back returns to the previous page</li>
+        </ul>
+        <p><img class="contain" src="../assets/icon.png" alt="Checkmark icon"></p>
+      </section>
+
+      <p><a href="../index.html">Back to the front page</a></p>
+    </main>
+
+    <footer>
+      <p>Toy Browser Engine · <a href="../index.html">Home</a></p>
+    </footer>
+  </body>
+</html>

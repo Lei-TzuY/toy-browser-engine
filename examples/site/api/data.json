@@ -1,0 +1,9 @@
+{
+  "message": "Loaded over the network",
+  "generator": "Toy Browser Engine",
+  "items": [
+    { "name": "Headers", "detail": "case-insensitive, multi-valued" },
+    { "name": "Request", "detail": "url, method, headers, bodyUsed" },
+    { "name": "Response", "detail": "status, ok, text(), json()" }
+  ]
+}

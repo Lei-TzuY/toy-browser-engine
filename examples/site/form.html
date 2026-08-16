@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Form controls — Browser Engine Toy</title>
+    <link rel="stylesheet" href="css/site.css">
+    <link rel="stylesheet" href="css/form.css">
+  </head>
+  <body>
+    <header class="masthead">
+      <img class="logo" src="logo.png" alt="Toy engine logo">
+      <div class="masthead-text">
+        <h1>Form controls</h1>
+        <p class="tagline">Focus, typing, checkboxes, radios and a real GET submission.</p>
+      </div>
+      <nav class="masthead-nav">
+        <a class="nav-link" href="index.html">Home</a>
+      </nav>
+    </header>
+
+    <main>
+      <p class="intro">
+        Click a field and type. Tab moves between controls, Space toggles a checkbox,
+        and Enter in the search box submits the form as a GET navigation.
+      </p>
+
+      <!-- A real GET form: submitting navigates to results.html?q=…&size=…&news=on -->
+      <form id="search" class="card" action="results.html" method="get">
+        <h2>Search</h2>
+
+        <div class="field">
+          <label class="label" for="q">Query</label>
+          <input id="q" name="q" placeholder="Type something…" maxlength="40">
+        </div>
+
+        <div class="field">
+          <label class="label" for="notes">Notes</label>
+          <textarea id="notes" name="notes" rows="3" cols="34">Multi-line value.
+Enter inserts a newline here.</textarea>
+        </div>
+
+        <div class="field">
+          <span class="label">Options</span>
+          <label class="check"><input type="checkbox" id="news" name="news" checked> Include news</label>
+          <label class="check"><input type="checkbox" id="beta" name="beta" value="1"> Beta results</label>
+        </div>
+
+        <div class="field">
+          <span class="label">Page size</span>
+          <label class="check"><input type="radio" name="size" value="10" checked> 10</label>
+          <label class="check"><input type="radio" name="size" value="25"> 25</label>
+          <label class="check"><input type="radio" name="size" value="50"> 50</label>
+        </div>
+
+        <div class="field">
+          <label class="label" for="locked">Read-only</label>
+          <input id="locked" name="locked" value="cannot be edited" readonly>
+        </div>
+
+        <div class="field">
+          <label class="label" for="off">Disabled (never submitted)</label>
+          <input id="off" name="off" value="ignored" disabled>
+        </div>
+
+        <div class="actions">
+          <button id="go" type="submit">Search</button>
+          <button id="clear" type="reset">Reset</button>
+          <button id="quiet" type="button">Cancelled submit</button>
+        </div>
+      </form>
+
+      <section class="card">
+        <h2>Event log</h2>
+        <p id="status">Nothing yet — focus a control and type.</p>
+        <ul id="events"></ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>Toy Browser Engine · <a href="index.html">Back to the front page</a></p>
+    </footer>
+
+    <script src="js/form.js"></script>
+  </body>
+</html>

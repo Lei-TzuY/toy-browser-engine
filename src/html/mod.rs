@@ -1,5 +1,5 @@
-pub mod tokenizer;
 pub mod parser;
+pub mod tokenizer;
 
 pub use parser::parse_html;
 
@@ -36,7 +36,9 @@ mod tests {
 
     #[test]
     fn extracts_style_block() {
-        let dom = parse_html(r#"<html><head><style>p { color: red; }</style></head><body></body></html>"#);
+        let dom = parse_html(
+            r#"<html><head><style>p { color: red; }</style></head><body></body></html>"#,
+        );
         let css = extract_inline_styles(&dom);
         assert!(css.contains("color: red"));
     }

@@ -1,0 +1,27 @@
+/* Styles for the fetch page. */
+
+.cards {
+  list-style-type: none;
+  padding-left: 0;
+  margin: 12px 0 0 0;
+}
+
+.cards li {
+  background-color: #f5f8fb;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 0 0 8px 0;
+}
+
+.cards .name {
+  color: #24405c;
+  font-size: 17px;
+}
+
+.cards .detail {
+  color: #718096;
+  font-size: 13px;
+}
+
+.readout.loading { color: #b7791f; }
+.readout.failed { color: #c0392b; }

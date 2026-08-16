@@ -1,0 +1,137 @@
+/* External stylesheet, fetched via the relative URL "css/site.css". */
+
+body {
+  background-color: #f7f9fb;
+  font-family: sans-serif;
+  color: #2d3748;
+  margin: 0;
+}
+
+main {
+  padding: 24px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+h1 { font-size: 28px; color: #ffffff; margin: 0; }
+h2 { font-size: 22px; color: #24405c; margin-top: 24px; }
+h3 { font-size: 15px; color: #2980b9; margin: 0 0 6px 0; }
+
+/* ── Masthead: flex row with a logo, text and navigation ─────────────── */
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background-image: linear-gradient(to right, #1a2a3a, #2c3e50);
+  padding: 18px 24px;
+}
+
+.logo { width: 96px; }
+
+.masthead-text { flex: 1; }
+
+.tagline { color: #b8c6d4; font-size: 13px; margin: 4px 0 0 0; }
+
+.masthead-nav { display: flex; gap: 8px; }
+
+.nav-link {
+  color: #ffffff;
+  background-color: #34495e;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.nav-link:hover { background-color: #f1c40f; color: #1a2a3a; }
+
+/* ── Cards, gallery, grid ────────────────────────────────────────────── */
+
+.card {
+  background-color: #ffffff;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+  box-shadow: 0px 3px 10px rgba(0, 0, 0, 0.10);
+}
+
+.card h2 { margin-top: 0; }
+
+#counter {
+  background-color: #3498db;
+  color: #ffffff;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 14px;
+}
+
+#counter:hover { background-color: #1a2a3a; color: #f1c40f; }
+
+#log { margin: 12px 0 0 0; padding-left: 22px; font-size: 12px; }
+#log li { color: #718096; }
+#log li.even { color: #27ae60; }
+
+.gallery { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0 8px 0; }
+
+figure {
+  margin: 0;
+  background-color: #ffffff;
+  border-width: 1px;
+  border-color: #dbe3ea;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+figcaption { font-size: 11px; color: #7f8c9a; margin-top: 6px; }
+
+.cover {
+  width: 120px;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+
+.contain {
+  width: 120px;
+  height: 90px;
+  object-fit: contain;
+  background-color: #eef3f8;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.cell {
+  background-color: #ffffff;
+  border-radius: 6px;
+  padding: 12px;
+  border-width: 1px;
+  border-color: #dbe3ea;
+}
+
+.cell p { font-size: 12px; color: #5a6b7c; margin: 0; }
+
+/* ── Table ───────────────────────────────────────────────────────────── */
+
+.status-table { display: table; width: 100%; margin: 12px 0 24px 0; }
+tr { display: table-row; }
+th, td {
+  display: table-cell;
+  padding: 8px 12px;
+  border-width: 1px;
+  border-color: #dbe3ea;
+  font-size: 13px;
+}
+th { background-color: #24405c; color: #ffffff; }
+td { background-color: #ffffff; }
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+
+footer { background-color: #24405c; padding: 14px 24px; }
+footer p { color: #d7e1ea; font-size: 13px; margin: 0; }
+footer a { color: #8ec5ff; }

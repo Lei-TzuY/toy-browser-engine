@@ -1,0 +1,345 @@
+// ============================================================
+//  script/host.rs  —  Web-platform objects implemented in Rust
+// ============================================================
+//
+//  `Headers`, `Request`, `Response`, `AbortController` and `AbortSignal` are
+//  real objects a script holds, not strings with a convention attached. They
+//  all arrive in the interpreter as one [`HostObject`] variant of `JsValue`,
+//  so the value enum grows by a single arm however many of these the engine
+//  gains.
+//
+//  The split from `net::fetch` is deliberate: that module is the wire format
+//  and knows nothing about scripts; this one is the script's view of it and
+//  adds exactly what JavaScript needs — shared mutable headers, single-use
+//  bodies, and an abort flag two objects can see at once.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use crate::net::fetch::{FetchRequest, FetchResponse, HeaderMap, Method};
+use crate::net::Url;
+
+/// A shared, mutable header list.
+///
+/// `response.headers` hands back a new wrapper each time, but every wrapper
+/// points at the same map — so a `set` through one is visible through another,
+/// the way a single JavaScript object would behave.
+pub type HeadersRef = Rc<RefCell<HeaderMap>>;
+
+pub fn headers_ref(headers: HeaderMap) -> HeadersRef {
+    Rc::new(RefCell::new(headers))
+}
+
+// ── Bodies ────────────────────────────────────────────────────────────────────
+
+/// A body that may be read exactly once.
+///
+/// Fetch calls this a stream, and reading it twice is an error there too. The
+/// bytes are already in memory here, but the state machine is the same: the
+/// first `text()` or `json()` takes them, and `bodyUsed` flips to true.
+#[derive(Debug, Default)]
+pub struct Body {
+    bytes: RefCell<Option<Vec<u8>>>,
+    used: Cell<bool>,
+}
+
+impl Body {
+    pub fn new(bytes: Vec<u8>) -> Body {
+        Body {
+            bytes: RefCell::new(Some(bytes)),
+            used: Cell::new(false),
+        }
+    }
+
+    pub fn empty() -> Body {
+        Body::new(Vec::new())
+    }
+
+    /// True once the body has been consumed.
+    pub fn used(&self) -> bool {
+        self.used.get()
+    }
+
+    /// Take the bytes, or explain why they are no longer there.
+    pub fn take(&self) -> Result<Vec<u8>, String> {
+        if self.used.get() {
+            return Err("TypeError: body stream already read".to_string());
+        }
+        self.used.set(true);
+        Ok(self.bytes.borrow_mut().take().unwrap_or_default())
+    }
+
+    /// Look at the bytes without consuming them — for building a request.
+    pub fn peek(&self) -> Option<Vec<u8>> {
+        self.bytes.borrow().clone()
+    }
+}
+
+/// Decode a body as text.
+///
+/// UTF-8 with a leading byte-order mark removed. Invalid sequences become the
+/// replacement character rather than rejecting the promise, which is what a
+/// browser does — a page that asked for text gets text.
+pub fn decode_text(bytes: &[u8]) -> String {
+    let without_bom = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    String::from_utf8_lossy(without_bom).into_owned()
+}
+
+// ── Aborting ──────────────────────────────────────────────────────────────────
+
+/// The flag an `AbortController` sets and its `AbortSignal` reports.
+///
+/// One allocation shared by both objects and by the fetch that is watching it,
+/// so `controller.abort()` is visible everywhere at once.
+#[derive(Debug, Default)]
+pub struct AbortState {
+    aborted: Cell<bool>,
+}
+
+impl AbortState {
+    pub fn new() -> Rc<AbortState> {
+        Rc::new(AbortState::default())
+    }
+
+    pub fn aborted(&self) -> bool {
+        self.aborted.get()
+    }
+
+    /// Raise the flag. Returns true the first time, so a second `abort()` is a
+    /// no-op rather than a second rejection.
+    pub fn abort(&self) -> bool {
+        !self.aborted.replace(true)
+    }
+}
+
+// ── Requests ──────────────────────────────────────────────────────────────────
+
+/// A `Request` object.
+#[derive(Debug)]
+pub struct RequestData {
+    pub url: Url,
+    pub method: Method,
+    pub headers: HeadersRef,
+    pub body: Body,
+    pub signal: Option<Rc<AbortState>>,
+}
+
+impl RequestData {
+    /// The wire request this describes.
+    ///
+    /// Reads the body without consuming it, so `fetch(request)` still leaves
+    /// `request.bodyUsed` false until the script itself reads it.
+    pub fn to_wire(&self) -> FetchRequest {
+        FetchRequest::new(
+            self.url.clone(),
+            self.method,
+            self.headers.borrow().clone(),
+            self.body.peek().filter(|bytes| !bytes.is_empty()),
+        )
+    }
+}
+
+// ── Responses ─────────────────────────────────────────────────────────────────
+
+/// A `Response` object.
+#[derive(Debug)]
+pub struct ResponseData {
+    pub url: Url,
+    pub status: u16,
+    pub status_text: String,
+    pub headers: HeadersRef,
+    pub body: Body,
+    pub redirected: bool,
+}
+
+impl ResponseData {
+    /// Wrap what came back from the network.
+    pub fn from_wire(response: FetchResponse) -> ResponseData {
+        ResponseData {
+            url: response.url,
+            status: response.status,
+            status_text: response.status_text,
+            headers: headers_ref(response.headers),
+            body: Body::new(response.body),
+            redirected: response.redirected,
+        }
+    }
+
+    /// `response.ok` — the 2xx range, and nothing else.
+    pub fn ok(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
+}
+
+// ── The value the interpreter sees ────────────────────────────────────────────
+
+/// A Web-platform object.
+///
+/// One `JsValue` variant covers all of them, which is what keeps the value
+/// enum from growing an arm per API. Each is behind an `Rc`, so passing one
+/// around in script shares it rather than copying it.
+#[derive(Debug)]
+pub enum HostObject {
+    Headers(HeadersRef),
+    Request(RequestData),
+    Response(ResponseData),
+    AbortController(Rc<AbortState>),
+    AbortSignal(Rc<AbortState>),
+}
+
+impl HostObject {
+    /// The name a script sees in `String(value)`.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            HostObject::Headers(_) => "Headers",
+            HostObject::Request(_) => "Request",
+            HostObject::Response(_) => "Response",
+            HostObject::AbortController(_) => "AbortController",
+            HostObject::AbortSignal(_) => "AbortSignal",
+        }
+    }
+
+    pub fn as_headers(&self) -> Option<&HeadersRef> {
+        match self {
+            HostObject::Headers(headers) => Some(headers),
+            _ => None,
+        }
+    }
+
+    pub fn as_request(&self) -> Option<&RequestData> {
+        match self {
+            HostObject::Request(request) => Some(request),
+            _ => None,
+        }
+    }
+
+    pub fn as_response(&self) -> Option<&ResponseData> {
+        match self {
+            HostObject::Response(response) => Some(response),
+            _ => None,
+        }
+    }
+
+    /// The abort flag of a controller or a signal.
+    pub fn as_abort_state(&self) -> Option<&Rc<AbortState>> {
+        match self {
+            HostObject::AbortController(state) | HostObject::AbortSignal(state) => Some(state),
+            _ => None,
+        }
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_body_may_be_read_once() {
+        let body = Body::new(b"hello".to_vec());
+        assert!(!body.used());
+        assert_eq!(body.take().unwrap(), b"hello".to_vec());
+        assert!(body.used());
+
+        let error = body.take().unwrap_err();
+        assert!(error.contains("already read"), "{error}");
+    }
+
+    #[test]
+    fn peeking_does_not_consume_a_body() {
+        let body = Body::new(b"payload".to_vec());
+        assert_eq!(body.peek(), Some(b"payload".to_vec()));
+        assert!(!body.used(), "peeking is not reading");
+        assert_eq!(body.take().unwrap(), b"payload".to_vec());
+    }
+
+    #[test]
+    fn an_empty_body_is_still_a_body() {
+        let body = Body::empty();
+        assert_eq!(body.take().unwrap(), Vec::<u8>::new());
+        assert!(body.take().is_err(), "even an empty body is single-use");
+    }
+
+    #[test]
+    fn text_decoding_strips_a_byte_order_mark() {
+        assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'h', b'i']), "hi");
+        assert_eq!(decode_text("héllo".as_bytes()), "héllo");
+    }
+
+    #[test]
+    fn invalid_utf8_becomes_replacement_characters() {
+        let decoded = decode_text(&[b'a', 0xFF, b'b']);
+        assert!(decoded.starts_with('a') && decoded.ends_with('b'));
+        assert!(decoded.contains('\u{FFFD}'), "{decoded:?}");
+    }
+
+    #[test]
+    fn aborting_is_visible_through_every_handle() {
+        let state = AbortState::new();
+        let signal = state.clone();
+        assert!(!signal.aborted());
+
+        assert!(state.abort(), "the first abort takes effect");
+        assert!(signal.aborted());
+        assert!(!state.abort(), "a second abort changes nothing");
+    }
+
+    #[test]
+    fn headers_are_shared_between_wrappers() {
+        let shared = headers_ref(HeaderMap::new());
+        let one = HostObject::Headers(shared.clone());
+        let other = HostObject::Headers(shared.clone());
+
+        one.as_headers()
+            .unwrap()
+            .borrow_mut()
+            .set("x-tag", "value")
+            .unwrap();
+        assert_eq!(
+            other.as_headers().unwrap().borrow().get("X-Tag").as_deref(),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn a_request_converts_to_the_wire_without_consuming_its_body() {
+        let request = RequestData {
+            url: Url::parse("http://example.com/api").unwrap(),
+            method: Method::Post,
+            headers: headers_ref(HeaderMap::new()),
+            body: Body::new(b"{}".to_vec()),
+            signal: None,
+        };
+
+        let wire = request.to_wire();
+        assert_eq!(wire.method, Method::Post);
+        assert_eq!(wire.body.as_deref(), Some(&b"{}"[..]));
+        assert!(!request.body.used(), "sending is not reading");
+    }
+
+    #[test]
+    fn a_response_reports_ok_only_for_the_two_hundreds() {
+        for (status, expected) in [(200, true), (204, true), (304, false), (404, false)] {
+            let response = ResponseData::from_wire(FetchResponse::synthetic(
+                Url::parse("http://x/").unwrap(),
+                status,
+                None,
+                Vec::new(),
+            ));
+            assert_eq!(response.ok(), expected, "status {status}");
+        }
+    }
+
+    #[test]
+    fn host_objects_name_themselves() {
+        assert_eq!(
+            HostObject::Headers(headers_ref(HeaderMap::new())).type_name(),
+            "Headers"
+        );
+        assert_eq!(
+            HostObject::AbortSignal(AbortState::new()).type_name(),
+            "AbortSignal"
+        );
+    }
+}

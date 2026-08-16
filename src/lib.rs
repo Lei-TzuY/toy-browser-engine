@@ -7,13 +7,24 @@
 //!   → `layout::layout_tree`   → Layout tree  (`layout::LayoutBox`)
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
-pub mod dom;
-pub mod html;
+pub mod browser;
 pub mod css;
-pub mod style;
+pub mod document;
+pub mod dom;
+pub mod editing;
+pub mod eventloop;
+pub mod forms;
+pub mod html;
+pub mod image;
+pub mod input;
 pub mod layout;
+pub mod net;
 pub mod paint;
-pub mod text;
 pub mod script;
+pub mod style;
+pub mod text;
 
+pub use browser::Browser;
+pub use document::{Document, PointerState};
 pub use html::extract_inline_styles;
+pub use net::{MemoryLoader, ResourceLoader, Url};

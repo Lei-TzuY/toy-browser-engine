@@ -2,381 +2,370 @@
 //  main.rs  —  Browser Engine Toy CLI
 // ============================================================
 //
-//  Usage:
-//    browser_engine                          # built-in demo
-//    browser_engine <file.html>             # parse with default CSS
-//    browser_engine <file.html> <file.css>  # parse with custom CSS
-//    browser_engine <file.html> <file.css> <out.ppm>  # also write image
-//    browser_engine --window                         # render in an interactive window
-//
-//  Always prints the DOM tree and a layout summary to stdout.
+//  A thin shell around the engine: parse arguments, open a `Browser`, then
+//  either dump the trees and write a PPM, or drive an interactive window.
+//  Everything else — loading, parsing, styling, layout, paint, navigation —
+//  lives in the library.
 
 use std::{env, fs, process};
 
 use browser_engine::{
-    css::parser::parse_css,
-    extract_inline_styles,
-    html::parse_html,
-    layout::{layout_tree, BoxType, LayoutBox},
-    paint::paint,
-    style::style_tree,
+    browser::{Browser, ClickOutcome},
+    document::PointerState,
     dom::NodeType,
+    layout::{BoxType, LayoutBox},
+    net::{url_from_argument, DefaultLoader, Url},
 };
 use minifb::{Key, Window, WindowOptions};
 
-// ── Built-in browser default stylesheet ──────────────────────────────────────
+mod demo;
+mod platform;
 
-// ── Built-in browser default stylesheet ──────────────────────────────────────
+const USAGE: &str = "\
+Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
 
-const UA_CSS: &str = r#"
-html, body { display: block; }
-div, p, h1, h2, h3, h4, h5, h6,
-ul, ol, li, dl, dt, dd, blockquote, pre,
-header, footer, section, article, nav, main, aside,
-form, fieldset, table, thead, tbody, tfoot, tr, td, th,
-figure, figcaption { display: block; }
+  <url-or-file>   file path, file:// or http:// URL (default: the built-in demo site)
+  <out.ppm>       write the rendered page here (default: output.ppm)
 
-span, a, strong, em, b, i, u, s, code, abbr, cite,
-small, sub, sup, label, button, input { display: inline-block; }
+Options:
+  --window        open an interactive window (click links, scroll, Backspace to go back)
+  --size WxH      canvas and viewport size (default 800x600)
+  --viewport WxH  alias for --size WxH
+  --stats         print engine performance and node count diagnostics
+  --inspect       dump detailed DOM node and computed CSS style tree
+  --screenshot P  render page and save PPM screenshot to P
+  --benchmark     execute pipeline stress test and timing statistics
+  --json-stats    output structured machine-readable JSON metrics
+  --dump-html     serialize and print the DOM tree as HTML markup
+  --dump-css      dump all active CSS stylesheet rules
+  --quiet         skip the DOM and layout tree dumps
+  --help          show this message";
 
-head, script, style, meta, link, title, noscript { display: none; }
-
-h1 { font-size: 32px; }
-h2 { font-size: 24px; }
-h3 { font-size: 18px; }
-p  { margin: 16px 0; }
-ul, ol { margin: 16px 0; padding-left: 40px; }
-ul { list-style-type: disc; }
-ol { list-style-type: decimal; }
-a  { text-decoration: underline; color: #0000ee; }
-button { padding: 8px 16px; border-radius: 4px; border: none; cursor: pointer; }
-"#;
-
-// ── Demo content ──────────────────────────────────────────────────────────────
-
-const DEMO_HTML: &str = r#"<!DOCTYPE html>
-<html>
-  <head>
-    <title>Browser Engine Toy</title>
-  </head>
-  <body>
-    <header>
-      <h1 id="title" class="heading">Browser Engine Toy</h1>
-    </header>
-    <main>
-      <p class="intro">
-        A minimal browser engine written in Rust with JavaScript AST Engine, DOM API, CSS Grid, 2D Transforms &amp; Table Layout!
-      </p>
-      
-      <h2>Interactive JavaScript Demo</h2>
-      <div class="card">
-        <h3 id="script-heading">Live DOM Mutation &amp; JS Events</h3>
-        <p id="script-desc">Click the button below to execute embedded JavaScript and dynamically update DOM nodes!</p>
-        <button id="counter-btn" class="btn">Click Count: 0</button>
-      </div>
-
-      <h2>HTML Table Layout (display: table)</h2>
-      <table class="demo-table">
-        <tr>
-          <th>Subsystem</th>
-          <th>Implementation Status</th>
-        </tr>
-        <tr>
-          <td>JS AST &amp; Interpreter</td>
-          <td>Active (`script/mod.rs`)</td>
-        </tr>
-        <tr>
-          <td>CSS Grid &amp; Table</td>
-          <td>Supported</td>
-        </tr>
-      </table>
-
-      <h2>HTML Image Element (&lt;img&gt;)</h2>
-      <img src="logo.ppm" alt="Rust Browser Engine" />
-
-      <h2>CSS Grid Cards (2D Layout)</h2>
-      <div class="grid-container">
-        <div class="card">
-          <h3>JS Engine</h3>
-          <p>Tree-walk AST interpreter with DOM querySelector &amp; innerText API.</p>
-          <button class="btn">Learn JS</button>
-        </div>
-        <div class="card">
-          <h3>Layout Subsystems</h3>
-          <p>Block, Flexbox, CSS Grid, and Table layout algorithms.</p>
-          <button class="btn">View Tables</button>
-        </div>
-        <div class="card">
-          <h3>Rasterizer &amp; Painter</h3>
-          <p>PPM image export, soft box-shadow rendering, and interactive GUI window.</p>
-          <button class="btn">Try Window</button>
-        </div>
-      </div>
-
-      <div class="features">
-        <h2>Engine Pipeline Capabilities</h2>
-        <ul>
-          <li>HTML tokenisation &amp; tree construction</li>
-          <li>CSS parsing (selectors, cascade, specificity, transforms)</li>
-          <li>Embedded JavaScript Interpreter (`let`, DOM mutations, click listeners)</li>
-          <li>CSS Grid 2D track layout (`display: grid`, `fr` units, gaps)</li>
-          <li>HTML Table Layout (`<table>`, `<tr>`, `<td>`, `<th>`)</li>
-          <li>Interactive `:hover` pseudo-class and real-time mouse hit-testing</li>
-          <li>Alpha-blended `box-shadow` &amp; `<img>` rendering</li>
-        </ul>
-      </div>
-
-      <script>
-        let count = 0;
-        let btn = document.getElementById("counter-btn");
-        let heading = document.getElementById("script-heading");
-        btn.addEventListener("click", function() {
-            count = count + 1;
-            btn.innerText = "Click Count: " + count;
-            heading.innerText = "JavaScript Triggered! Count = " + count;
-        });
-      </script>
-      
-      <p class="note">See <a href="https://limpet.net/mbrubeck/">Matt Brubeck's series</a> for browser engine architecture.</p>
-    </main>
-    <footer>
-      <p>Toy Browser Engine — Interactive &amp; Standards-Capable</p>
-    </footer>
-  </body>
-</html>"#;
-
-const DEMO_CSS: &str = r#"
-body    { background-color: #f8f9fa; font-family: sans-serif; }
-header  { background-image: linear-gradient(to right, #1a2a3a, #2c3e50); padding: 24px; text-align: center; border-radius: 0; }
-h1      { color: #ffffff; }
-main    { padding: 24px; max-width: 760px; margin: 0 auto; }
-h2      { color: #2c3e50; margin-top: 24px; }
-.intro  { color: #555555; line-height: 1.5; }
-
-.grid-container {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 16px;
-    margin: 16px 0;
+struct Options {
+    target: Option<String>,
+    output: Option<String>,
+    width: usize,
+    height: usize,
+    show_window: bool,
+    show_stats: bool,
+    show_inspect: bool,
+    show_benchmark: bool,
+    show_json_stats: bool,
+    show_dump_html: bool,
+    show_dump_css: bool,
+    quiet: bool,
 }
-
-.card {
-    background-color: #ffffff;
-    padding: 16px;
-    border-radius: 8px;
-    box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.12);
-    margin-bottom: 16px;
-}
-
-.card h3 { color: #2980b9; margin: 0 0 8px 0; font-size: 16px; }
-.card p  { color: #666666; font-size: 13px; margin: 0 0 12px 0; }
-
-.demo-table {
-    display: table;
-    width: 100%;
-    margin: 16px 0;
-    border-color: #cbd5e1;
-    border-width: 1px;
-}
-
-tr { display: table-row; }
-th, td { display: table-cell; padding: 8px 12px; border-width: 1px; border-color: #cbd5e1; }
-th { background-color: #2c3e50; color: #ffffff; }
-td { background-color: #ffffff; color: #333333; }
-
-img {
-    width: 240px;
-    height: 48px;
-    margin: 12px 0;
-    border-radius: 6px;
-}
-
-.btn {
-    background-color: #3498db;
-    color: #ffffff;
-    border-radius: 4px;
-    padding: 6px 12px;
-}
-
-.btn:hover {
-    background-color: #1a2a3a;
-    color: #f1c40f;
-}
-
-.features {
-    background-color: #eef2f5;
-    padding: 18px;
-    border-color: #cbd5e1;
-    border-width: 1px;
-    border-radius: 8px;
-    box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.06);
-    overflow: hidden;
-}
-
-.note   { color: #7f8c8d; text-align: right; }
-footer  { background-color: #2c3e50; padding: 14px; text-align: center; border-radius: 0; }
-footer p { color: #ecf0f1; }
-a       { color: #3498db; }
-"#;
-
-// ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let show_window = args.iter().any(|arg| arg == "--window");
-    let positional: Vec<&str> = args
-        .iter()
-        .skip(1)
-        .filter(|arg| arg.as_str() != "--window")
-        .map(String::as_str)
-        .collect();
+    let options = match parse_options(env::args().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{message}\n\n{USAGE}");
+            process::exit(2);
+        }
+    };
 
-    let (html_src, css_src, ppm_path): (String, String, Option<String>) = match positional.len() {
-        0 => (DEMO_HTML.into(), DEMO_CSS.into(), Some("output.ppm".into())),
-        1 => (read_file(positional[0]), String::new(), None),
-        2 => (read_file(positional[0]), read_file(positional[1]), None),
-        3 => (
-            read_file(positional[0]),
-            read_file(positional[1]),
-            Some(positional[2].into()),
+    // Without a target the engine serves its own demo site out of memory, so
+    // the default run still exercises the resource-loading pipeline.
+    let (loader, url) = match &options.target {
+        Some(target) => (DefaultLoader::new(), url_from_argument(target)),
+        None => (
+            DefaultLoader::new().with_memory(demo::site()),
+            Url::parse(demo::ENTRY_URL).expect("valid demo URL"),
         ),
-        _ => {
-            eprintln!("Usage: browser_engine [--window] [<html> [<css> [<out.ppm>]]]");
+    };
+
+    let mut browser = match Browser::open(Box::new(loader), &url) {
+        Ok(browser) => browser,
+        Err(error) => {
+            eprintln!("Failed to load {url}: {error}");
             process::exit(1);
         }
     };
 
-    // ── Parse ─────────────────────────────────────────────────────────────
-    let mut dom = parse_html(&html_src);
-    let event_listeners = browser_engine::script::execute_dom_scripts(&mut dom);
+    for diagnostic in &browser.document().diagnostics {
+        eprintln!("warning: {diagnostic}");
+    }
 
-    // Collect CSS: UA defaults < inline <style> blocks < external/argument CSS
-    let mut stylesheet = parse_css(UA_CSS);
-    let inline_css = extract_inline_styles(&dom);
-    stylesheet.rules.extend(parse_css(&inline_css).rules);
-    stylesheet.rules.extend(parse_css(&css_src).rules);
+    if !options.quiet {
+        print_document(&browser, options.width);
+    }
 
-    // ── DOM tree ──────────────────────────────────────────────────────────
+    let output = options.output.clone().or_else(|| {
+        // Only the default demo run writes a file without being asked to.
+        options.target.is_none().then(|| "output.ppm".to_string())
+    });
+    if let Some(path) = output {
+        let canvas = browser.render(options.width, options.height, 0.0, &PointerState::default());
+        let ppm = canvas.to_ppm();
+        match fs::write(&path, &ppm) {
+            Ok(()) => println!(
+                "\nPainted → {path} ({}×{}, {} bytes)",
+                options.width,
+                options.height,
+                ppm.len()
+            ),
+            Err(error) => eprintln!("\nFailed to write {path}: {error}"),
+        }
+    }
+
+    if options.show_window {
+        if let Err(error) = run_window(&mut browser, options.width, options.height) {
+            eprintln!("\nFailed to open window: {error}");
+            process::exit(1);
+        }
+    }
+
+    if options.show_stats {
+        print_stats(&browser, options.width, options.height);
+    }
+
+    if options.show_inspect {
+        print_inspect(&browser, options.width);
+    }
+
+    if options.show_benchmark {
+        run_benchmark(&browser, options.width, options.height);
+    }
+
+    if options.show_json_stats {
+        print_json_stats(&browser, options.width, options.height);
+    }
+
+    if options.show_dump_html {
+        print_dump_html(&browser);
+    }
+
+    if options.show_dump_css {
+        print_dump_css(&browser);
+    }
+
+    if !options.quiet {
+        println!("\nDone.");
+    }
+}
+
+fn print_dump_css(browser: &Browser) {
+    let doc = browser.document();
+    println!("/* ================================================== */");
+    println!("/*           MERGED CSS STYLESHEET RULES              */");
+    println!("/* ================================================== */");
+    for rule in &doc.stylesheet.rules {
+        let sel_str: Vec<String> = rule.selectors.iter().map(|s| format!("{s:?}")).collect();
+        println!("/* {} */", sel_str.join(", "));
+        for decl in &rule.declarations {
+            println!("  {}: {:?};", decl.name, decl.value);
+        }
+    }
+}
+
+fn print_dump_html(browser: &Browser) {
+    let doc = browser.document();
+    println!("{}", browser_engine::script::dom_api::outer_html(&doc.dom));
+}
+
+fn print_json_stats(browser: &Browser, width: usize, height: usize) {
+    let doc = browser.document();
+    let dom_count = count_dom_nodes(&doc.dom);
+    let styled = doc.style_tree(width as f32, &PointerState::default());
+    let layout_root = doc.layout(&styled, width as f32);
+    let layout_count = count_layout_boxes(&layout_root);
+
+    println!(
+        r#"{{"width":{},"height":{},"dom_nodes":{},"layout_boxes":{},"url":{:?},"status":"ok"}}"#,
+        width,
+        height,
+        dom_count,
+        layout_count,
+        browser.url()
+    );
+}
+
+fn run_benchmark(browser: &Browser, width: usize, height: usize) {
+    use std::time::Instant;
+    println!("\n==================================================");
+    println!("          ENGINE BENCHMARK STRESS TEST            ");
+    println!("==================================================");
+    let start = Instant::now();
+    let iterations = 50;
+    for _ in 0..iterations {
+        let doc = browser.document();
+        let styled = doc.style_tree(width as f32, &PointerState::default());
+        let _layout = doc.layout(&styled, width as f32);
+        let _ppm = browser
+            .render(width, height, 0.0, &PointerState::default())
+            .to_ppm();
+    }
+    let total = start.elapsed();
+    let avg = total / iterations;
+    println!("Iterations     : {}", iterations);
+    println!("Total Elapsed  : {:.2?}", total);
+    println!("Average Frame  : {:.2?}", avg);
+    println!("FPS Estimate   : {:.1}", 1.0 / avg.as_secs_f32());
+    println!("==================================================\n");
+}
+
+fn print_inspect(browser: &Browser, width: usize) {
+    let doc = browser.document();
+    let styled = doc.style_tree(width as f32, &PointerState::default());
+    println!("\n==================================================");
+    println!("          DOM & COMPUTED CSS INSPECTOR            ");
+    println!("==================================================");
+    dump_styled_node(&styled, 0);
+    println!("==================================================\n");
+}
+
+fn dump_styled_node(sn: &browser_engine::style::StyledNode, indent: usize) {
+    let pad = "  ".repeat(indent);
+    match sn.node.node_type {
+        browser_engine::dom::NodeType::Document => {
+            println!("{}#document", pad);
+        }
+        browser_engine::dom::NodeType::Text(ref text) => {
+            let t = text.trim();
+            if t.is_empty() {
+                return;
+            }
+            println!("{}Text({:?})", pad, t);
+        }
+        browser_engine::dom::NodeType::Element(ref el) => {
+            let id = el
+                .get_attr("id")
+                .map(|i| format!("#{}", i))
+                .unwrap_or_default();
+            let classes = el
+                .get_attr("class")
+                .map(|c| format!(".{}", c.replace(' ', ".")))
+                .unwrap_or_default();
+            println!("{}<{}{}{}>", pad, el.tag_name, id, classes);
+        }
+        _ => return,
+    };
+    for child in &sn.children {
+        dump_styled_node(child, indent + 1);
+    }
+}
+
+fn print_stats(browser: &Browser, width: usize, height: usize) {
+    let doc = browser.document();
+    let dom_count = count_dom_nodes(&doc.dom);
+    let styled = doc.style_tree(width as f32, &PointerState::default());
+    let layout_root = doc.layout(&styled, width as f32);
+    let layout_count = count_layout_boxes(&layout_root);
+    println!("\n==================================================");
+    println!("          ENGINE DIAGNOSTICS & METRICS            ");
+    println!("==================================================");
+    println!("Target URL     : {}", browser.url());
+    println!("Viewport Size  : {}x{}", width, height);
+    println!("DOM Tree Nodes : {}", dom_count);
+    println!("Layout Boxes   : {}", layout_count);
+    println!("Diagnostics    : {} warning(s)", doc.diagnostics.len());
+    println!("==================================================\n");
+}
+
+fn count_dom_nodes(node: &browser_engine::dom::Node) -> usize {
+    1 + node.children.iter().map(count_dom_nodes).sum::<usize>()
+}
+
+fn count_layout_boxes(lb: &browser_engine::layout::LayoutBox) -> usize {
+    1 + lb.children.iter().map(count_layout_boxes).sum::<usize>()
+}
+
+// ── Arguments ─────────────────────────────────────────────────────────────────
+
+fn parse_options(args: impl Iterator<Item = String>) -> Result<Options, String> {
+    let mut options = Options {
+        target: None,
+        output: None,
+        width: 800,
+        height: 600,
+        show_window: false,
+        show_stats: false,
+        show_inspect: false,
+        show_benchmark: false,
+        show_json_stats: false,
+        show_dump_html: false,
+        show_dump_css: false,
+        quiet: false,
+    };
+    let mut positional: Vec<String> = Vec::new();
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--window" => options.show_window = true,
+            "--stats" => options.show_stats = true,
+            "--inspect" => options.show_inspect = true,
+            "--benchmark" => options.show_benchmark = true,
+            "--json-stats" => options.show_json_stats = true,
+            "--dump-html" => options.show_dump_html = true,
+            "--dump-css" => options.show_dump_css = true,
+            "--quiet" => options.quiet = true,
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                process::exit(0);
+            }
+            "--size" | "--viewport" => {
+                let value = args.next().ok_or("--size / --viewport needs a WxH value")?;
+                (options.width, options.height) = parse_size(&value)?;
+            }
+            other if other.starts_with("--size=") || other.starts_with("--viewport=") => {
+                let val = other
+                    .strip_prefix("--size=")
+                    .or_else(|| other.strip_prefix("--viewport="))
+                    .unwrap_or_default();
+                (options.width, options.height) = parse_size(val)?;
+            }
+            "--screenshot" => {
+                let path = args.next().ok_or("--screenshot needs an output filepath")?;
+                options.output = Some(path);
+            }
+            other if other.starts_with("--screenshot=") => {
+                options.output = Some(other["--screenshot=".len()..].to_string());
+            }
+            other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+            other => positional.push(other.to_string()),
+        }
+    }
+
+    match positional.len() {
+        0 => {}
+        1 => options.target = Some(positional.remove(0)),
+        2 => {
+            options.output = Some(positional.pop().unwrap());
+            options.target = Some(positional.pop().unwrap());
+        }
+        _ => return Err("too many arguments".into()),
+    }
+    Ok(options)
+}
+
+fn parse_size(spec: &str) -> Result<(usize, usize), String> {
+    let (w, h) = spec
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("malformed --size {spec:?} (expected WxH)"))?;
+    match (w.trim().parse::<usize>(), h.trim().parse::<usize>()) {
+        (Ok(w), Ok(h)) if w > 0 && h > 0 => Ok((w, h)),
+        _ => Err(format!("malformed --size {spec:?} (expected WxH)")),
+    }
+}
+
+// ── Console output ────────────────────────────────────────────────────────────
+
+fn print_document(browser: &Browser, width: usize) {
     println!("╔══════════════════════════════╗");
     println!("║         DOM  TREE            ║");
     println!("╚══════════════════════════════╝");
-    dom.pretty_print();
-
-    // ── Style + layout ────────────────────────────────────────────────────
-    let styled = style_tree(&dom, &stylesheet);
-    let layout = layout_tree(&styled, 800.0);
+    println!("{}", browser.status_line());
+    browser.document().dom.pretty_print();
 
     println!("\n╔══════════════════════════════╗");
     println!("║       LAYOUT  TREE           ║");
     println!("╚══════════════════════════════╝");
+    let document = browser.document();
+    let styled = document.style_tree(width as f32, &PointerState::default());
+    let layout = document.layout(&styled, width as f32);
     print_layout(&layout, 0);
-
-    // ── Paint → PPM ───────────────────────────────────────────────────────
-    if ppm_path.is_some() || show_window {
-        let canvas = paint(&layout, 800, 600);
-        if let Some(path) = ppm_path {
-            let ppm = canvas.to_ppm();
-            match fs::write(&path, &ppm) {
-                Ok(()) => println!("\nPainted → {} ({}×{}, {} bytes)", path, 800, 600, ppm.len()),
-                Err(e) => eprintln!("\nFailed to write {}: {}", path, e),
-            }
-        }
-        if show_window {
-            if let Err(error) = show_interactive_window(dom, &stylesheet, event_listeners) {
-                eprintln!("\nFailed to open window: {}", error);
-            }
-        }
-    }
-
-    println!("\nDone.");
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn read_file(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("Error reading '{}': {}", path, e);
-        process::exit(1);
-    })
-}
-
-fn show_interactive_window(
-    mut dom: browser_engine::dom::Node,
-    stylesheet: &browser_engine::css::parser::Stylesheet,
-    event_listeners: Vec<(String, String, browser_engine::script::JsValue)>,
-) -> Result<(), minifb::Error> {
-    let mut window = Window::new(
-        "Browser Engine Toy (Interactive -- JS Events, Scroll & Hover)",
-        800,
-        600,
-        WindowOptions::default(),
-    )?;
-
-    let mut scroll_y: f32 = 0.0;
-    let mut was_mouse_down = false;
-
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        if let Some((_, mouse_y)) = window.get_scroll_wheel() {
-            if mouse_y != 0.0 {
-                scroll_y = (scroll_y - mouse_y * 30.0).max(0.0);
-            }
-        }
-        if window.is_key_down(Key::Down) {
-            scroll_y += 15.0;
-        }
-        if window.is_key_down(Key::Up) {
-            scroll_y = (scroll_y - 15.0).max(0.0);
-        }
-
-        let is_mouse_down = window.get_mouse_down(minifb::MouseButton::Left);
-        let mouse_pos = window.get_mouse_pos(minifb::MouseMode::Pass);
-
-        let clicked_id = if is_mouse_down && !was_mouse_down {
-            let initial_styled = style_tree(&dom, stylesheet);
-            let initial_layout = layout_tree(&initial_styled, 800.0);
-            if let Some((mx, my)) = mouse_pos {
-                if let Some(target_node) = initial_layout.hit_test(mx, my + scroll_y) {
-                    if let browser_engine::dom::NodeType::Element(ref e) = target_node.node_type {
-                        e.get_attr("id").map(String::from)
-                    } else { None }
-                } else { None }
-            } else { None }
-        } else { None };
-
-        if let Some(ref target_id) = clicked_id {
-            for (el_id, evt_type, handler) in &event_listeners {
-                if el_id == target_id && evt_type == "click" {
-                    if let browser_engine::script::JsValue::Function { params: _, body } = handler {
-                        let mut interp = browser_engine::script::JsInterpreter::new(&mut dom);
-                        interp.eval_program(body);
-                    }
-                }
-            }
-        }
-        was_mouse_down = is_mouse_down;
-
-        let initial_styled = style_tree(&dom, stylesheet);
-        let initial_layout = layout_tree(&initial_styled, 800.0);
-
-        let cur_hovered_node = if let Some((mx, my)) = mouse_pos {
-            initial_layout.hit_test(mx, my + scroll_y)
-        } else {
-            None
-        };
-
-        let interaction = browser_engine::style::InteractionState {
-            hovered_node: cur_hovered_node,
-            active_node: if is_mouse_down { cur_hovered_node } else { None },
-        };
-
-        let styled = browser_engine::style::style_tree_with_interaction(&dom, stylesheet, &interaction);
-        let layout = layout_tree(&styled, 800.0);
-        let canvas = browser_engine::paint::paint_with_scroll(&layout, 800, 600, 0.0, scroll_y);
-
-        let buffer = canvas.to_u32_buffer();
-        window.update_with_buffer(&buffer, 800, 600)?;
-    }
-    Ok(())
 }
 
 fn print_layout(lb: &LayoutBox, depth: usize) {
@@ -384,22 +373,20 @@ fn print_layout(lb: &LayoutBox, depth: usize) {
     let d = &lb.dimensions;
 
     let label = match &lb.box_type {
-        BoxType::Block(s)       => format!("Block({})", node_label(s.node)),
-        BoxType::Flex(s)        => format!("Flex({})", node_label(s.node)),
-        BoxType::Grid(s)        => format!("Grid({})", node_label(s.node)),
-        BoxType::Table(s)       => format!("Table({})", node_label(s.node)),
-        BoxType::TableRow(s)    => format!("TableRow({})", node_label(s.node)),
-        BoxType::TableCell(s)   => format!("TableCell({})", node_label(s.node)),
-        BoxType::Inline(s)      => format!("Inline({})", node_label(s.node)),
+        BoxType::Block(s) => format!("Block({})", node_label(s.node)),
+        BoxType::Flex(s) => format!("Flex({})", node_label(s.node)),
+        BoxType::Grid(s) => format!("Grid({})", node_label(s.node)),
+        BoxType::Table(s) => format!("Table({})", node_label(s.node)),
+        BoxType::TableRow(s) => format!("TableRow({})", node_label(s.node)),
+        BoxType::TableCell(s) => format!("TableCell({})", node_label(s.node)),
+        BoxType::Inline(s) => format!("Inline({})", node_label(s.node)),
         BoxType::InlineBlock(s) => format!("InlineBlock({})", node_label(s.node)),
         BoxType::AnonymousBlock => "AnonymousBlock".into(),
     };
 
     println!(
         "{}{:<36} x={:<6.1} y={:<6.1} w={:<6.1} h={:.1}",
-        indent, label,
-        d.content.x, d.content.y,
-        d.content.width, d.content.height,
+        indent, label, d.content.x, d.content.y, d.content.width, d.content.height,
     );
 
     for child in &lb.children {
@@ -411,21 +398,149 @@ fn node_label(node: &browser_engine::dom::Node) -> String {
     match &node.node_type {
         NodeType::Element(e) => {
             let mut s = format!("<{}", e.tag_name);
-            if let Some(id) = e.get_attr("id") { s.push_str(&format!(" #{}", id)); }
-            if let Some(cls) = e.get_attr("class") { s.push_str(&format!(" .{}", cls.split_whitespace().next().unwrap_or(""))); }
+            if let Some(id) = e.get_attr("id") {
+                s.push_str(&format!(" #{id}"));
+            }
+            if let Some(class) = e.get_attr("class") {
+                s.push_str(&format!(
+                    " .{}",
+                    class.split_whitespace().next().unwrap_or("")
+                ));
+            }
             s.push('>');
             s
         }
         NodeType::Text(t) => {
             let trimmed = t.trim();
-            if trimmed.len() > 16 {
-                format!("{:?}…", &trimmed[..16])
+            if trimmed.chars().count() > 16 {
+                let cut: String = trimmed.chars().take(16).collect();
+                format!("{cut:?}…")
             } else {
-                format!("{:?}", trimmed)
+                format!("{trimmed:?}")
             }
         }
         NodeType::Document => "#document".into(),
         NodeType::Comment(_) => "<!-- -->".into(),
-        NodeType::Doctype(n) => format!("<!DOCTYPE {}>", n),
+        NodeType::Doctype(n) => format!("<!DOCTYPE {n}>"),
     }
+}
+
+// ── Interactive window ────────────────────────────────────────────────────────
+
+/// Frames per second the window aims for.
+///
+/// The event loop is ticked once per frame, which is also how often
+/// `requestAnimationFrame` callbacks get to run.
+const FRAME_RATE: usize = 60;
+
+fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), minifb::Error> {
+    let mut window = Window::new(
+        &browser.status_line(),
+        width,
+        height,
+        WindowOptions::default(),
+    )?;
+    // Pace the loop so animations run at a steady rate and an idle page does
+    // not spin the CPU. minifb sleeps for us inside `update_with_buffer`.
+    window.set_target_fps(FRAME_RATE);
+    let input = platform::InputAdapter::attach(&mut window);
+
+    let mut scroll_y: f32 = 0.0;
+    let mut was_mouse_down = false;
+    let mut title = String::new();
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        // ── Browser chrome shortcuts ──────────────────────────────────────
+        // These are the window's own keys; everything else goes to the page.
+        if let Some((_, wheel_y)) = window.get_scroll_wheel() {
+            if wheel_y != 0.0 {
+                scroll_y -= wheel_y * 30.0;
+            }
+        }
+        let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
+        if chrome {
+            if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) && browser.back() {
+                scroll_y = 0.0;
+            }
+            if window.is_key_pressed(Key::Right, minifb::KeyRepeat::No) && browser.forward() {
+                scroll_y = 0.0;
+            }
+            if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
+                if let Err(error) = browser.reload() {
+                    eprintln!("reload failed: {error}");
+                }
+            }
+            if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
+                scroll_y += 40.0;
+            }
+            if window.is_key_pressed(Key::Up, minifb::KeyRepeat::Yes) {
+                scroll_y -= 40.0;
+            }
+        }
+
+        // ── Keyboard → page ───────────────────────────────────────────────
+        if !chrome {
+            for event in input.drain(&window) {
+                match browser.press_key(&event) {
+                    ClickOutcome::Navigated(url) => {
+                        println!("→ {url}");
+                        scroll_y = 0.0;
+                    }
+                    ClickOutcome::NavigationFailed { url, error } => {
+                        eprintln!("could not open {url}: {error}");
+                    }
+                    ClickOutcome::Script | ClickOutcome::Ignored => {}
+                }
+            }
+        }
+
+        let is_mouse_down = window.get_mouse_down(minifb::MouseButton::Left);
+        let mouse = window.get_mouse_pos(minifb::MouseMode::Pass);
+        let page_point = mouse.map(|(x, y)| (x, y + scroll_y));
+
+        // ── Click ─────────────────────────────────────────────────────────
+        if is_mouse_down && !was_mouse_down {
+            if let Some((x, y)) = page_point {
+                match browser.click_at(x, y, width as f32) {
+                    ClickOutcome::Navigated(url) => {
+                        println!("→ {url}");
+                        scroll_y = 0.0;
+                    }
+                    ClickOutcome::NavigationFailed { url, error } => {
+                        eprintln!("could not open {url}: {error}");
+                    }
+                    ClickOutcome::Script | ClickOutcome::Ignored => {}
+                }
+            }
+        }
+        was_mouse_down = is_mouse_down;
+
+        // ── Event loop ────────────────────────────────────────────────────
+        // Timers and animation frames run here, between input and paint, so
+        // whatever a callback changed is in the frame that follows.
+        browser.tick();
+
+        // ── Draw ──────────────────────────────────────────────────────────
+        let max_scroll = (browser.document().content_height(width as f32) - height as f32).max(0.0);
+        scroll_y = scroll_y.clamp(0.0, max_scroll);
+
+        let hovered = page_point.and_then(|(x, y)| browser.document().hit_test(x, y, width as f32));
+        let active = is_mouse_down.then(|| hovered.clone()).flatten();
+        let pointer = PointerState {
+            focused: active.clone().or(hovered.clone()),
+            active,
+            hovered,
+        };
+
+        let canvas = browser.render(width, height, scroll_y, &pointer);
+        window.update_with_buffer(&canvas.to_u32_buffer(), width, height)?;
+
+        // The title bar is the address bar: URL, title and history position.
+        let status = browser.status_line();
+        if status != title {
+            window.set_title(&status);
+            title = status;
+        }
+    }
+    Ok(())
 }

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Browser Engine Toy</title>
+    <link rel="stylesheet" href="css/site.css">
+    <style>
+      /* An inline block after the linked sheet, so it wins on conflicts. */
+      .intro { color: #4a5568; }
+    </style>
+  </head>
+  <body>
+    <header class="masthead">
+      <img class="logo" src="logo.png" alt="Toy engine logo">
+      <div class="masthead-text">
+        <h1>Browser Engine Toy</h1>
+        <p class="tagline">HTML, CSS, JavaScript, images and navigation — from scratch in Rust.</p>
+      </div>
+      <nav class="masthead-nav">
+        <a class="nav-link" href="pages/about.html">About</a>
+        <a class="nav-link" href="#pipeline">Pipeline</a>
+      </nav>
+    </header>
+
+    <main>
+      <p class="intro">
+        This page is loaded through the engine's own resource loader: the stylesheet,
+        the script and both images below are separate fetches resolved against relative URLs.
+      </p>
+
+      <section class="card">
+        <h2>Scripted DOM mutation</h2>
+        <p id="status">Waiting for a click…</p>
+        <button id="counter">Clicks: 0</button>
+        <ul id="log"></ul>
+      </section>
+
+      <h2>Images</h2>
+      <div class="gallery">
+        <figure>
+          <img src="photo.jpg" alt="Generated JPEG" width="220">
+          <figcaption>JPEG, width attribute, height from the aspect ratio</figcaption>
+        </figure>
+        <figure>
+          <img class="cover" src="photo.jpg" alt="Cropped JPEG">
+          <figcaption>object-fit: cover in a square box</figcaption>
+        </figure>
+        <figure>
+          <img class="contain" src="assets/icon.png" alt="Icon from a subdirectory">
+          <figcaption>PNG with alpha, relative subdirectory</figcaption>
+        </figure>
+        <figure>
+          <img src="missing.png" alt="Missing file">
+          <figcaption>Broken source falls back to alt text</figcaption>
+        </figure>
+      </div>
+
+      <h2 id="pipeline">Pipeline</h2>
+      <div class="grid">
+        <div class="cell"><h3>Load</h3><p>URL resolution, file/http/in-memory loaders, subresource fetching.</p></div>
+        <div class="cell"><h3>Parse</h3><p>HTML tokenizer with raw text and implied end tags; CSS cascade.</p></div>
+        <div class="cell"><h3>Script</h3><p>Persistent JS runtime with a DOM API and event bubbling.</p></div>
+        <div class="cell"><h3>Layout</h3><p>Block, inline, flex, grid and table formatting.</p></div>
+        <div class="cell"><h3>Paint</h3><p>Display list, bitmaps, gradients, shadows, PPM output.</p></div>
+        <div class="cell"><h3>Navigate</h3><p>Link activation, history, back and forward.</p></div>
+      </div>
+
+      <table class="status-table">
+        <tr><th>Subsystem</th><th>State</th></tr>
+        <tr><td>Resource loading</td><td>file, http, in-memory</td></tr>
+        <tr><td>Images</td><td>PNG, JPEG, PPM</td></tr>
+        <tr><td>Navigation</td><td>links, history, reload</td></tr>
+      </table>
+    </main>
+
+    <footer>
+      <p>Toy Browser Engine · <a href="pages/about.html">About this page</a></p>
+    </footer>
+
+    <script src="js/app.js"></script>
+  </body>
+</html>

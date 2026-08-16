@@ -1,3 +1,3 @@
 pub mod node;
 
-pub use node::{ElementData, Node, NodeType};
+pub use node::{ControlState, ElementData, ElementId, Node, NodeType};

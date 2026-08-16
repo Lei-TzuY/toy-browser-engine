@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Fetch — Browser Engine Toy</title>
+    <link rel="stylesheet" href="css/site.css">
+    <link rel="stylesheet" href="css/async.css">
+    <link rel="stylesheet" href="css/fetch.css">
+  </head>
+  <body>
+    <header class="masthead">
+      <img class="logo" src="logo.png" alt="Toy engine logo">
+      <div class="masthead-text">
+        <h1>Fetch</h1>
+        <p class="tagline">Requests, responses, headers and bodies — all through the promise pipeline.</p>
+      </div>
+      <nav class="masthead-nav">
+        <a class="nav-link" href="index.html">Home</a>
+        <a class="nav-link" href="promise.html">Promises</a>
+      </nav>
+    </header>
+
+    <main>
+      <p class="intro">
+        Nothing below happens on the call stack. <code>fetch()</code> returns a
+        pending promise straight away; the request leaves on the next turn of
+        the event loop, the answer comes back as a task, and only then do the
+        <code>.then()</code> handlers run as microtasks.
+      </p>
+
+      <section class="card">
+        <h2>GET JSON</h2>
+        <p>Load <code>api/data.json</code>, parse it, and build the list from it.</p>
+        <div class="actions">
+          <button id="load">Load</button>
+        </div>
+        <p id="status" class="readout waiting">idle</p>
+        <ul id="cards" class="cards"></ul>
+      </section>
+
+      <section class="card">
+        <h2>GET text</h2>
+        <p><code>response.text()</code> on a plain-text resource.</p>
+        <div class="actions">
+          <button id="load-text">Read note</button>
+        </div>
+        <p id="note" class="readout waiting">not read yet</p>
+      </section>
+
+      <section class="card">
+        <h2>A missing resource</h2>
+        <p>A 404 <em>resolves</em>: only a network-level failure rejects.</p>
+        <div class="actions">
+          <button id="load-missing">Request /api/nowhere.json</button>
+        </div>
+        <p id="missing" class="readout waiting">not requested</p>
+      </section>
+
+      <section class="card">
+        <h2>POST</h2>
+        <p>A JSON body, with the headers to match.</p>
+        <div class="actions">
+          <button id="post">Send</button>
+        </div>
+        <p id="posted" class="readout waiting">nothing sent</p>
+        <p id="sent-body" class="note"></p>
+      </section>
+
+      <section class="card">
+        <h2>Several at once</h2>
+        <p><code>Promise.all</code> over three requests; the results keep their
+           input order however they finish.</p>
+        <div class="actions">
+          <button id="load-all">Load all three</button>
+        </div>
+        <p id="all" class="readout waiting">not started</p>
+      </section>
+
+      <section class="card">
+        <h2>Failure</h2>
+        <p>An origin this page may not reach, caught by <code>.catch()</code>.</p>
+        <div class="actions">
+          <button id="fail">Try a cross-origin request</button>
+        </div>
+        <p id="failure" class="readout waiting">not tried</p>
+      </section>
+    </main>
+
+    <footer>
+      <p>Toy Browser Engine · <a href="index.html">Back to the front page</a></p>
+    </footer>
+
+    <script src="js/fetch.js"></script>
+  </body>
+</html>

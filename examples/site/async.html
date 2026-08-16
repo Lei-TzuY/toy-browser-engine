@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Timers and animation — Browser Engine Toy</title>
+    <link rel="stylesheet" href="css/site.css">
+    <link rel="stylesheet" href="css/async.css">
+  </head>
+  <body>
+    <header class="masthead">
+      <img class="logo" src="logo.png" alt="Toy engine logo">
+      <div class="masthead-text">
+        <h1>Timers and animation</h1>
+        <p class="tagline">setTimeout, setInterval and requestAnimationFrame driving the page.</p>
+      </div>
+      <nav class="masthead-nav">
+        <a class="nav-link" href="index.html">Home</a>
+        <a class="nav-link" href="form.html">Forms</a>
+      </nav>
+    </header>
+
+    <main>
+      <p class="intro">
+        Nothing on this page is driven by input: the script schedules work and the
+        browser's event loop runs it. Every value below is written by a callback.
+      </p>
+
+      <section class="card">
+        <h2>setTimeout</h2>
+        <p>One shot, one second after load.</p>
+        <p id="timeout-status" class="readout waiting">waiting…</p>
+      </section>
+
+      <section class="card">
+        <h2>setInterval</h2>
+        <p>Counts once a second and stops itself at five.</p>
+        <p id="tick-count" class="readout">0</p>
+        <p id="interval-status" class="note">running</p>
+      </section>
+
+      <section class="card">
+        <h2>requestAnimationFrame</h2>
+        <p>The box is moved by a callback that re-registers itself each frame.</p>
+        <div class="track">
+          <div id="box" class="box"></div>
+        </div>
+        <p id="frame-status" class="note">frame 0</p>
+      </section>
+
+      <section class="card">
+        <h2>Start and cancel</h2>
+        <p>The buttons schedule and cancel work while the page is running.</p>
+        <div class="actions">
+          <button id="start">Start</button>
+          <button id="cancel">Cancel</button>
+        </div>
+        <p id="job-status" class="note">idle</p>
+        <ul id="log"></ul>
+      </section>
+
+      <section class="card">
+        <h2>DOM built by a timer</h2>
+        <p>A timer appends these rows after the page has already been painted.</p>
+        <ul id="generated"></ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>Toy Browser Engine · <a href="index.html">Back to the front page</a></p>
+    </footer>
+
+    <script src="js/async.js"></script>
+  </body>
+</html>

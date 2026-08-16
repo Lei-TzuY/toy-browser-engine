@@ -29,13 +29,64 @@ pub enum NodeType {
     Doctype(String),
 }
 
+/// A process-unique element identity.
+///
+/// DOM paths shift whenever the tree is restructured, so anything that has to
+/// remember *which element* across mutations — focus, form-control state —
+/// keys off this instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ElementId(u64);
+
+impl ElementId {
+    fn next() -> ElementId {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        ElementId(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Live state of a form control.
+///
+/// The DOM keeps a control's *current* value separate from its `value`
+/// attribute: the attribute is the default, and typing (or assigning to
+/// `.value`) makes the control "dirty" so the attribute no longer shows
+/// through. `None` here means "still mirroring the attribute".
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ControlState {
+    value: Option<String>,
+    checked: Option<bool>,
+    /// Caret position, counted in characters from the start of the value.
+    caret: usize,
+}
+
 /// Data stored on an element node.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ElementData {
     /// Lower-cased tag name, e.g. `"div"`.
     pub tag_name: String,
     /// Ordered list of (name, value) attribute pairs.
     pub attributes: Vec<(String, String)>,
+    /// Stable identity, minted per element.
+    id: ElementId,
+    /// Present once this element has behaved as a form control.
+    control: Option<Box<ControlState>>,
+}
+
+// Cloning an element produces a *new* element, as `cloneNode` does: it gets a
+// fresh identity rather than aliasing the original.
+impl Clone for ElementData {
+    fn clone(&self) -> Self {
+        Self {
+            tag_name: self.tag_name.clone(),
+            attributes: self.attributes.clone(),
+            id: ElementId::next(),
+            control: self.control.clone(),
+        }
+    }
 }
 
 impl ElementData {
@@ -43,7 +94,14 @@ impl ElementData {
         Self {
             tag_name: tag_name.into(),
             attributes,
+            id: ElementId::next(),
+            control: None,
         }
+    }
+
+    /// This element's stable identity.
+    pub fn element_id(&self) -> ElementId {
+        self.id
     }
 
     /// Look up an attribute value by name (case-insensitive).
@@ -56,11 +114,139 @@ impl ElementData {
 
     /// Set or update an attribute value by name.
     pub fn set_attr(&mut self, name: &str, val: &str) {
-        if let Some((_, v)) = self.attributes.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
+        if let Some((_, v)) = self
+            .attributes
+            .iter_mut()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        {
             *v = val.to_string();
         } else {
             self.attributes.push((name.to_string(), val.to_string()));
         }
+    }
+
+    /// Remove an attribute by name.
+    pub fn remove_attr(&mut self, name: &str) {
+        self.attributes
+            .retain(|(k, _)| !k.eq_ignore_ascii_case(name));
+    }
+
+    // ── Form controls ───────────────────────────────────────────────────────
+
+    /// The `type` of an `<input>`, lower-cased, defaulting to `text`.
+    pub fn input_type(&self) -> String {
+        self.get_attr("type")
+            .map(|t| t.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "text".to_string())
+    }
+
+    /// True for elements that hold a user-editable text value.
+    pub fn is_text_entry(&self) -> bool {
+        match self.tag_name.as_str() {
+            "textarea" => true,
+            "input" => matches!(
+                self.input_type().as_str(),
+                "text" | "search" | "url" | "tel" | "email" | "password" | "number"
+            ),
+            _ => false,
+        }
+    }
+
+    /// True for the two checkable input types.
+    pub fn is_checkable(&self) -> bool {
+        self.tag_name == "input" && matches!(self.input_type().as_str(), "checkbox" | "radio")
+    }
+
+    /// True for any element that participates in form submission.
+    pub fn is_form_control(&self) -> bool {
+        matches!(
+            self.tag_name.as_str(),
+            "input" | "textarea" | "select" | "button"
+        )
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.get_attr("disabled").is_some()
+    }
+
+    pub fn is_readonly(&self) -> bool {
+        self.get_attr("readonly").is_some()
+    }
+
+    /// The control's current value: the live one if it has been edited,
+    /// otherwise the `value` attribute.
+    pub fn control_value(&self) -> String {
+        match self.control.as_ref().and_then(|c| c.value.clone()) {
+            Some(live) => live,
+            None => self.get_attr("value").unwrap_or("").to_string(),
+        }
+    }
+
+    /// True while the control still mirrors its `value` attribute.
+    pub fn value_is_default(&self) -> bool {
+        self.control.as_ref().is_none_or(|c| c.value.is_none())
+    }
+
+    /// Set the live value, clamping the caret into it.
+    pub fn set_control_value(&mut self, value: impl Into<String>) {
+        let value = value.into();
+        let caret = value.chars().count();
+        let control = self.control_mut();
+        control.value = Some(value);
+        control.caret = control.caret.min(caret);
+    }
+
+    /// Drop the live value so the `value` attribute shows through again
+    /// (what `form.reset()` does).
+    pub fn reset_control_value(&mut self) {
+        if let Some(control) = self.control.as_mut() {
+            control.value = None;
+            control.caret = 0;
+        }
+    }
+
+    /// Current checkedness: the live one if toggled, else the attribute.
+    pub fn is_checked(&self) -> bool {
+        match self.control.as_ref().and_then(|c| c.checked) {
+            Some(live) => live,
+            None => self.get_attr("checked").is_some(),
+        }
+    }
+
+    pub fn set_checked(&mut self, checked: bool) {
+        self.control_mut().checked = Some(checked);
+    }
+
+    pub fn reset_checked(&mut self) {
+        if let Some(control) = self.control.as_mut() {
+            control.checked = None;
+        }
+    }
+
+    /// Caret position in characters, clamped to the current value.
+    pub fn caret(&self) -> usize {
+        let length = self.control_value().chars().count();
+        self.control
+            .as_ref()
+            .map(|c| c.caret)
+            .unwrap_or(0)
+            .min(length)
+    }
+
+    pub fn set_caret(&mut self, position: usize) {
+        let length = self.control_value().chars().count();
+        self.control_mut().caret = position.min(length);
+    }
+
+    /// True when a placeholder should be shown instead of the value
+    /// (drives `:placeholder-shown`).
+    pub fn placeholder_shown(&self) -> bool {
+        self.get_attr("placeholder").is_some_and(|p| !p.is_empty())
+            && self.control_value().is_empty()
+    }
+
+    fn control_mut(&mut self) -> &mut ControlState {
+        self.control.get_or_insert_with(Box::default)
     }
 }
 

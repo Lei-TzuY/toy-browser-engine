@@ -14,8 +14,15 @@ name = "browser_engine"
 path = "src/lib.rs"
 
 [dependencies]
+# Glyph rasterization. Image decoding follows the same principle: the engine
+# is written from scratch, but format codecs (like font rasterizers) are
+# delegated to focused, pure-Rust libraries.
 fontdue = "0.9.3"
 minifb = "0.28.0"
+png = "0.18.1"
+# Default features pull in rayon; a toy engine decodes one small image at a
+# time, so the single-threaded build keeps the dependency tree small.
+jpeg-decoder = { version = "0.3.2", default-features = false }
 
 [profile.dev]
 opt-level = 0

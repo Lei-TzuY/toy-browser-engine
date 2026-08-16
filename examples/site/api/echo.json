@@ -1,0 +1,4 @@
+{
+  "received": true,
+  "note": "the static backend answers a POST with this canned document; a real server would echo the body"
+}

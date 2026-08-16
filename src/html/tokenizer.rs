@@ -15,8 +15,9 @@
 //  AttributeValueSingleQuoted · AttributeValueUnquoted · AfterAttributeValue
 //  MarkupDeclarationOpen · Comment{Start,StartDash} · Comment · CommentEndDash
 //  CommentEnd · Doctype · BeforeDoctypeName · DoctypeName
+//  RawText (script/style RAWTEXT and textarea/title RCDATA)
 //
-//  Not implemented (error recovery, CDATA, script raw text, etc.)
+//  Not implemented (error recovery, CDATA, foreign content, etc.)
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attribute {
@@ -28,9 +29,7 @@ pub struct Attribute {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     /// `<!DOCTYPE html>`
-    Doctype {
-        name: String,
-    },
+    Doctype { name: String },
     /// `<tag attr="val" …>` or `<tag />`
     StartTag {
         name: String,
@@ -38,9 +37,7 @@ pub enum Token {
         attributes: Vec<Attribute>,
     },
     /// `</tag>`
-    EndTag {
-        name: String,
-    },
+    EndTag { name: String },
     /// A run of characters (may be a single char internally, but we merge runs).
     Character(char),
     /// `<!-- … -->`
@@ -75,6 +72,23 @@ enum State {
     Doctype,
     BeforeDoctypeName,
     DoctypeName,
+    /// Everything up to the matching end tag is text, not markup.
+    /// `escapable` marks RCDATA (`<textarea>`, `<title>`), where character
+    /// references are still decoded; RAWTEXT (`<script>`, `<style>`) is verbatim.
+    RawText {
+        tag: String,
+        escapable: bool,
+    },
+}
+
+/// Elements whose content is text rather than markup, and whether that text is
+/// RCDATA (character references decoded) rather than RAWTEXT (verbatim).
+fn raw_text_kind(tag: &str) -> Option<bool> {
+    match tag {
+        "script" | "style" => Some(false),
+        "textarea" | "title" => Some(true),
+        _ => None,
+    }
 }
 
 /// Temporary token being assembled before it is emitted.
@@ -123,6 +137,8 @@ pub struct Tokenizer<'a> {
     current: CurrentToken,
     /// Internal queue; emitting multiple tokens at once is rare but happens.
     queue: Vec<Token>,
+    /// Set when a raw-text start tag was just emitted; consumed on the next step.
+    pending_raw_text: Option<(String, bool)>,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -133,6 +149,7 @@ impl<'a> Tokenizer<'a> {
             state: State::Data,
             current: CurrentToken::default(),
             queue: Vec::new(),
+            pending_raw_text: None,
         }
     }
 
@@ -157,10 +174,41 @@ impl<'a> Tokenizer<'a> {
         self.pos += n;
     }
 
+    /// True when the input at the cursor is `</tag` followed by a tag-name
+    /// terminator — the only sequence that ends a raw-text element.
+    fn at_end_tag_for(&self, tag: &str) -> bool {
+        if !self.starts_with("</") {
+            return false;
+        }
+        let start = self.pos + 2;
+        let name: Vec<char> = tag.chars().collect();
+        if self.input.len() < start + name.len() {
+            return false;
+        }
+        if !self.input[start..start + name.len()]
+            .iter()
+            .zip(&name)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
+            return false;
+        }
+        match self.input.get(start + name.len()) {
+            None => true,
+            Some(c) => c.is_ascii_whitespace() || *c == '>' || *c == '/',
+        }
+    }
+
     fn emit_current_tag(&mut self) {
         let tok = if self.current.is_start {
+            let name = std::mem::take(&mut self.current.name);
+            // A raw-text element switches tokenization mode for its content.
+            if !self.current.self_closing {
+                if let Some(escapable) = raw_text_kind(&name) {
+                    self.pending_raw_text = Some((name.clone(), escapable));
+                }
+            }
             Token::StartTag {
-                name: std::mem::take(&mut self.current.name),
+                name,
                 self_closing: self.current.self_closing,
                 attributes: std::mem::take(&mut self.current.attributes),
             }
@@ -188,6 +236,14 @@ impl<'a> Tokenizer<'a> {
     /// Advance the state machine one or more characters and push any newly
     /// emitted tokens onto `self.queue`.  Returns `false` when EOF is reached.
     fn step(&mut self) -> bool {
+        // A raw-text start tag was emitted on the previous step; every emitting
+        // state returns to Data, so the switch is applied here instead.
+        if self.state == State::Data {
+            if let Some((tag, escapable)) = self.pending_raw_text.take() {
+                self.state = State::RawText { tag, escapable };
+            }
+        }
+
         match self.state.clone() {
             // ── Data ──────────────────────────────────────────────────────
             State::Data => match self.consume() {
@@ -614,6 +670,33 @@ impl<'a> Tokenizer<'a> {
                 }
             },
 
+            // ── RawText (RAWTEXT / RCDATA) ────────────────────────────────
+            State::RawText { tag, escapable } => {
+                // Consume the whole element content in one step: nothing inside
+                // is markup, so there is no state to interleave.
+                loop {
+                    match self.peek() {
+                        None => {
+                            self.queue.push(Token::Eof);
+                            return false;
+                        }
+                        Some('<') if self.at_end_tag_for(&tag) => {
+                            self.state = State::Data;
+                            break;
+                        }
+                        Some('&') if escapable => {
+                            self.consume();
+                            let c = self.try_consume_char_ref().unwrap_or('&');
+                            self.queue.push(Token::Character(c));
+                        }
+                        Some(c) => {
+                            self.consume();
+                            self.queue.push(Token::Character(c));
+                        }
+                    }
+                }
+            }
+
             State::DoctypeName => match self.consume() {
                 Some(c) if c.is_ascii_whitespace() => {
                     // ignore trailing whitespace in name
@@ -644,7 +727,9 @@ impl<'a> Tokenizer<'a> {
     fn try_consume_char_ref(&mut self) -> Option<char> {
         let restore = self.pos;
         let result = self.parse_char_ref_inner();
-        if result.is_none() { self.pos = restore; }
+        if result.is_none() {
+            self.pos = restore;
+        }
         result
     }
 
@@ -652,16 +737,26 @@ impl<'a> Tokenizer<'a> {
         if self.peek() == Some('#') {
             self.pos += 1;
             let is_hex = matches!(self.peek(), Some('x') | Some('X'));
-            if is_hex { self.pos += 1; }
+            if is_hex {
+                self.pos += 1;
+            }
             let start = self.pos;
-            while self.peek().map_or(false, |c| {
-                if is_hex { c.is_ascii_hexdigit() } else { c.is_ascii_digit() }
+            while self.peek().is_some_and(|c| {
+                if is_hex {
+                    c.is_ascii_hexdigit()
+                } else {
+                    c.is_ascii_digit()
+                }
             }) {
                 self.pos += 1;
             }
-            if self.pos == start { return None; }
+            if self.pos == start {
+                return None;
+            }
             let digits: String = self.input[start..self.pos].iter().collect();
-            if self.peek() == Some(';') { self.pos += 1; }
+            if self.peek() == Some(';') {
+                self.pos += 1;
+            }
             let code: u32 = if is_hex {
                 u32::from_str_radix(&digits, 16).ok()?
             } else {
@@ -670,12 +765,16 @@ impl<'a> Tokenizer<'a> {
             char::from_u32(code)
         } else {
             let start = self.pos;
-            while self.peek().map_or(false, |c| c.is_ascii_alphanumeric()) {
+            while self.peek().is_some_and(|c| c.is_ascii_alphanumeric()) {
                 self.pos += 1;
             }
-            if self.pos == start { return None; }
+            if self.pos == start {
+                return None;
+            }
             let name: String = self.input[start..self.pos].iter().collect();
-            if self.peek() == Some(';') { self.pos += 1; }
+            if self.peek() == Some(';') {
+                self.pos += 1;
+            }
             named_char_ref(&name)
         }
     }
@@ -693,7 +792,7 @@ impl<'a> Tokenizer<'a> {
                 }
             }
             // Drain whatever was emitted (may include Token::Eof).
-            tokens.extend(self.queue.drain(..));
+            tokens.append(&mut self.queue);
             // Stop after EOF — do NOT call step() again, it would loop.
             if reached_eof {
                 break;
@@ -708,72 +807,72 @@ impl<'a> Tokenizer<'a> {
 fn named_char_ref(name: &str) -> Option<char> {
     Some(match name {
         // Essential
-        "amp"    => '&',
-        "lt"     => '<',
-        "gt"     => '>',
-        "quot"   => '"',
-        "apos"   => '\'',
-        "nbsp"   => '\u{00A0}',
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{00A0}',
         // Typography
-        "mdash"  => '\u{2014}',
-        "ndash"  => '\u{2013}',
+        "mdash" => '\u{2014}',
+        "ndash" => '\u{2013}',
         "hellip" => '\u{2026}',
-        "lsquo"  => '\u{2018}',
-        "rsquo"  => '\u{2019}',
-        "ldquo"  => '\u{201C}',
-        "rdquo"  => '\u{201D}',
-        "laquo"  => '\u{00AB}',
-        "raquo"  => '\u{00BB}',
+        "lsquo" => '\u{2018}',
+        "rsquo" => '\u{2019}',
+        "ldquo" => '\u{201C}',
+        "rdquo" => '\u{201D}',
+        "laquo" => '\u{00AB}',
+        "raquo" => '\u{00BB}',
         // Currency / symbols
-        "copy"   => '\u{00A9}',
-        "reg"    => '\u{00AE}',
-        "trade"  => '\u{2122}',
-        "euro"   => '\u{20AC}',
-        "pound"  => '\u{00A3}',
-        "yen"    => '\u{00A5}',
-        "cent"   => '\u{00A2}',
+        "copy" => '\u{00A9}',
+        "reg" => '\u{00AE}',
+        "trade" => '\u{2122}',
+        "euro" => '\u{20AC}',
+        "pound" => '\u{00A3}',
+        "yen" => '\u{00A5}',
+        "cent" => '\u{00A2}',
         // Math / misc
-        "deg"    => '\u{00B0}',
+        "deg" => '\u{00B0}',
         "plusmn" => '\u{00B1}',
-        "times"  => '\u{00D7}',
+        "times" => '\u{00D7}',
         "divide" => '\u{00F7}',
         "frac12" => '\u{00BD}',
         "frac14" => '\u{00BC}',
         "frac34" => '\u{00BE}',
-        "sup2"   => '\u{00B2}',
-        "sup3"   => '\u{00B3}',
-        "infin"  => '\u{221E}',
-        "pi"     => '\u{03C0}',
-        "mu"     => '\u{03BC}',
-        "alpha"  => '\u{03B1}',
-        "beta"   => '\u{03B2}',
-        "gamma"  => '\u{03B3}',
-        "delta"  => '\u{03B4}',
-        "sigma"  => '\u{03C3}',
-        "Omega"  => '\u{03A9}',
+        "sup2" => '\u{00B2}',
+        "sup3" => '\u{00B3}',
+        "infin" => '\u{221E}',
+        "pi" => '\u{03C0}',
+        "mu" => '\u{03BC}',
+        "alpha" => '\u{03B1}',
+        "beta" => '\u{03B2}',
+        "gamma" => '\u{03B3}',
+        "delta" => '\u{03B4}',
+        "sigma" => '\u{03C3}',
+        "Omega" => '\u{03A9}',
         // Arrows
-        "rarr"   => '\u{2192}',
-        "larr"   => '\u{2190}',
-        "uarr"   => '\u{2191}',
-        "darr"   => '\u{2193}',
-        "harr"   => '\u{2194}',
+        "rarr" => '\u{2192}',
+        "larr" => '\u{2190}',
+        "uarr" => '\u{2191}',
+        "darr" => '\u{2193}',
+        "harr" => '\u{2194}',
         // Misc symbols
-        "check"  => '\u{2713}',
+        "check" => '\u{2713}',
         "hearts" => '\u{2665}',
-        "diams"  => '\u{2666}',
-        "clubs"  => '\u{2663}',
+        "diams" => '\u{2666}',
+        "clubs" => '\u{2663}',
         "spades" => '\u{2660}',
-        "star"   => '\u{2605}',
-        "bull"   => '\u{2022}',
+        "star" => '\u{2605}',
+        "bull" => '\u{2022}',
         "middot" => '\u{00B7}',
         "dagger" => '\u{2020}',
         "Dagger" => '\u{2021}',
-        "sect"   => '\u{00A7}',
-        "para"   => '\u{00B6}',
+        "sect" => '\u{00A7}',
+        "para" => '\u{00B6}',
         "permil" => '\u{2030}',
-        "prime"  => '\u{2032}',
-        "Prime"  => '\u{2033}',
-        "oline"  => '\u{203E}',
+        "prime" => '\u{2032}',
+        "Prime" => '\u{2033}',
+        "oline" => '\u{203E}',
         _ => return None,
     })
 }
@@ -793,6 +892,80 @@ mod tests {
         tokens.into_iter().filter(|t| *t != Token::Eof).collect()
     }
 
+    /// All `Character` tokens joined back into a string.
+    fn text(tokens: &[Token]) -> String {
+        tokens
+            .iter()
+            .filter_map(|t| match t {
+                Token::Character(c) => Some(*c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // ── Raw text (RAWTEXT / RCDATA) ───────────────────────────────────────
+
+    #[test]
+    fn script_content_is_raw_text() {
+        let tokens = non_eof(tokenize("<script>if (a < b && c > d) { x(); }</script>"));
+        assert_eq!(text(&tokens), "if (a < b && c > d) { x(); }");
+        // `<` inside the script must not have produced any tags.
+        let tags = tokens
+            .iter()
+            .filter(|t| matches!(t, Token::StartTag { .. }))
+            .count();
+        assert_eq!(tags, 1);
+        assert!(matches!(tokens.last(), Some(Token::EndTag { name }) if name == "script"));
+    }
+
+    #[test]
+    fn script_content_keeps_markup_looking_text_verbatim() {
+        let tokens = non_eof(tokenize(r#"<script>el.innerHTML = "<b>hi</b>";</script>"#));
+        assert_eq!(text(&tokens), r#"el.innerHTML = "<b>hi</b>";"#);
+    }
+
+    #[test]
+    fn script_entities_are_not_decoded() {
+        let tokens = non_eof(tokenize("<script>a &amp;&amp; b</script>"));
+        assert_eq!(text(&tokens), "a &amp;&amp; b");
+    }
+
+    #[test]
+    fn style_content_is_raw_text() {
+        let tokens = non_eof(tokenize("<style>a > b { color: red; }</style>"));
+        assert_eq!(text(&tokens), "a > b { color: red; }");
+    }
+
+    #[test]
+    fn textarea_is_rcdata_so_entities_decode() {
+        let tokens = non_eof(tokenize("<textarea>1 &lt; 2</textarea>"));
+        assert_eq!(text(&tokens), "1 < 2");
+    }
+
+    #[test]
+    fn raw_text_end_tag_matching_is_case_insensitive() {
+        let tokens = non_eof(tokenize("<script>x</SCRIPT>"));
+        assert_eq!(text(&tokens), "x");
+        assert!(matches!(tokens.last(), Some(Token::EndTag { name }) if name == "script"));
+    }
+
+    #[test]
+    fn unterminated_raw_text_reaches_eof_cleanly() {
+        let tokens = tokenize("<script>let a = 1;");
+        assert!(tokens.contains(&Token::Eof));
+    }
+
+    #[test]
+    fn self_closing_script_does_not_swallow_the_document() {
+        let tokens = non_eof(tokenize("<script src='a.js'/><p>after</p>"));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::StartTag { name, .. } if name == "p")),
+            "content after a self-closing script must still be parsed"
+        );
+    }
+
     #[test]
     fn simple_element() {
         let tokens = non_eof(tokenize("<p>hello</p>"));
@@ -810,8 +983,13 @@ mod tests {
 
     #[test]
     fn attributes() {
-        let tokens = non_eof(tokenize(r#"<a href="https://example.com" class='link'>text</a>"#));
-        if let Token::StartTag { name, attributes, .. } = &tokens[0] {
+        let tokens = non_eof(tokenize(
+            r#"<a href="https://example.com" class='link'>text</a>"#,
+        ));
+        if let Token::StartTag {
+            name, attributes, ..
+        } = &tokens[0]
+        {
             assert_eq!(name, "a");
             assert_eq!(attributes[0].name, "href");
             assert_eq!(attributes[0].value, "https://example.com");
@@ -844,16 +1022,28 @@ mod tests {
     #[test]
     fn doctype() {
         let tokens = non_eof(tokenize("<!DOCTYPE html>"));
-        assert_eq!(tokens[0], Token::Doctype { name: "html".into() });
+        assert_eq!(
+            tokens[0],
+            Token::Doctype {
+                name: "html".into()
+            }
+        );
     }
 
     #[test]
     fn named_entity_amp() {
         let chars: Vec<char> = "a &amp; b".chars().collect();
         let tokens = non_eof(Tokenizer::new(&chars).tokenize());
-        let text: String = tokens.iter().filter_map(|t| {
-            if let Token::Character(c) = t { Some(*c) } else { None }
-        }).collect();
+        let text: String = tokens
+            .iter()
+            .filter_map(|t| {
+                if let Token::Character(c) = t {
+                    Some(*c)
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(text, "a & b");
     }
 

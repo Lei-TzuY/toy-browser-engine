@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Promises and microtasks — Browser Engine Toy</title>
+    <link rel="stylesheet" href="css/site.css">
+    <link rel="stylesheet" href="css/async.css">
+  </head>
+  <body>
+    <header class="masthead">
+      <img class="logo" src="logo.png" alt="Toy engine logo">
+      <div class="masthead-text">
+        <h1>Promises and microtasks</h1>
+        <p class="tagline">Task versus microtask ordering, chaining, rejection and Promise.all.</p>
+      </div>
+      <nav class="masthead-nav">
+        <a class="nav-link" href="index.html">Home</a>
+        <a class="nav-link" href="async.html">Timers</a>
+        <a class="nav-link" href="fetch.html">Fetch</a>
+      </nav>
+    </header>
+
+    <main>
+      <p class="intro">
+        The log below is written in the order things actually ran. Microtasks —
+        promise reactions and <code>queueMicrotask</code> — run after the script
+        that queued them but before any timer, which is why the sequence looks
+        the way it does.
+      </p>
+
+      <section class="card">
+        <h2>Execution order</h2>
+        <ol id="order-log" class="order"></ol>
+      </section>
+
+      <section class="card">
+        <h2>Chaining</h2>
+        <p>Each link adds one, and the last one writes the result.</p>
+        <p id="chain" class="readout waiting">running…</p>
+      </section>
+
+      <section class="card">
+        <h2>Rejection and recovery</h2>
+        <p>A thrown value becomes a rejection, <code>catch</code> recovers, and
+           <code>finally</code> always runs.</p>
+        <p id="rejection" class="readout waiting">running…</p>
+        <p id="cleanup" class="note">finally has not run yet</p>
+      </section>
+
+      <section class="card">
+        <h2>Promise.all with a timer</h2>
+        <p>Two immediate values and one that resolves from a 600ms timer.</p>
+        <p id="all" class="readout waiting">waiting for every promise…</p>
+      </section>
+
+      <section class="card">
+        <h2>Promise driving the DOM</h2>
+        <p>A chain that waits on a timer, then appends rows.</p>
+        <ul id="rows"></ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>Toy Browser Engine · <a href="index.html">Back to the front page</a></p>
+    </footer>
+
+    <script src="js/promise.js"></script>
+  </body>
+</html>
