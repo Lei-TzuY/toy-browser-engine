@@ -16,9 +16,12 @@ use std::time::Duration;
 
 use crate::document::{Document, LoopReport, PageAction, PointerState};
 use crate::eventloop::{Clock, RealClock};
-use crate::forms::{Submission, SubmissionMethod};
+use crate::forms::{encode_form_entries, Submission, SubmissionMethod};
 use crate::input::KeyEvent;
-use crate::net::{DefaultNetwork, LoadError, NetworkBackend, ResourceLoader, Url};
+use crate::net::{
+    DefaultNetwork, FetchError, FetchRequest, HeaderMap, LoadError, Method, NetworkBackend,
+    ResourceLoader, Url,
+};
 use crate::script::NodePath;
 
 /// How long one idle turn of [`Browser::settle_network`] waits on the network
@@ -438,19 +441,59 @@ impl Browser {
 
     /// Navigate to a prepared form submission.
     fn perform_submission(&mut self, submission: Submission) -> ClickOutcome {
-        if submission.method == SubmissionMethod::Post {
-            // The loader only issues GETs; say so rather than silently
-            // downgrading the request to one.
-            return ClickOutcome::NavigationFailed {
-                url: submission.url.clone(),
-                error: LoadError::UnsupportedScheme("form method=post".into()),
-            };
+        match submission.method {
+            SubmissionMethod::Get => match self.navigate(&submission.url) {
+                Ok(()) => ClickOutcome::Navigated(submission.url),
+                Err(error) => ClickOutcome::NavigationFailed {
+                    url: submission.url,
+                    error,
+                },
+            },
+            SubmissionMethod::Post => self.perform_post_submission(submission),
         }
-        match self.navigate(&submission.url) {
-            Ok(()) => ClickOutcome::Navigated(submission.url),
+    }
+
+    /// Submit a URL-encoded form body and navigate to the HTML response.
+    ///
+    /// This deliberately goes through the same `ResourceLoader::fetch` path
+    /// JavaScript `fetch()` uses, so HTTP method/body/redirect handling stays
+    /// in one transport implementation. Static loaders answer POST with 405;
+    /// real HTTP loaders put the request on the wire.
+    fn perform_post_submission(&mut self, submission: Submission) -> ClickOutcome {
+        let body = encode_form_entries(&submission.entries).into_bytes();
+        let mut headers = HeaderMap::new();
+        headers.insert_raw(
+            "content-type",
+            "application/x-www-form-urlencoded; charset=UTF-8",
+        );
+        let request = FetchRequest::new(
+            submission.url.clone(),
+            Method::Post,
+            headers,
+            Some(body),
+        );
+
+        match self.loader.fetch(&request) {
+            Ok(response) if response.ok() => {
+                let final_url = response.url.clone();
+                let html = String::from_utf8_lossy(&response.body);
+                let document = Document::from_html(&html, &final_url, self.loader.as_ref());
+                self.replace_document(document);
+                self.history.truncate(self.index + 1);
+                self.history.push(final_url.clone());
+                self.index = self.history.len() - 1;
+                ClickOutcome::Navigated(final_url)
+            }
+            Ok(response) => ClickOutcome::NavigationFailed {
+                url: response.url.clone(),
+                error: LoadError::HttpStatus {
+                    url: response.url.to_string(),
+                    status: response.status,
+                },
+            },
             Err(error) => ClickOutcome::NavigationFailed {
-                url: submission.url,
-                error,
+                url: submission.url.clone(),
+                error: load_error_from_fetch(&submission.url, error),
             },
         }
     }
@@ -481,6 +524,18 @@ impl Browser {
         pointer: &PointerState,
     ) -> crate::paint::Canvas {
         self.document.render(width, height, scroll_y, pointer)
+    }
+}
+
+fn load_error_from_fetch(url: &Url, error: FetchError) -> LoadError {
+    match error {
+        FetchError::InvalidUrl(text) => LoadError::InvalidUrl(text),
+        FetchError::UnsupportedScheme(scheme) => LoadError::UnsupportedScheme(scheme),
+        FetchError::TooManyRedirects(target) => LoadError::TooManyRedirects(target),
+        other => LoadError::Io {
+            url: url.to_string(),
+            message: other.to_string(),
+        },
     }
 }
 
