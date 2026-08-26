@@ -117,6 +117,30 @@ pub fn form_controls(dom: &Node, form_path: &[usize]) -> Vec<NodePath> {
     }
 }
 
+/// True when an element can be the submitter for a normal form submission.
+pub fn is_submit_control(element: &ElementData) -> bool {
+    if element.is_disabled() {
+        return false;
+    }
+    match element.tag_name.as_str() {
+        "button" => element
+            .get_attr("type")
+            .map(|kind| kind.eq_ignore_ascii_case("submit"))
+            .unwrap_or(true),
+        "input" => element.input_type() == "submit",
+        _ => false,
+    }
+}
+
+/// The first enabled submit button used by implicit Enter submission.
+pub fn implicit_submitter(dom: &Node, form_path: &[usize]) -> Option<NodePath> {
+    form_controls(dom, form_path).into_iter().find(|path| {
+        dom_api::node_at(dom, path)
+            .and_then(|node| node.as_element())
+            .is_some_and(is_submit_control)
+    })
+}
+
 /// The control a bare Enter press should submit through, if the form has a
 /// single-line text field (HTML's "implicit submission").
 pub fn allows_implicit_submission(dom: &Node, form_path: &[usize]) -> bool {
@@ -126,23 +150,79 @@ pub fn allows_implicit_submission(dom: &Node, form_path: &[usize]) -> bool {
         .any(|element| element.tag_name == "input" && element.is_text_entry())
 }
 
+/// Whether interactive constraint validation is skipped for this submission.
+///
+/// `<form novalidate>` applies to every interactive submission. A submit button
+/// may opt out independently with `formnovalidate`.
+pub fn submission_skips_validation(
+    dom: &Node,
+    form_path: &[usize],
+    submitter: Option<&[usize]>,
+) -> bool {
+    let Some(form) = dom_api::node_at(dom, form_path).and_then(|node| node.as_element()) else {
+        return false;
+    };
+    if form.get_attr("novalidate").is_some() {
+        return true;
+    }
+    valid_submitter(dom, form_path, submitter)
+        .and_then(|path| dom_api::node_at(dom, path))
+        .and_then(|node| node.as_element())
+        .is_some_and(|element| element.get_attr("formnovalidate").is_some())
+}
+
+fn valid_submitter<'a>(
+    dom: &'a Node,
+    form_path: &[usize],
+    submitter: Option<&'a [usize]>,
+) -> Option<&'a [usize]> {
+    let path = submitter?;
+    if owning_form(dom, path).as_deref() != Some(form_path) {
+        return None;
+    }
+    let element = dom_api::node_at(dom, path)?.as_element()?;
+    is_submit_control(element).then_some(path)
+}
+
 // ── Submission ────────────────────────────────────────────────────────────────
 
 /// One `name=value` pair from a successful control.
 pub type FormEntry = (String, String);
 
 /// The submittable name/value pairs of a form, in document order.
-///
-/// A control is "successful" when it has a name, is not disabled, and — for
-/// checkboxes and radios — is checked. Buttons only submit when they are the
-/// control that triggered the submission, so they are never collected here.
 pub fn form_data(dom: &Node, form_path: &[usize]) -> Vec<FormEntry> {
+    form_data_with_submitter(dom, form_path, None)
+}
+
+/// The successful controls for a submission, including only the submit button
+/// that actually triggered it.
+pub fn form_data_with_submitter(
+    dom: &Node,
+    form_path: &[usize],
+    submitter: Option<&[usize]>,
+) -> Vec<FormEntry> {
+    let submitter = valid_submitter(dom, form_path, submitter);
     let mut entries = Vec::new();
     for path in form_controls(dom, form_path) {
         let Some(element) = dom_api::node_at(dom, &path).and_then(|n| n.as_element()) else {
             continue;
         };
-        if element.is_disabled() || element.tag_name == "button" {
+        if element.is_disabled() {
+            continue;
+        }
+
+        let is_submitter = submitter.is_some_and(|candidate| candidate == path.as_slice());
+        if is_submitter {
+            if let Some(name) = element.get_attr("name").filter(|name| !name.is_empty()) {
+                entries.push((
+                    name.to_string(),
+                    element.get_attr("value").unwrap_or("").to_string(),
+                ));
+            }
+            continue;
+        }
+
+        if element.tag_name == "button" {
             continue;
         }
         let Some(name) = element.get_attr("name").filter(|n| !n.is_empty()) else {
@@ -205,7 +285,6 @@ pub fn encode_form_entries(entries: &[FormEntry]) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmissionMethod {
     Get,
-    /// POST is recognised but not performed: the loader only issues GETs.
     Post,
 }
 
@@ -217,21 +296,47 @@ pub struct Submission {
     pub entries: Vec<FormEntry>,
 }
 
-/// Build the navigation a form submission implies.
-///
-/// `action` is resolved against `base`; for GET the entries replace the
-/// query string, exactly as the HTML spec's "mutate action URL" step does.
-pub fn prepare_submission(dom: &Node, form_path: &[usize], base: &Url) -> Option<Submission> {
-    let form = dom_api::node_at(dom, form_path)?.as_element()?;
-    let method = match form
-        .get_attr("method")
-        .map(|m| m.trim().to_ascii_lowercase())
-    {
-        Some(m) if m == "post" => SubmissionMethod::Post,
+fn parse_method(value: Option<&str>) -> SubmissionMethod {
+    match value.map(|method| method.trim().to_ascii_lowercase()) {
+        Some(method) if method == "post" => SubmissionMethod::Post,
         _ => SubmissionMethod::Get,
+    }
+}
+
+/// Build a form submission without a distinguished submit button.
+pub fn prepare_submission(dom: &Node, form_path: &[usize], base: &Url) -> Option<Submission> {
+    prepare_submission_with_submitter(dom, form_path, None, base)
+}
+
+/// Build the navigation a form submission implies, honoring submitter
+/// overrides (`formaction`, `formmethod`) and including its `name=value` pair.
+pub fn prepare_submission_with_submitter(
+    dom: &Node,
+    form_path: &[usize],
+    submitter: Option<&[usize]>,
+    base: &Url,
+) -> Option<Submission> {
+    let form = dom_api::node_at(dom, form_path)?.as_element()?;
+    let submitter = valid_submitter(dom, form_path, submitter);
+    let submitter_element = submitter
+        .and_then(|path| dom_api::node_at(dom, path))
+        .and_then(|node| node.as_element());
+
+    let method = if let Some(element) = submitter_element {
+        match element.get_attr("formmethod") {
+            Some(value) => parse_method(Some(value)),
+            None => parse_method(form.get_attr("method")),
+        }
+    } else {
+        parse_method(form.get_attr("method"))
     };
 
-    let action = form.get_attr("action").unwrap_or("").trim().to_string();
+    let action = submitter_element
+        .and_then(|element| element.get_attr("formaction"))
+        .or_else(|| form.get_attr("action"))
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let target = if action.is_empty() {
         // An empty action submits back to the current document.
         base.clone()
@@ -239,7 +344,7 @@ pub fn prepare_submission(dom: &Node, form_path: &[usize], base: &Url) -> Option
         base.join(&action).ok()?
     };
 
-    let entries = form_data(dom, form_path);
+    let entries = form_data_with_submitter(dom, form_path, submitter);
     let url = match method {
         SubmissionMethod::Get => {
             let query = encode_form_entries(&entries);
@@ -390,7 +495,6 @@ mod tests {
             form_data(&dom, &form),
             vec![
                 ("a".to_string(), "1".to_string()),
-                // No value attribute: a checked box submits "on".
                 ("c".to_string(), "on".to_string())
             ]
         );
@@ -407,6 +511,34 @@ mod tests {
         assert_eq!(
             form_data(&dom, &form),
             vec![("q".to_string(), "typed".to_string())]
+        );
+    }
+
+    #[test]
+    fn clicked_submitter_is_included_in_document_order() {
+        let (dom, form) = form_of(
+            r#"<form><input name="before" value="1"><button id="save" name="intent" value="save">Save</button><input name="after" value="2"><button id="other" name="intent" value="other">Other</button></form>"#,
+        );
+        let save = dom_api::get_element_by_id(&dom, "save").unwrap();
+        assert_eq!(
+            form_data_with_submitter(&dom, &form, Some(&save)),
+            vec![
+                ("before".into(), "1".into()),
+                ("intent".into(), "save".into()),
+                ("after".into(), "2".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_a_real_submitter_is_included() {
+        let (dom, form) = form_of(
+            r#"<form><input id="q" name="q" value="v"><button id="reset" type="reset" name="intent" value="reset">Reset</button></form>"#,
+        );
+        let reset = dom_api::get_element_by_id(&dom, "reset").unwrap();
+        assert_eq!(
+            form_data_with_submitter(&dom, &form, Some(&reset)),
+            vec![("q".into(), "v".into())]
         );
     }
 
@@ -458,8 +590,64 @@ mod tests {
         let base = Url::parse("http://example.com/").unwrap();
         let submission = prepare_submission(&dom, &form, &base).unwrap();
         assert_eq!(submission.method, SubmissionMethod::Post);
-        // The query is not appended for POST.
         assert_eq!(submission.url.to_string(), "http://example.com/p");
+    }
+
+    #[test]
+    fn submitter_overrides_action_method_and_payload() {
+        let (dom, form) = form_of(
+            r#"<form action="/default" method="get"><input name="q" value="v"><button id="publish" name="intent" value="publish" formaction="/publish" formmethod="post">Publish</button></form>"#,
+        );
+        let publish = dom_api::get_element_by_id(&dom, "publish").unwrap();
+        let base = Url::parse("http://example.com/editor").unwrap();
+        let submission =
+            prepare_submission_with_submitter(&dom, &form, Some(&publish), &base).unwrap();
+        assert_eq!(submission.method, SubmissionMethod::Post);
+        assert_eq!(submission.url.to_string(), "http://example.com/publish");
+        assert_eq!(
+            submission.entries,
+            vec![("q".into(), "v".into()), ("intent".into(), "publish".into())]
+        );
+    }
+
+    #[test]
+    fn submitter_get_override_uses_its_own_query_payload() {
+        let (dom, form) = form_of(
+            r#"<form action="/save" method="post"><input name="q" value="v"><input id="preview" type="submit" name="mode" value="preview" formaction="/preview?old=1" formmethod="get"></form>"#,
+        );
+        let preview = dom_api::get_element_by_id(&dom, "preview").unwrap();
+        let base = Url::parse("http://example.com/editor").unwrap();
+        let submission =
+            prepare_submission_with_submitter(&dom, &form, Some(&preview), &base).unwrap();
+        assert_eq!(submission.method, SubmissionMethod::Get);
+        assert_eq!(
+            submission.url.to_string(),
+            "http://example.com/preview?q=v&mode=preview"
+        );
+    }
+
+    #[test]
+    fn implicit_submitter_is_the_first_enabled_submit_button() {
+        let (dom, form) = form_of(
+            r#"<form><input name="q"><button disabled>Disabled</button><button id="first" name="go" value="1">First</button><input id="second" type="submit" name="go" value="2"></form>"#,
+        );
+        let first = dom_api::get_element_by_id(&dom, "first").unwrap();
+        assert_eq!(implicit_submitter(&dom, &form), Some(first));
+    }
+
+    #[test]
+    fn novalidate_and_formnovalidate_skip_interactive_validation() {
+        let (dom, form) = form_of(r#"<form novalidate><input required><button id="go">Go</button></form>"#);
+        let go = dom_api::get_element_by_id(&dom, "go").unwrap();
+        assert!(submission_skips_validation(&dom, &form, Some(&go)));
+
+        let (dom, form) = form_of(
+            r#"<form><input required><button id="normal">Normal</button><button id="draft" formnovalidate>Draft</button></form>"#,
+        );
+        let normal = dom_api::get_element_by_id(&dom, "normal").unwrap();
+        let draft = dom_api::get_element_by_id(&dom, "draft").unwrap();
+        assert!(!submission_skips_validation(&dom, &form, Some(&normal)));
+        assert!(submission_skips_validation(&dom, &form, Some(&draft)));
     }
 
     #[test]
