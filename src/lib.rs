@@ -23,6 +23,7 @@ pub mod paint;
 pub mod script;
 pub mod style;
 pub mod text;
+pub mod validation;
 
 pub use browser::Browser;
 pub use document::{Document, PointerState};
