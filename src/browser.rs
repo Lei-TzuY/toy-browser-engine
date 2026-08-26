@@ -16,13 +16,15 @@ use std::time::Duration;
 
 use crate::document::{Document, LoopReport, PageAction, PointerState};
 use crate::eventloop::{Clock, RealClock};
-use crate::forms::{encode_form_entries, Submission, SubmissionMethod};
+use crate::forms::{self, encode_form_entries, Submission, SubmissionMethod};
 use crate::input::KeyEvent;
 use crate::net::{
     DefaultNetwork, FetchError, FetchRequest, HeaderMap, LoadError, Method, NetworkBackend,
     ResourceLoader, Url,
 };
+use crate::script::interp::EventInit;
 use crate::script::NodePath;
+use crate::validation;
 
 /// How long one idle turn of [`Browser::settle_network`] waits on the network
 /// before giving the loop another go.
@@ -257,11 +259,22 @@ impl Browser {
             self.document.refresh_images(self.loader.as_ref());
         }
         if let Some(submission) = submitted {
+            // `form.submit()` is the programmatic path: by design it bypasses
+            // interactive constraint validation as well as the submit event.
             return self.perform_submission(submission);
         }
 
         if outcome.default_prevented {
             return ClickOutcome::Script;
+        }
+
+        // Constraint validation is a default-action gate. The click listener
+        // has already had its chance to update the fields, but the form's
+        // `submit` listener has not run yet.
+        if let Some(form_path) = self.submit_form_for_activation(path) {
+            if !self.report_constraint_violations(&form_path) {
+                return ClickOutcome::Script;
+            }
         }
 
         // Default action: activate the control, then follow a link.
@@ -392,7 +405,21 @@ impl Browser {
     /// Deliver a key press to the focused element, performing whatever default
     /// action survives the `keydown` listeners.
     pub fn key_down(&mut self, event: &KeyEvent) -> ClickOutcome {
+        // Keep the owning form before dispatch: a key listener may restructure
+        // the DOM, but if the default action produces a submission this is the
+        // form whose control initiated it.
+        let candidate_form = self
+            .document
+            .focused_path()
+            .and_then(|path| forms::owning_form(&self.document.dom, &path));
         let action = self.document.key_down(event);
+        if matches!(action, PageAction::Submit(_)) {
+            if let Some(form_path) = candidate_form {
+                if !self.report_constraint_violations(&form_path) {
+                    return ClickOutcome::Script;
+                }
+            }
+        }
         self.after_document_action(action)
     }
 
@@ -422,6 +449,9 @@ impl Browser {
 
     /// Submit a form as if its submit button had been pressed.
     pub fn submit_form(&mut self, form_path: &NodePath) -> ClickOutcome {
+        if !self.report_constraint_violations(form_path) {
+            return ClickOutcome::Script;
+        }
         let action = self.document.submit_form(form_path);
         self.after_document_action(action)
     }
@@ -431,12 +461,61 @@ impl Browser {
         match action {
             PageAction::None => {
                 if let Some(submission) = self.document.apply_pending_actions() {
+                    // Pending submissions are `form.submit()` and therefore
+                    // deliberately bypass interactive validation.
                     return self.perform_submission(submission);
                 }
                 ClickOutcome::Script
             }
             PageAction::Submit(submission) => self.perform_submission(submission),
         }
+    }
+
+    /// Return the owning form when activating `target` would submit it.
+    fn submit_form_for_activation(&self, target: &[usize]) -> Option<NodePath> {
+        let element = crate::script::dom_api::node_at(&self.document.dom, target)?.as_element()?;
+        if element.is_disabled() {
+            return None;
+        }
+        let tag = element.tag_name.as_str();
+        let input_type = element.input_type();
+        let is_submit = (tag == "button"
+            && element
+                .get_attr("type")
+                .map(|kind| kind.eq_ignore_ascii_case("submit"))
+                .unwrap_or(true))
+            || (tag == "input" && input_type == "submit");
+        is_submit
+            .then(|| forms::owning_form(&self.document.dom, target))
+            .flatten()
+    }
+
+    /// Run interactive constraint validation for `form_path`.
+    ///
+    /// `invalid` does not bubble. Every failing control receives it in document
+    /// order, then the first invalid control receives focus. Returning `false`
+    /// tells the caller to suppress the submission's default action.
+    fn report_constraint_violations(&mut self, form_path: &[usize]) -> bool {
+        let invalid = validation::invalid_controls(&self.document.dom, form_path);
+        if invalid.is_empty() {
+            return true;
+        }
+
+        for path in &invalid {
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
+                path,
+                "invalid",
+                EventInit::non_bubbling(),
+            );
+            document.apply_pending_actions();
+            document.run_microtask_checkpoint();
+        }
+        if let Some(first) = invalid.first() {
+            self.document.focus_path(first);
+        }
+        false
     }
 
     /// Navigate to a prepared form submission.
