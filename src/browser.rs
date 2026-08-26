@@ -17,12 +17,12 @@ use std::time::Duration;
 use crate::document::{Document, LoopReport, PageAction, PointerState};
 use crate::eventloop::{Clock, RealClock};
 use crate::forms::{self, encode_form_entries, Submission, SubmissionMethod};
-use crate::input::KeyEvent;
+use crate::input::{Key, KeyEvent};
 use crate::net::{
     DefaultNetwork, FetchError, FetchRequest, HeaderMap, LoadError, Method, NetworkBackend,
     ResourceLoader, Url,
 };
-use crate::script::interp::EventInit;
+use crate::script::interp::{EventInit, JsValue};
 use crate::script::NodePath;
 use crate::validation;
 
@@ -268,17 +268,34 @@ impl Browser {
             return ClickOutcome::Script;
         }
 
-        // Constraint validation is a default-action gate. The click listener
-        // has already had its chance to update the fields, but the form's
-        // `submit` listener has not run yet.
-        if let Some(form_path) = self.submit_form_for_activation(path) {
-            if !self.report_constraint_violations(&form_path) {
+        // Preserve the activated submitter through validation and the form's
+        // submit event. A submit listener may edit values or override
+        // attributes, so the final Submission is rebuilt from the live DOM
+        // after activation rather than trusting Document's no-submitter one.
+        let submit_context = self.submitter_for_activation(path);
+        if let Some((form_path, submitter_path)) = submit_context.as_ref() {
+            let skips_validation = forms::submission_skips_validation(
+                &self.document.dom,
+                form_path,
+                Some(submitter_path),
+            );
+            if !skips_validation && !self.report_constraint_violations(form_path) {
                 return ClickOutcome::Script;
             }
         }
 
         // Default action: activate the control, then follow a link.
-        if let PageAction::Submit(submission) = self.document.activate(path) {
+        if let PageAction::Submit(fallback) = self.document.activate(path) {
+            let submission = submit_context
+                .and_then(|(form_path, submitter_path)| {
+                    forms::prepare_submission_with_submitter(
+                        &self.document.dom,
+                        &form_path,
+                        Some(&submitter_path),
+                        &self.document.base_url,
+                    )
+                })
+                .unwrap_or(fallback);
             return self.perform_submission(submission);
         }
         match self.document.link_at(path) {
@@ -405,21 +422,15 @@ impl Browser {
     /// Deliver a key press to the focused element, performing whatever default
     /// action survives the `keydown` listeners.
     pub fn key_down(&mut self, event: &KeyEvent) -> ClickOutcome {
-        // Keep the owning form before dispatch: a key listener may restructure
-        // the DOM, but if the default action produces a submission this is the
-        // form whose control initiated it.
-        let candidate_form = self
-            .document
-            .focused_path()
-            .and_then(|path| forms::owning_form(&self.document.dom, &path));
-        let action = self.document.key_down(event);
-        if matches!(action, PageAction::Submit(_)) {
-            if let Some(form_path) = candidate_form {
-                if !self.report_constraint_violations(&form_path) {
-                    return ClickOutcome::Script;
-                }
-            }
+        // Single-line Enter submission needs validation *before* the submit
+        // event, so Browser owns this default action instead of asking
+        // Document::key_down to combine both steps. Every other key stays on
+        // the normal Document path.
+        if let Some((target, form_path, submitter)) = self.implicit_submission_context(event) {
+            return self.perform_implicit_key_submission(event, target, form_path, submitter);
         }
+
+        let action = self.document.key_down(event);
         self.after_document_action(action)
     }
 
@@ -449,7 +460,9 @@ impl Browser {
 
     /// Submit a form as if its submit button had been pressed.
     pub fn submit_form(&mut self, form_path: &NodePath) -> ClickOutcome {
-        if !self.report_constraint_violations(form_path) {
+        let skips_validation =
+            forms::submission_skips_validation(&self.document.dom, form_path, None);
+        if !skips_validation && !self.report_constraint_violations(form_path) {
             return ClickOutcome::Script;
         }
         let action = self.document.submit_form(form_path);
@@ -471,23 +484,102 @@ impl Browser {
         }
     }
 
-    /// Return the owning form when activating `target` would submit it.
-    fn submit_form_for_activation(&self, target: &[usize]) -> Option<NodePath> {
+    /// Return the owning form and the actual submit control for a click.
+    fn submitter_for_activation(&self, target: &[usize]) -> Option<(NodePath, NodePath)> {
         let element = crate::script::dom_api::node_at(&self.document.dom, target)?.as_element()?;
-        if element.is_disabled() {
+        if !forms::is_submit_control(element) {
             return None;
         }
-        let tag = element.tag_name.as_str();
-        let input_type = element.input_type();
-        let is_submit = (tag == "button"
-            && element
-                .get_attr("type")
-                .map(|kind| kind.eq_ignore_ascii_case("submit"))
-                .unwrap_or(true))
-            || (tag == "input" && input_type == "submit");
-        is_submit
-            .then(|| forms::owning_form(&self.document.dom, target))
-            .flatten()
+        let form = forms::owning_form(&self.document.dom, target)?;
+        Some((form, target.to_vec()))
+    }
+
+    /// Recognise the Enter default action that performs implicit form submit.
+    fn implicit_submission_context(
+        &self,
+        event: &KeyEvent,
+    ) -> Option<(NodePath, NodePath, Option<NodePath>)> {
+        if event.key != Key::Enter {
+            return None;
+        }
+        let target = self.document.focused_path()?;
+        let element = crate::script::dom_api::node_at(&self.document.dom, &target)?.as_element()?;
+        if element.tag_name != "input" || !element.is_text_entry() {
+            return None;
+        }
+        let form = forms::owning_form(&self.document.dom, &target)?;
+        if !forms::allows_implicit_submission(&self.document.dom, &form) {
+            return None;
+        }
+        let submitter = forms::implicit_submitter(&self.document.dom, &form);
+        Some((target, form, submitter))
+    }
+
+    /// Run the Enter submission default action in standards order:
+    /// keydown → validation → submit → navigation.
+    fn perform_implicit_key_submission(
+        &mut self,
+        event: &KeyEvent,
+        target: NodePath,
+        form_path: NodePath,
+        submitter: Option<NodePath>,
+    ) -> ClickOutcome {
+        let key_outcome = {
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
+                &target,
+                "keydown",
+                browser_key_event_init(event),
+            )
+        };
+        let requested = self.document.apply_pending_actions();
+        self.document.run_microtask_checkpoint();
+        if let Some(submission) = requested {
+            // A key listener explicitly called `form.submit()`; that API is
+            // programmatic and bypasses interactive validation.
+            return self.perform_submission(submission);
+        }
+        if key_outcome.default_prevented {
+            return ClickOutcome::Script;
+        }
+
+        let skips_validation = forms::submission_skips_validation(
+            &self.document.dom,
+            &form_path,
+            submitter.as_deref(),
+        );
+        if !skips_validation && !self.report_constraint_violations(&form_path) {
+            return ClickOutcome::Script;
+        }
+
+        let submit_outcome = {
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
+                &form_path,
+                "submit",
+                EventInit::bubbling(),
+            )
+        };
+        let requested = self.document.apply_pending_actions();
+        self.document.run_microtask_checkpoint();
+        if let Some(submission) = requested {
+            return self.perform_submission(submission);
+        }
+        if submit_outcome.default_prevented {
+            return ClickOutcome::Script;
+        }
+
+        match forms::prepare_submission_with_submitter(
+            &self.document.dom,
+            &form_path,
+            submitter.as_deref(),
+            &self.document.base_url,
+        ) {
+            Some(submission) => self.perform_submission(submission),
+            None => ClickOutcome::Script,
+        }
     }
 
     /// Run interactive constraint validation for `form_path`.
@@ -604,6 +696,15 @@ impl Browser {
     ) -> crate::paint::Canvas {
         self.document.render(width, height, scroll_y, pointer)
     }
+}
+
+fn browser_key_event_init(event: &KeyEvent) -> EventInit {
+    EventInit::bubbling()
+        .with_field("key", JsValue::Str(event.key.key_value()))
+        .with_field("code", JsValue::Str(event.key.code_value()))
+        .with_field("shiftKey", JsValue::Bool(event.modifiers.shift))
+        .with_field("ctrlKey", JsValue::Bool(event.modifiers.ctrl))
+        .with_field("altKey", JsValue::Bool(event.modifiers.alt))
 }
 
 fn load_error_from_fetch(url: &Url, error: FetchError) -> LoadError {
@@ -1170,7 +1271,7 @@ mod tests {
             );
         }
         assert_ne!(frames[0], frames[1], "frame 1 → 2 should differ");
-        assert_ne!(frames[1], frames[2], "frame 2 → 3 should differ");
+        assert_ne!(frames[1], frames[2], "and moved again");
     }
 
     #[test]
