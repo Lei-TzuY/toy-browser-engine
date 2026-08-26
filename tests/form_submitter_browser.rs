@@ -2,9 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use browser_engine::browser::ClickOutcome;
 use browser_engine::input::{Key, KeyEvent};
-use browser_engine::net::{
-    FetchError, FetchRequest, FetchResponse, Method, Resource, Url,
-};
+use browser_engine::net::{FetchError, FetchRequest, FetchResponse, Method, Resource, Url};
 use browser_engine::script::dom_api;
 use browser_engine::{Browser, ResourceLoader};
 
@@ -124,7 +122,10 @@ fn enter_validates_before_the_submit_event() {
     let field = dom_api::get_element_by_id(&browser.document().dom, "q").unwrap();
     browser.document_mut().focus_path(&field);
 
-    assert_eq!(browser.press_key(&KeyEvent::new(Key::Enter)), ClickOutcome::Script);
+    assert_eq!(
+        browser.press_key(&KeyEvent::new(Key::Enter)),
+        ClickOutcome::Script
+    );
     assert_eq!(browser.document().runtime.console, vec!["invalid"]);
     assert_eq!(browser.url().to_string(), "demo:///editor.html");
 }
@@ -147,12 +148,12 @@ impl ResourceLoader for RecordingLoader {
         if url.to_string() == "http://example.test/editor" {
             return Ok(Resource {
                 url: url.clone(),
+                mime: Some("text/html".into()),
                 bytes: br#"<form action="/save" method="get">
                     <input name="title" value="Toy Browser">
                     <button id="save" name="intent" value="save" formmethod="post">Save</button>
                 </form>"#
                     .to_vec(),
-                content_type: Some("text/html".into()),
             });
         }
         Err(browser_engine::net::LoadError::NotFound(url.to_string()))
