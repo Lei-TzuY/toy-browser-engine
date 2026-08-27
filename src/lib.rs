@@ -25,6 +25,10 @@ pub mod script;
 pub mod select_state;
 pub mod style;
 pub mod text;
+#[allow(dead_code)]
+#[path = "validation.rs"]
+mod validation_base;
+#[path = "validation_ext.rs"]
 pub mod validation;
 
 pub use browser::Browser;
