@@ -121,6 +121,8 @@ pub struct CombinatorHandler {
 pub enum Builtin {
     Document,
     Console,
+    EventCtor,
+    CustomEventCtor,
     PromiseCtor,
     QueueMicrotask,
     Fetch,
@@ -128,6 +130,9 @@ pub enum Builtin {
     RequestCtor,
     ResponseCtor,
     AbortControllerCtor,
+    LocalStorage,
+    SessionStorage,
+    StorageCtor,
     SetTimeout,
     ClearTimeout,
     SetInterval,
@@ -309,16 +314,27 @@ pub enum PendingAction {
 
 #[derive(Debug, Clone)]
 pub struct Listener {
+    pub id: usize,
     pub target: NodeRef,
     pub event: String,
     pub handler: JsValue,
+    pub capture: bool,
+    pub once: bool,
+    pub passive: bool,
 }
+
+pub type StorageRef = Rc<RefCell<Vec<(String, String)>>>;
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
 
 pub struct JsRuntime {
     pub global: ScopeRef,
     pub listeners: Vec<Listener>,
+    next_listener_id: usize,
+    /// Persistent storage across the origin.
+    pub local_storage: StorageRef,
+    /// Ephemeral storage for this session/document.
+    pub session_storage: StorageRef,
     /// Everything scripts printed, newest last. Also echoed to stdout.
     pub console: Vec<String>,
     /// When true, console output is only recorded, not printed (used by tests).
@@ -365,6 +381,9 @@ impl JsRuntime {
         Self {
             global: Scope::new(None),
             listeners: Vec::new(),
+            next_listener_id: 1,
+            local_storage: Rc::new(RefCell::new(Vec::new())),
+            session_storage: Rc::new(RefCell::new(Vec::new())),
             console: Vec::new(),
             quiet: false,
             focused: None,
@@ -584,6 +603,34 @@ impl JsRuntime {
                     self.settle_reject(&target, error);
                 }
                 JsValue::Promise(target)
+            }
+            JsValue::Builtin(Builtin::EventCtor | Builtin::CustomEventCtor) => {
+                let type_name = args.first().map(to_string).unwrap_or_default();
+                let options = args.get(1);
+                let (bubbles, cancelable, detail) = if let Some(JsValue::Object(props)) = options {
+                    let b = object_get(props, "bubbles").map(|v| to_boolean(&v)).unwrap_or(false);
+                    let c = object_get(props, "cancelable").map(|v| to_boolean(&v)).unwrap_or(false);
+                    let d = object_get(props, "detail").unwrap_or(JsValue::Null);
+                    (b, c, d)
+                } else {
+                    (false, false, JsValue::Null)
+                };
+
+                let mut fields = vec![
+                    ("type".to_string(), JsValue::Str(type_name)),
+                    ("bubbles".to_string(), JsValue::Bool(bubbles)),
+                    ("cancelable".to_string(), JsValue::Bool(cancelable)),
+                    ("defaultPrevented".to_string(), JsValue::Bool(false)),
+                    ("cancelBubble".to_string(), JsValue::Bool(false)),
+                    ("stopImmediate".to_string(), JsValue::Bool(false)),
+                    ("eventPhase".to_string(), JsValue::Number(0.0)),
+                    ("target".to_string(), JsValue::Null),
+                    ("currentTarget".to_string(), JsValue::Null),
+                ];
+                if matches!(constructor, JsValue::Builtin(Builtin::CustomEventCtor)) {
+                    fields.push(("detail".to_string(), detail));
+                }
+                JsValue::Object(Rc::new(RefCell::new(fields)))
             }
             JsValue::Builtin(
                 builtin @ (Builtin::HeadersCtor
@@ -883,46 +930,55 @@ impl JsRuntime {
                 JsValue::Element(NodeRef::Tree(target.to_vec())),
             ),
             ("bubbles".to_string(), JsValue::Bool(init.bubbles)),
+            ("cancelable".to_string(), JsValue::Bool(true)),
             ("defaultPrevented".to_string(), JsValue::Bool(false)),
             ("cancelBubble".to_string(), JsValue::Bool(false)),
+            ("stopImmediate".to_string(), JsValue::Bool(false)),
+            ("eventPhase".to_string(), JsValue::Number(0.0)),
         ];
         properties.extend(init.fields);
         let event = Rc::new(RefCell::new(properties));
         let mut outcome = EventOutcome::default();
 
-        // A non-bubbling event (focus, blur) is only offered to its target.
-        let propagation_path: Vec<NodePath> = if init.bubbles {
-            dom_api::ancestor_paths(target)
-        } else {
-            vec![target.to_vec()]
+        let set_phase_and_target = |ev: &Rc<RefCell<Vec<(String, JsValue)>>>, phase: f32, path: &[usize]| {
+            let mut props = ev.borrow_mut();
+            if let Some((_, v)) = props.iter_mut().find(|(k, _)| k == "eventPhase") {
+                *v = JsValue::Number(phase);
+            } else {
+                props.push(("eventPhase".to_string(), JsValue::Number(phase)));
+            }
+            if let Some((_, v)) = props.iter_mut().find(|(k, _)| k == "currentTarget") {
+                *v = JsValue::Element(NodeRef::Tree(path.to_vec()));
+            } else {
+                props.push((
+                    "currentTarget".to_string(),
+                    JsValue::Element(NodeRef::Tree(path.to_vec())),
+                ));
+            }
         };
 
-        for path in propagation_path {
-            let handlers: Vec<JsValue> = self
+        // Phase 1: Capturing phase (Root down to target's parent)
+        let capture_chain: Vec<NodePath> = (0..target.len()).map(|n| target[..n].to_vec()).collect();
+        for path in capture_chain {
+            set_phase_and_target(&event, 1.0, &path); // 1 = CAPTURING_PHASE
+
+            let matching: Vec<Listener> = self
                 .listeners
                 .iter()
-                .filter(|l| l.event == event_type)
-                .filter(|l| self.tree_path_of(&l.target).as_deref() == Some(path.as_slice()))
-                .map(|l| l.handler.clone())
+                .filter(|l| l.event == event_type && l.capture && self.tree_path_of(&l.target).as_deref() == Some(path.as_slice()))
+                .cloned()
                 .collect();
 
-            for handler in handlers {
-                let mut props = event.borrow_mut();
-                if let Some((_, v)) = props.iter_mut().find(|(k, _)| k == "currentTarget") {
-                    *v = JsValue::Element(NodeRef::Tree(path.clone()));
-                } else {
-                    props.push((
-                        "currentTarget".to_string(),
-                        JsValue::Element(NodeRef::Tree(path.clone())),
-                    ));
+            for listener in matching {
+                if listener.once {
+                    self.listeners.retain(|l| l.id != listener.id);
                 }
-                drop(props);
 
                 self.call_reporting(
                     dom,
-                    &handler,
+                    &listener.handler,
                     vec![JsValue::Object(event.clone())],
-                    "event listener",
+                    "event listener (capture)",
                 );
                 outcome.dispatched = true;
                 outcome.default_prevented = matches!(
@@ -930,15 +986,104 @@ impl JsRuntime {
                     Some(JsValue::Bool(true))
                 );
 
-                let stopped = matches!(
-                    object_get(&event, "cancelBubble"),
+                if matches!(object_get(&event, "stopImmediate"), Some(JsValue::Bool(true))) {
+                    return outcome;
+                }
+                if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                    break;
+                }
+            }
+
+            if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                return outcome;
+            }
+        }
+
+        // Phase 2: Target phase (at target)
+        {
+            set_phase_and_target(&event, 2.0, target); // 2 = AT_TARGET
+
+            let matching: Vec<Listener> = self
+                .listeners
+                .iter()
+                .filter(|l| l.event == event_type && self.tree_path_of(&l.target).as_deref() == Some(target))
+                .cloned()
+                .collect();
+
+            for listener in matching {
+                if listener.once {
+                    self.listeners.retain(|l| l.id != listener.id);
+                }
+
+                self.call_reporting(
+                    dom,
+                    &listener.handler,
+                    vec![JsValue::Object(event.clone())],
+                    "event listener (target)",
+                );
+                outcome.dispatched = true;
+                outcome.default_prevented = matches!(
+                    object_get(&event, "defaultPrevented"),
                     Some(JsValue::Bool(true))
                 );
-                if stopped {
+
+                if matches!(object_get(&event, "stopImmediate"), Some(JsValue::Bool(true))) {
+                    return outcome;
+                }
+                if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                    break;
+                }
+            }
+
+            if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                return outcome;
+            }
+        }
+
+        // Phase 3: Bubbling phase (Parent up to Root)
+        if init.bubbles {
+            let bubble_chain: Vec<NodePath> = (0..target.len()).rev().map(|n| target[..n].to_vec()).collect();
+            for path in bubble_chain {
+                set_phase_and_target(&event, 3.0, &path); // 3 = BUBBLING_PHASE
+
+                let matching: Vec<Listener> = self
+                    .listeners
+                    .iter()
+                    .filter(|l| l.event == event_type && !l.capture && self.tree_path_of(&l.target).as_deref() == Some(path.as_slice()))
+                    .cloned()
+                    .collect();
+
+                for listener in matching {
+                    if listener.once {
+                        self.listeners.retain(|l| l.id != listener.id);
+                    }
+
+                    self.call_reporting(
+                        dom,
+                        &listener.handler,
+                        vec![JsValue::Object(event.clone())],
+                        "event listener (bubble)",
+                    );
+                    outcome.dispatched = true;
+                    outcome.default_prevented = matches!(
+                        object_get(&event, "defaultPrevented"),
+                        Some(JsValue::Bool(true))
+                    );
+
+                    if matches!(object_get(&event, "stopImmediate"), Some(JsValue::Bool(true))) {
+                        return outcome;
+                    }
+                    if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                        break;
+                    }
+                }
+
+                if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
                     return outcome;
                 }
             }
         }
+
         outcome
     }
 
@@ -1795,6 +1940,31 @@ impl JsRuntime {
                 "colorDepth" => JsValue::Number(24.0),
                 _ => JsValue::Undefined,
             },
+            JsValue::Builtin(Builtin::EventCtor | Builtin::CustomEventCtor) => match prop {
+                "NONE" => JsValue::Number(0.0),
+                "CAPTURING_PHASE" => JsValue::Number(1.0),
+                "AT_TARGET" => JsValue::Number(2.0),
+                "BUBBLING_PHASE" => JsValue::Number(3.0),
+                _ => JsValue::Undefined,
+            },
+            JsValue::Builtin(Builtin::LocalStorage | Builtin::SessionStorage) => {
+                let storage = if matches!(target, JsValue::Builtin(Builtin::LocalStorage)) {
+                    self.local_storage.clone()
+                } else {
+                    self.session_storage.clone()
+                };
+                match prop {
+                    "length" => JsValue::Number(storage.borrow().len() as f32),
+                    "setItem" | "getItem" | "removeItem" | "clear" | "key" => JsValue::Undefined,
+                    _ => {
+                        if let Some((_, val)) = storage.borrow().iter().find(|(k, _)| k == prop) {
+                            JsValue::Str(val.clone())
+                        } else {
+                            JsValue::Undefined
+                        }
+                    }
+                }
+            }
             JsValue::Builtin(Builtin::History) => match prop {
                 "length" => JsValue::Number(1.0),
                 _ => JsValue::Undefined,
@@ -1938,6 +2108,20 @@ impl JsRuntime {
     fn set_member(&mut self, dom: &mut Node, target: &JsValue, prop: &str, value: JsValue) {
         match target {
             JsValue::Object(props) => object_set(props, prop, value),
+            JsValue::Builtin(Builtin::LocalStorage | Builtin::SessionStorage) => {
+                let storage = if matches!(target, JsValue::Builtin(Builtin::LocalStorage)) {
+                    self.local_storage.clone()
+                } else {
+                    self.session_storage.clone()
+                };
+                let val_str = to_string(&value);
+                let mut s = storage.borrow_mut();
+                if let Some((_, v)) = s.iter_mut().find(|(k, _)| k == prop) {
+                    *v = val_str;
+                } else {
+                    s.push((prop.to_string(), val_str));
+                }
+            }
             JsValue::Style(r) => {
                 let css = dom_api::css_property_name(prop);
                 let text = to_string(&value);
@@ -2229,16 +2413,91 @@ impl JsRuntime {
                 }
                 _ => JsValue::Undefined,
             },
+            JsValue::Builtin(Builtin::LocalStorage | Builtin::SessionStorage) => {
+                let storage = if matches!(target, JsValue::Builtin(Builtin::LocalStorage)) {
+                    self.local_storage.clone()
+                } else {
+                    self.session_storage.clone()
+                };
+                match prop {
+                    "setItem" => {
+                        let k = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                        let v = to_string(args.get(1).unwrap_or(&JsValue::Undefined));
+                        let mut s = storage.borrow_mut();
+                        if let Some((_, slot)) = s.iter_mut().find(|(key, _)| key == &k) {
+                            *slot = v;
+                        } else {
+                            s.push((k, v));
+                        }
+                        JsValue::Undefined
+                    }
+                    "getItem" => {
+                        let k = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                        let s = storage.borrow();
+                        if let Some((_, v)) = s.iter().find(|(key, _)| key == &k) {
+                            JsValue::Str(v.clone())
+                        } else {
+                            JsValue::Null
+                        }
+                    }
+                    "removeItem" => {
+                        let k = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                        storage.borrow_mut().retain(|(key, _)| key != &k);
+                        JsValue::Undefined
+                    }
+                    "clear" => {
+                        storage.borrow_mut().clear();
+                        JsValue::Undefined
+                    }
+                    "key" => {
+                        let idx = to_number(args.first().unwrap_or(&JsValue::Undefined)) as usize;
+                        let s = storage.borrow();
+                        if idx < s.len() {
+                            JsValue::Str(s[idx].0.clone())
+                        } else {
+                            JsValue::Null
+                        }
+                    }
+                    _ => JsValue::Undefined,
+                }
+            }
             JsValue::Str(s) => string_method(s, prop, &args),
             JsValue::Number(n) => number_method(*n, prop, &args),
             JsValue::Array(items) => self.array_method(dom, items, prop, args),
             JsValue::Object(props) => match prop {
                 "preventDefault" => {
-                    object_set(props, "defaultPrevented", JsValue::Bool(true));
+                    if matches!(object_get(props, "cancelable"), Some(JsValue::Bool(true)) | None) {
+                        object_set(props, "defaultPrevented", JsValue::Bool(true));
+                    }
                     JsValue::Undefined
                 }
                 "stopPropagation" => {
                     object_set(props, "cancelBubble", JsValue::Bool(true));
+                    JsValue::Undefined
+                }
+                "stopImmediatePropagation" => {
+                    object_set(props, "cancelBubble", JsValue::Bool(true));
+                    object_set(props, "stopImmediate", JsValue::Bool(true));
+                    JsValue::Undefined
+                }
+                "initEvent" => {
+                    let type_name = args.first().map(to_string).unwrap_or_default();
+                    let bubbles = args.get(1).map(to_boolean).unwrap_or(false);
+                    let cancelable = args.get(2).map(to_boolean).unwrap_or(false);
+                    object_set(props, "type", JsValue::Str(type_name));
+                    object_set(props, "bubbles", JsValue::Bool(bubbles));
+                    object_set(props, "cancelable", JsValue::Bool(cancelable));
+                    JsValue::Undefined
+                }
+                "initCustomEvent" => {
+                    let type_name = args.first().map(to_string).unwrap_or_default();
+                    let bubbles = args.get(1).map(to_boolean).unwrap_or(false);
+                    let cancelable = args.get(2).map(to_boolean).unwrap_or(false);
+                    let detail = args.get(3).cloned().unwrap_or(JsValue::Null);
+                    object_set(props, "type", JsValue::Str(type_name));
+                    object_set(props, "bubbles", JsValue::Bool(bubbles));
+                    object_set(props, "cancelable", JsValue::Bool(cancelable));
+                    object_set(props, "detail", detail);
                     JsValue::Undefined
                 }
                 _ => {
@@ -2286,6 +2545,21 @@ impl JsRuntime {
     fn call_document_method(&mut self, dom: &mut Node, prop: &str, args: &[JsValue]) -> JsValue {
         let arg0 = to_string(args.first().unwrap_or(&JsValue::Undefined));
         match prop {
+            "createEvent" => {
+                let props = Rc::new(RefCell::new(vec![
+                    ("type".to_string(), JsValue::Str("".into())),
+                    ("bubbles".to_string(), JsValue::Bool(false)),
+                    ("cancelable".to_string(), JsValue::Bool(false)),
+                    ("defaultPrevented".to_string(), JsValue::Bool(false)),
+                    ("cancelBubble".to_string(), JsValue::Bool(false)),
+                    ("stopImmediate".to_string(), JsValue::Bool(false)),
+                    ("eventPhase".to_string(), JsValue::Number(0.0)),
+                    ("target".to_string(), JsValue::Null),
+                    ("currentTarget".to_string(), JsValue::Null),
+                    ("detail".to_string(), JsValue::Null),
+                ]));
+                JsValue::Object(props)
+            }
             "getElementById" => dom_api::get_element_by_id(dom, &arg0)
                 .map(|p| JsValue::Element(NodeRef::Tree(p)))
                 .unwrap_or(JsValue::Null),
@@ -2385,31 +2659,92 @@ impl JsRuntime {
             }
             "addEventListener" => {
                 if let Some(handler) = args.get(1) {
+                    let mut capture = false;
+                    let mut once = false;
+                    let mut passive = false;
+
+                    if let Some(opt) = args.get(2) {
+                        match opt {
+                            JsValue::Bool(b) => capture = *b,
+                            JsValue::Object(props) => {
+                                if let Some(v) = object_get(props, "capture") {
+                                    capture = to_boolean(&v);
+                                }
+                                if let Some(v) = object_get(props, "once") {
+                                    once = to_boolean(&v);
+                                }
+                                if let Some(v) = object_get(props, "passive") {
+                                    passive = to_boolean(&v);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let id = self.next_listener_id;
+                    self.next_listener_id += 1;
                     self.listeners.push(Listener {
+                        id,
                         target: r.clone(),
                         event: arg0,
                         handler: handler.clone(),
+                        capture,
+                        once,
+                        passive,
                     });
                 }
                 JsValue::Undefined
             }
             "removeEventListener" => {
-                self.listeners
-                    .retain(|l| !(l.event == arg0 && l.target == *r));
+                let capture = match args.get(2) {
+                    Some(JsValue::Bool(b)) => *b,
+                    Some(JsValue::Object(props)) => {
+                        object_get(props, "capture").map(|v| to_boolean(&v)).unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                let handler_opt = args.get(1);
+                self.listeners.retain(|l| {
+                    let matches_event = l.event == arg0 && l.target == *r && l.capture == capture;
+                    let matches_handler = match handler_opt {
+                        Some(h) => &l.handler == h,
+                        None => true,
+                    };
+                    !(matches_event && matches_handler)
+                });
                 JsValue::Undefined
             }
             "dispatchEvent" => {
-                let event_name = match args.first() {
-                    Some(JsValue::Str(s)) => s.clone(),
-                    Some(JsValue::Object(props)) => object_get(props, "type")
+                if let Some(JsValue::Object(props)) = args.first() {
+                    let event_name = object_get(props, "type")
                         .map(|v| to_string(&v))
-                        .unwrap_or_default(),
-                    _ => arg0,
-                };
-                if !event_name.is_empty() {
-                    if let Some(path) = self.tree_path_of(r) {
-                        self.dispatch_event(dom, &path, &event_name);
-                        return JsValue::Bool(true);
+                        .unwrap_or_default();
+                    if !event_name.is_empty() {
+                        if let Some(path) = self.tree_path_of(r) {
+                            let bubbles = object_get(props, "bubbles")
+                                .map(|v| to_boolean(&v))
+                                .unwrap_or(false);
+                            let mut init = if bubbles {
+                                EventInit::bubbling()
+                            } else {
+                                EventInit::non_bubbling()
+                            };
+                            for (k, v) in props.borrow().iter() {
+                                if k != "type" && k != "bubbles" && k != "target" && k != "currentTarget" {
+                                    init.fields.push((k.clone(), v.clone()));
+                                }
+                            }
+                            let outcome = self.dispatch_event_init(dom, &path, &event_name, init);
+                            return JsValue::Bool(!outcome.default_prevented);
+                        }
+                    }
+                } else {
+                    let event_name = arg0;
+                    if !event_name.is_empty() {
+                        if let Some(path) = self.tree_path_of(r) {
+                            let outcome = self.dispatch_event(dom, &path, &event_name);
+                            return JsValue::Bool(!outcome.default_prevented);
+                        }
                     }
                 }
                 JsValue::Bool(false)
@@ -2953,6 +3288,8 @@ fn global_builtin(name: &str) -> Option<JsValue> {
     let builtin = match name {
         "document" => Builtin::Document,
         "console" => Builtin::Console,
+        "Event" => Builtin::EventCtor,
+        "CustomEvent" => Builtin::CustomEventCtor,
         "Promise" => Builtin::PromiseCtor,
         "queueMicrotask" => Builtin::QueueMicrotask,
         "fetch" => Builtin::Fetch,
@@ -2960,6 +3297,9 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "Request" => Builtin::RequestCtor,
         "Response" => Builtin::ResponseCtor,
         "AbortController" => Builtin::AbortControllerCtor,
+        "localStorage" => Builtin::LocalStorage,
+        "sessionStorage" => Builtin::SessionStorage,
+        "Storage" => Builtin::StorageCtor,
         "setTimeout" => Builtin::SetTimeout,
         "clearTimeout" => Builtin::ClearTimeout,
         "setInterval" => Builtin::SetInterval,
@@ -3148,6 +3488,10 @@ pub fn truthy(value: &JsValue) -> bool {
     }
 }
 
+pub fn to_boolean(value: &JsValue) -> bool {
+    truthy(value)
+}
+
 fn type_of(value: &JsValue) -> &'static str {
     match value {
         JsValue::Undefined => "undefined",
@@ -3177,6 +3521,12 @@ fn strict_equals(a: &JsValue, b: &JsValue) -> bool {
         // Promises compare by identity, like any other object.
         (JsValue::Promise(x), JsValue::Promise(y)) => Rc::ptr_eq(x, y),
         _ => false,
+    }
+}
+
+impl PartialEq for JsValue {
+    fn eq(&self, other: &Self) -> bool {
+        strict_equals(self, other)
     }
 }
 

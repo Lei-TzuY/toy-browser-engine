@@ -10,6 +10,8 @@
 //  Navigating truncates everything after the current entry; back and forward
 //  move the index and reload that entry.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +24,7 @@ use crate::net::{
     DefaultNetwork, FetchError, FetchRequest, HeaderMap, LoadError, Method, NetworkBackend,
     ResourceLoader, Url,
 };
-use crate::script::interp::{EventInit, JsValue};
+use crate::script::interp::{EventInit, JsValue, StorageRef};
 use crate::script::NodePath;
 use crate::validation;
 
@@ -62,6 +64,8 @@ pub struct Browser {
     /// Loop time at which the current document started, so `performance.now()`
     /// and frame timestamps are measured from page load.
     document_epoch_ms: f64,
+    /// Origin-scoped persistent localStorage pools shared across navigation.
+    pub local_storage_pool: Rc<RefCell<HashMap<String, StorageRef>>>,
 }
 
 impl Browser {
@@ -100,13 +104,30 @@ impl Browser {
         Browser::open_with(Arc::from(loader), network, url, clock)
     }
 
+    fn storage_for_url(&self, url: &Url) -> StorageRef {
+        let origin = format!("{}://{}", url.scheme(), url.host());
+        self.local_storage_pool
+            .borrow_mut()
+            .entry(origin)
+            .or_insert_with(|| Rc::new(RefCell::new(Vec::new())))
+            .clone()
+    }
+
     fn open_with(
         loader: Arc<dyn ResourceLoader>,
         network: Rc<dyn NetworkBackend>,
         url: &Url,
         clock: Rc<dyn Clock>,
     ) -> Result<Browser, LoadError> {
-        let mut document = Document::load(url, loader.as_ref())?;
+        let pool: Rc<RefCell<HashMap<String, StorageRef>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let origin = format!("{}://{}", url.scheme(), url.host());
+        let storage = pool
+            .borrow_mut()
+            .entry(origin)
+            .or_insert_with(|| Rc::new(RefCell::new(Vec::new())))
+            .clone();
+        let mut document = Document::load_with_storage(url, loader.as_ref(), Some(storage))?;
         document.set_network(network.clone());
         let epoch = clock.now_ms();
         Ok(Browser {
@@ -117,6 +138,7 @@ impl Browser {
             document,
             clock,
             document_epoch_ms: epoch,
+            local_storage_pool: pool,
         })
     }
 
@@ -159,7 +181,8 @@ impl Browser {
     /// same way a real browser jumps within the current page.
     pub fn navigate(&mut self, url: &Url) -> Result<(), LoadError> {
         if !url.same_document(self.url()) {
-            self.replace_document(Document::load(url, self.loader.as_ref())?);
+            let storage = self.storage_for_url(url);
+            self.replace_document(Document::load_with_storage(url, self.loader.as_ref(), Some(storage))?);
         }
         self.history.truncate(self.index + 1);
         self.history.push(url.clone());
@@ -179,7 +202,8 @@ impl Browser {
     /// Reload the current entry from its source.
     pub fn reload(&mut self) -> Result<(), LoadError> {
         let url = self.url().clone();
-        self.replace_document(Document::load(&url, self.loader.as_ref())?);
+        let storage = self.storage_for_url(&url);
+        self.replace_document(Document::load_with_storage(&url, self.loader.as_ref(), Some(storage))?);
         Ok(())
     }
 
@@ -225,7 +249,8 @@ impl Browser {
         if url.same_document(&self.document.url) {
             return;
         }
-        match Document::load(&url, self.loader.as_ref()) {
+        let storage = self.storage_for_url(&url);
+        match Document::load_with_storage(&url, self.loader.as_ref(), Some(storage)) {
             Ok(document) => self.replace_document(document),
             Err(error) => self.document.diagnostics.push(crate::document::Diagnostic {
                 url: url.to_string(),
@@ -648,7 +673,13 @@ impl Browser {
             Ok(response) if response.ok() => {
                 let final_url = response.url.clone();
                 let html = String::from_utf8_lossy(&response.body);
-                let document = Document::from_html(&html, &final_url, self.loader.as_ref());
+                let storage = self.storage_for_url(&final_url);
+                let document = Document::from_html_with_storage(
+                    &html,
+                    &final_url,
+                    self.loader.as_ref(),
+                    Some(storage),
+                );
                 self.replace_document(document);
                 self.history.truncate(self.index + 1);
                 self.history.push(final_url.clone());

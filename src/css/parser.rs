@@ -13,11 +13,29 @@
 //    • @media queries: (min/max-width/height)
 //    • /* … */ comments and @-rule handling
 
+use std::collections::HashMap;
+
 // ── Public types ─────────────────────────────────────────────────────────────
+
+/// A single keyframe step in an @keyframes rule (e.g. 0%, 50%, from, to).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyframeStep {
+    /// Offset from 0.0 to 1.0.
+    pub offset: f32,
+    pub declarations: Vec<Declaration>,
+}
+
+/// A complete `@keyframes <name>` rule containing ordered keyframe steps.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct KeyframeRule {
+    pub name: String,
+    pub steps: Vec<KeyframeStep>,
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct Stylesheet {
     pub rules: Vec<Rule>,
+    pub keyframes: HashMap<String, KeyframeRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,7 +107,7 @@ impl Selector {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Declaration {
     pub name: String,
     pub value: Value,
@@ -290,6 +308,48 @@ pub struct TransitionSpec {
     pub delay_ms: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationDirection {
+    #[default]
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationFillMode {
+    #[default]
+    None,
+    Forwards,
+    Backwards,
+    Both,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnimationIterationCount {
+    Finite(f32),
+    Infinite,
+}
+
+impl Default for AnimationIterationCount {
+    fn default() -> Self {
+        Self::Finite(1.0)
+    }
+}
+
+/// A parsed single animation specification
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationSpec {
+    pub name: String,
+    pub duration_ms: f32,
+    pub timing_function: TimingFunction,
+    pub delay_ms: f32,
+    pub iteration_count: AnimationIterationCount,
+    pub direction: AnimationDirection,
+    pub fill_mode: AnimationFillMode,
+}
+
 // ── Value ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -303,6 +363,7 @@ pub enum Value {
     BoxShadow(BoxShadow),
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
+    Animation(Vec<AnimationSpec>),
     /// `var(--name)` or `var(--name, fallback)`.
     Var {
         name: String,
@@ -361,6 +422,7 @@ impl Color {
 struct Parser {
     chars: Vec<char>,
     pos: usize,
+    keyframes: HashMap<String, KeyframeRule>,
 }
 
 impl Parser {
@@ -368,6 +430,7 @@ impl Parser {
         Self {
             chars: input.chars().collect(),
             pos: 0,
+            keyframes: HashMap::new(),
         }
     }
 
@@ -1286,6 +1349,28 @@ impl Parser {
                 let time_ms = parse_time_to_ms(&raw).unwrap_or(0.0);
                 vec![Declaration::new(name, Value::Number(time_ms))]
             }
+            "animation" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, Unit::Px) => format!("{}px", n),
+                    Value::Number(n) => format!("{}", n),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                raw.push(' ');
+                raw.push_str(&rest);
+                let specs = parse_animation_value(&raw);
+                vec![Declaration::new(name, Value::Animation(specs))]
+            }
+            "animation-duration" | "animation-delay" => {
+                let raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, _) | Value::Number(n) => format!("{}ms", n),
+                    _ => String::new(),
+                };
+                let time_ms = parse_time_to_ms(&raw).unwrap_or(0.0);
+                vec![Declaration::new(name, Value::Number(time_ms))]
+            }
             _ => vec![Declaration::new(name, first_value)],
         };
 
@@ -1343,8 +1428,12 @@ impl Parser {
             let name = self.parse_ident().to_ascii_lowercase();
             return match name.as_str() {
                 "media" => self.parse_media_block(),
+                "keyframes" | "-webkit-keyframes" => {
+                    self.parse_keyframe_block();
+                    Vec::new()
+                }
                 _ => {
-                    // Skip other @-rules (keyframes, charset, import, …)
+                    // Skip other @-rules (charset, import, …)
                     self.consume_while(|c| c != '{' && c != ';');
                     if self.peek() == '{' {
                         self.skip_brace_block();
@@ -1465,12 +1554,78 @@ impl Parser {
         Some(conditions)
     }
 
+    fn parse_keyframe_block(&mut self) {
+        self.skip_ws_and_comments();
+        let name = self.parse_ident();
+        self.skip_ws_and_comments();
+        if self.peek() != '{' {
+            return;
+        }
+        self.consume(); // '{'
+        let mut steps = Vec::new();
+
+        loop {
+            self.skip_ws_and_comments();
+            if self.peek() == '}' || self.eof() {
+                break;
+            }
+
+            let mut offsets = Vec::new();
+            loop {
+                self.skip_ws_and_comments();
+                if self.peek() == '{' || self.eof() {
+                    break;
+                }
+                let token = self.consume_while(|c| c != ',' && c != '{' && !c.is_whitespace());
+                let offset = match token.to_ascii_lowercase().as_str() {
+                    "from" => Some(0.0),
+                    "to" => Some(1.0),
+                    s if s.ends_with('%') => s
+                        .trim_end_matches('%')
+                        .parse::<f32>()
+                        .ok()
+                        .map(|p| (p / 100.0).clamp(0.0, 1.0)),
+                    _ => None,
+                };
+                if let Some(off) = offset {
+                    offsets.push(off);
+                }
+                self.skip_ws_and_comments();
+                if self.peek() == ',' {
+                    self.consume();
+                } else {
+                    break;
+                }
+            }
+
+            let decls = self.parse_declarations();
+            for off in offsets {
+                steps.push(KeyframeStep {
+                    offset: off,
+                    declarations: decls.clone(),
+                });
+            }
+        }
+
+        if self.peek() == '}' {
+            self.consume();
+        }
+
+        steps.sort_by(|a, b| a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal));
+        if !name.is_empty() {
+            self.keyframes.insert(name.clone(), KeyframeRule { name, steps });
+        }
+    }
+
     fn parse_stylesheet(&mut self) -> Stylesheet {
         let mut rules = Vec::new();
         while !self.eof() {
             rules.extend(self.parse_rule_item());
         }
-        Stylesheet { rules }
+        Stylesheet {
+            rules,
+            keyframes: self.keyframes.clone(),
+        }
     }
 }
 
@@ -1876,6 +2031,145 @@ pub fn parse_transition_value(raw: &str) -> Vec<TransitionSpec> {
             timing_function: TimingFunction::Ease,
             delay_ms: 0.0,
         });
+    }
+
+    specs
+}
+
+pub fn parse_animation_direction(s: &str) -> Option<AnimationDirection> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(AnimationDirection::Normal),
+        "reverse" => Some(AnimationDirection::Reverse),
+        "alternate" => Some(AnimationDirection::Alternate),
+        "alternate-reverse" => Some(AnimationDirection::AlternateReverse),
+        _ => None,
+    }
+}
+
+pub fn parse_animation_fill_mode(s: &str) -> Option<AnimationFillMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(AnimationFillMode::None),
+        "forwards" => Some(AnimationFillMode::Forwards),
+        "backwards" => Some(AnimationFillMode::Backwards),
+        "both" => Some(AnimationFillMode::Both),
+        _ => None,
+    }
+}
+
+pub fn parse_animation_iteration_count(s: &str) -> Option<AnimationIterationCount> {
+    let s = s.trim().to_ascii_lowercase();
+    if s == "infinite" {
+        Some(AnimationIterationCount::Infinite)
+    } else if let Ok(n) = s.parse::<f32>() {
+        Some(AnimationIterationCount::Finite(n))
+    } else {
+        None
+    }
+}
+
+pub fn parse_animation_value(raw: &str) -> Vec<AnimationSpec> {
+    let mut specs = Vec::new();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    for c in raw.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+
+    for part in parts {
+        let mut tokens = Vec::new();
+        let mut cur = String::new();
+        let mut p_depth = 0;
+        for c in part.chars() {
+            if c == '(' {
+                p_depth += 1;
+                cur.push(c);
+            } else if c == ')' {
+                if p_depth > 0 {
+                    p_depth -= 1;
+                }
+                cur.push(c);
+            } else if c.is_whitespace() && p_depth == 0 {
+                if !cur.is_empty() {
+                    tokens.push(cur.clone());
+                    cur.clear();
+                }
+            } else {
+                cur.push(c);
+            }
+        }
+        if !cur.is_empty() {
+            tokens.push(cur);
+        }
+
+        if tokens.is_empty() {
+            continue;
+        }
+
+        let mut name = String::new();
+        let mut duration_ms = 0.0f32;
+        let mut delay_ms = 0.0f32;
+        let mut timing_fn = TimingFunction::Ease;
+        let mut iteration_count = AnimationIterationCount::Finite(1.0);
+        let mut direction = AnimationDirection::Normal;
+        let mut fill_mode = AnimationFillMode::None;
+        let mut found_duration = false;
+
+        for token in &tokens {
+            if let Some(time) = parse_time_to_ms(token) {
+                if token.ends_with('s') || token.ends_with("ms") {
+                    if !found_duration {
+                        duration_ms = time;
+                        found_duration = true;
+                    } else {
+                        delay_ms = time;
+                    }
+                    continue;
+                }
+            }
+            if let Some(tf) = parse_timing_func(token) {
+                timing_fn = tf;
+            } else if let Some(dir) = parse_animation_direction(token) {
+                direction = dir;
+            } else if let Some(fm) = parse_animation_fill_mode(token) {
+                fill_mode = fm;
+            } else if let Some(ic) = parse_animation_iteration_count(token) {
+                iteration_count = ic;
+            } else if !token.is_empty() {
+                name = token.clone();
+            }
+        }
+
+        if !name.is_empty() {
+            specs.push(AnimationSpec {
+                name,
+                duration_ms,
+                timing_function: timing_fn,
+                delay_ms,
+                iteration_count,
+                direction,
+                fill_mode,
+            });
+        }
     }
 
     specs

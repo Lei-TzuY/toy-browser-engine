@@ -182,13 +182,24 @@ pub struct Document {
     network: Rc<dyn NetworkBackend>,
     /// Active CSS transitions for elements in the document.
     pub transitions: std::cell::RefCell<crate::transition::TransitionManager>,
+    /// Active CSS animations for elements in the document.
+    pub animations: std::cell::RefCell<crate::animation::AnimationManager>,
 }
 
 impl Document {
     /// Fetch `url` and everything it references.
     pub fn load(url: &Url, loader: &dyn ResourceLoader) -> Result<Document, LoadError> {
+        Document::load_with_storage(url, loader, None)
+    }
+
+    /// Fetch `url` and everything it references, providing initial persistent storage.
+    pub fn load_with_storage(
+        url: &Url,
+        loader: &dyn ResourceLoader,
+        storage: Option<crate::script::interp::StorageRef>,
+    ) -> Result<Document, LoadError> {
         let resource = loader.load(url)?;
-        Ok(Document::from_html(&resource.text(), &resource.url, loader))
+        Ok(Document::from_html_with_storage(&resource.text(), &resource.url, loader, storage))
     }
 
     /// Build a document from HTML that has already been fetched.
@@ -196,6 +207,16 @@ impl Document {
     /// `url` is used both as the document's address and as the base for
     /// relative references (until a `<base href>` says otherwise).
     pub fn from_html(html: &str, url: &Url, loader: &dyn ResourceLoader) -> Document {
+        Document::from_html_with_storage(html, url, loader, None)
+    }
+
+    /// Build a document from HTML with caller-supplied persistent storage.
+    pub fn from_html_with_storage(
+        html: &str,
+        url: &Url,
+        loader: &dyn ResourceLoader,
+        storage: Option<crate::script::interp::StorageRef>,
+    ) -> Document {
         let mut dom = crate::html::parse_html(html);
         let base_url = base_url_of(&dom, url);
         let mut diagnostics = Vec::new();
@@ -204,7 +225,7 @@ impl Document {
         seed_textarea_values(&mut dom);
 
         let stylesheet = collect_stylesheet(&dom, &base_url, loader, &mut diagnostics);
-        let runtime = run_scripts(&mut dom, &base_url, loader, &mut diagnostics);
+        let runtime = run_scripts(&mut dom, &base_url, loader, &mut diagnostics, storage);
 
         let mut document = Document {
             url: url.clone(),
@@ -218,6 +239,7 @@ impl Document {
             deferred_submission: None,
             network: Rc::new(OfflineNetwork::new()),
             transitions: std::cell::RefCell::new(crate::transition::TransitionManager::new()),
+            animations: std::cell::RefCell::new(crate::animation::AnimationManager::new()),
         };
         // Scripts have finished: run the microtasks they queued, so a
         // `Promise.resolve().then(…)` at load time lands before the first
@@ -284,6 +306,7 @@ impl Document {
                 .and_then(|p| dom_api::node_at(&self.dom, &p)),
         };
         let mut styled = style_tree_full(&self.dom, &self.stylesheet, viewport_width, &interaction);
+        self.animations.borrow_mut().update_and_apply(&mut styled, &self.stylesheet, self.runtime.now_ms);
         self.transitions.borrow_mut().update_and_apply(&mut styled, self.runtime.now_ms);
         styled
     }
@@ -505,6 +528,11 @@ impl Document {
         self.network = network;
     }
 
+    /// Point this page's `localStorage` at a persistent origin-scoped storage pool.
+    pub fn set_local_storage(&mut self, storage: crate::script::interp::StorageRef) {
+        self.runtime.local_storage = storage;
+    }
+
     /// Hand the requests scripts asked for to the network.
     ///
     /// Requests are only *started* here; nothing waits for an answer.
@@ -637,7 +665,7 @@ impl Document {
             return Some(0.0);
         }
         let js_deadline = self.runtime.scheduler.next_deadline_ms();
-        if self.transitions.borrow().has_active() {
+        if self.transitions.borrow().has_active() || self.animations.borrow().has_active(self.runtime.now_ms) {
             let next_frame = self.runtime.now_ms + 16.0;
             Some(match js_deadline {
                 Some(d) => d.min(next_frame),
@@ -653,12 +681,14 @@ impl Document {
         self.runtime.scheduler.has_pending_work()
             || self.has_pending_network()
             || self.transitions.borrow().has_active()
+            || self.animations.borrow().has_active(self.runtime.now_ms)
     }
 
     /// Drop every pending task. Navigating away from a page does this, so a
     /// departed page's intervals cannot keep running and its requests cannot
     /// settle anything: the promises go with the registry.
     pub fn cancel_all_tasks(&mut self) {
+        self.animations.borrow_mut().clear();
         self.transitions.borrow_mut().clear();
         self.runtime.scheduler.clear_all();
         self.runtime.microtasks.clear();
@@ -1037,7 +1067,11 @@ fn collect_stylesheet(
 
     for source in style_sources(dom) {
         match source {
-            StyleSource::Inline(css) => stylesheet.rules.extend(parse_css(&css).rules),
+            StyleSource::Inline(css) => {
+                let parsed = parse_css(&css);
+                stylesheet.rules.extend(parsed.rules);
+                stylesheet.keyframes.extend(parsed.keyframes);
+            }
             StyleSource::Link(href) => {
                 let Ok(url) = base_url.join(&href) else {
                     diagnostics.push(Diagnostic {
@@ -1047,7 +1081,11 @@ fn collect_stylesheet(
                     continue;
                 };
                 match loader.load(&url) {
-                    Ok(resource) => stylesheet.rules.extend(parse_css(&resource.text()).rules),
+                    Ok(resource) => {
+                        let parsed = parse_css(&resource.text());
+                        stylesheet.rules.extend(parsed.rules);
+                        stylesheet.keyframes.extend(parsed.keyframes);
+                    }
                     Err(error) => diagnostics.push(Diagnostic {
                         url: url.to_string(),
                         message: error.to_string(),
@@ -1113,12 +1151,16 @@ fn run_scripts(
     base_url: &Url,
     loader: &dyn ResourceLoader,
     diagnostics: &mut Vec<Diagnostic>,
+    storage: Option<crate::script::interp::StorageRef>,
 ) -> JsRuntime {
     // Sources are collected before execution: a script may restructure the DOM
     // underneath us, and the document-order list is fixed at parse time.
     let sources = script_sources(dom);
     let mut runtime = JsRuntime::new();
     runtime.url = base_url.clone();
+    if let Some(s) = storage {
+        runtime.local_storage = s;
+    }
 
     for source in sources {
         match source {

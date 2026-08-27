@@ -7,6 +7,7 @@
 //!   → `layout::layout_tree`   → Layout tree  (`layout::LayoutBox`)
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
+pub mod animation;
 pub mod browser;
 pub mod canvas;
 pub mod css;
@@ -29,6 +30,7 @@ pub mod text;
 pub mod transition;
 pub mod validation;
 
+pub use animation::AnimationManager;
 pub use browser::Browser;
 pub use document::{Document, PointerState};
 pub use html::extract_inline_styles;
