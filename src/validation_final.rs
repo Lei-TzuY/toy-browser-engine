@@ -6,8 +6,8 @@
 // stacked PRs build on them. This final wrapper repairs the remaining cases
 // where those layers cannot express live, path-aware HTML semantics cleanly:
 // radio groups use the canonical form-state grouping algorithm, stray readonly
-// on file controls must not disable `required`, and `required` is inapplicable
-// to Color state.
+// on file controls must not disable `required`, `required` is inapplicable to
+// Color state, and text-length constraints must not leak onto Number state.
 
 use crate::dom::Node;
 use crate::forms;
@@ -54,6 +54,16 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         // evaluation only for that compatibility hole.
         "file" if element.is_readonly() && element.get_attr("required").is_some() => {
             validity.value_missing = element.control_value().is_empty();
+        }
+
+        // Number controls are editable through the same internal text-editing
+        // machinery as text inputs, but HTML does not apply `minlength` or
+        // `maxlength` to Number state. Clear length flags inherited from the
+        // older generic `is_text_entry()` validation path while preserving
+        // number syntax/range/step flags from the facade beneath this layer.
+        "number" => {
+            validity.too_short = false;
+            validity.too_long = false;
         }
 
         // Color state always has a value in conforming browsers and does not
@@ -134,6 +144,26 @@ mod tests {
         let b = dom_api::get_element_by_id(&dom, "b").unwrap();
         assert!(control_validity(&dom, &a).valid());
         assert!(control_validity(&dom, &b).valid());
+    }
+
+    #[test]
+    fn number_ignores_text_length_constraints() {
+        let flags = input_validity(
+            r#"<input type="number" value="12" minlength="3" maxlength="1">"#,
+        );
+        assert!(!flags.too_short);
+        assert!(!flags.too_long);
+        assert!(flags.valid());
+    }
+
+    #[test]
+    fn number_keeps_non_length_constraints_while_ignoring_lengths() {
+        let flags = input_validity(
+            r#"<input type="number" value="12" minlength="3" min="20">"#,
+        );
+        assert!(!flags.too_short);
+        assert!(flags.range_underflow);
+        assert!(!flags.valid());
     }
 
     #[test]
