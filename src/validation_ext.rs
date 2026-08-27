@@ -5,7 +5,7 @@
 // The core validity algorithms remain in validation.rs. This facade adds DOM
 // relationships and input states that cannot be answered from ElementData
 // alone: inherited fieldset disabledness, radio-button group-wide requiredness,
-// and calendar/time-aware date/month/week/time constraints.
+// and calendar/time-aware date/month/week/time/datetime-local constraints.
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
@@ -45,6 +45,7 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
             "month" => apply_month_validity(element, &mut validity),
             "week" => apply_week_validity(element, &mut validity),
             "time" => apply_time_validity(element, &mut validity),
+            "datetime-local" => apply_datetime_local_validity(element, &mut validity),
             _ => {}
         }
     }
@@ -392,6 +393,7 @@ fn parse_time_millis(text: &str) -> Option<i64> {
     Some((((hour * 60 + minute) * 60 + second) * 1000) + millis)
 }
 
+/// Step mismatch for millisecond-valued input states whose `step` is seconds.
 fn time_step_mismatch(element: &ElementData, value: i64, base: i64) -> bool {
     let step_attribute = element.get_attr("step").map(str::trim);
     if step_attribute.is_some_and(|step| step.eq_ignore_ascii_case("any")) {
@@ -405,6 +407,59 @@ fn time_step_mismatch(element: &ElementData, value: i64, base: i64) -> bool {
     let steps = (value - base) as f64 / allowed_millis;
     let tolerance = 1e-9 * steps.abs().max(1.0);
     (steps - steps.round()).abs() > tolerance
+}
+
+// ── type=datetime-local ─────────────────────────────────────────────────────
+
+/// Apply Local Date and Time-state bad-input/range/step rules.
+///
+/// The numeric axis is abstract local milliseconds from
+/// `1970-01-01T00:00:00.000`; no time-zone offset or daylight-saving rule is
+/// applied. Unlike Time state, this domain is linear and does not wrap.
+fn apply_datetime_local_validity(element: &ElementData, validity: &mut Validity) {
+    let raw = element.control_value();
+    if raw.is_empty() {
+        return;
+    }
+
+    let value = parse_datetime_local_millis(&raw);
+    validity.bad_input = value.is_none();
+    let Some(value) = value else {
+        validity.range_underflow = false;
+        validity.range_overflow = false;
+        validity.step_mismatch = false;
+        return;
+    };
+
+    let min = element.get_attr("min").and_then(parse_datetime_local_millis);
+    let max = element.get_attr("max").and_then(parse_datetime_local_millis);
+    validity.range_underflow = min.is_some_and(|minimum| value < minimum);
+    validity.range_overflow = max.is_some_and(|maximum| value > maximum);
+
+    let step_base = min
+        .or_else(|| element.get_attr("value").and_then(parse_datetime_local_millis))
+        .unwrap_or(0);
+    validity.step_mismatch = time_step_mismatch(element, value, step_base);
+}
+
+/// Parse a valid local date and time string to abstract milliseconds from the
+/// local epoch. Both `T` and a single ASCII space are accepted as separators;
+/// the real input sanitizer would subsequently normalize the latter to `T`.
+fn parse_datetime_local_millis(text: &str) -> Option<i64> {
+    if text.trim() != text || !text.is_ascii() {
+        return None;
+    }
+    let separator = text
+        .bytes()
+        .position(|byte| byte == b'T' || byte == b' ')?;
+    let date = &text[..separator];
+    let time = &text[separator + 1..];
+    if date.is_empty() || time.is_empty() {
+        return None;
+    }
+    let days = parse_date_days(date)?;
+    let millis = parse_time_millis(time)?;
+    days.checked_mul(86_400_000)?.checked_add(millis)
 }
 
 /// Shared step checker for input states whose normalized values are discrete
@@ -625,5 +680,59 @@ mod tests {
         let flags = validity(r#"<input type="time" value="17:01" min="09:00" max="17:00">"#);
         assert!(!flags.range_underflow);
         assert!(flags.range_overflow);
+    }
+
+    #[test]
+    fn datetime_local_parser_uses_abstract_local_epoch_milliseconds() {
+        assert_eq!(parse_datetime_local_millis("1970-01-01T00:00"), Some(0));
+        assert_eq!(
+            parse_datetime_local_millis("1970-01-02T00:00"),
+            Some(86_400_000)
+        );
+        assert_eq!(
+            parse_datetime_local_millis("1969-12-31T23:59"),
+            Some(-60_000)
+        );
+        assert_eq!(
+            parse_datetime_local_millis("2000-02-29 12:34:56.789"),
+            parse_date_days("2000-02-29")
+                .and_then(|days| days.checked_mul(86_400_000))
+                .and_then(|base| base.checked_add(45_296_789))
+        );
+        assert!(parse_datetime_local_millis("1900-02-29T12:00").is_none());
+        assert!(parse_datetime_local_millis("2026-08-27T24:00").is_none());
+        assert!(parse_datetime_local_millis("2026-08-27").is_none());
+    }
+
+    #[test]
+    fn datetime_local_range_and_step_are_linear_on_local_milliseconds() {
+        let flags = validity(
+            r#"<input type="datetime-local" value="2026-08-27T08:59" min="2026-08-27T09:00" max="2026-08-27T17:00">"#,
+        );
+        assert!(flags.range_underflow);
+        assert!(!flags.range_overflow);
+
+        let flags = validity(
+            r#"<input type="datetime-local" value="2026-08-27T17:01" min="2026-08-27T09:00" max="2026-08-27T17:00">"#,
+        );
+        assert!(!flags.range_underflow);
+        assert!(flags.range_overflow);
+
+        let flags = validity(
+            r#"<input type="datetime-local" value="1970-01-01T00:00:30" min="1970-01-01T00:00">"#,
+        );
+        assert!(flags.step_mismatch);
+
+        let flags = validity(
+            r#"<input type="datetime-local" value="1970-01-01T00:00:00.500" step="0.5">"#,
+        );
+        assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn malformed_nonempty_datetime_local_sets_bad_input() {
+        let flags = validity(r#"<input type="datetime-local" value="2026-02-30T12:00">"#);
+        assert!(flags.bad_input);
+        assert!(!flags.valid());
     }
 }
