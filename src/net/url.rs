@@ -352,15 +352,22 @@ fn is_scheme_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.'
 }
 
-/// Split `scheme:rest`, requiring the scheme to start with a letter so that
-/// Windows paths (`C:\dir`) and relative references are not mistaken for URLs.
+/// Split `scheme:rest`, requiring the scheme to start with a letter.
+///
+/// RFC 3986 permits a one-character scheme. Keep the common backslash Windows
+/// drive spelling (`C:\\dir`) out of the URI path without rejecting legitimate
+/// one-letter URI schemes such as `x:/resource`.
 fn split_scheme(input: &str) -> Option<(&str, &str)> {
     let colon = input.find(':')?;
     let scheme = &input[..colon];
-    if scheme.len() < 2 || !scheme.starts_with(|c: char| c.is_ascii_alphabetic()) {
+    if scheme.is_empty() || !scheme.starts_with(|c: char| c.is_ascii_alphabetic()) {
         return None;
     }
-    Some((scheme, &input[colon + 1..]))
+    let rest = &input[colon + 1..];
+    if scheme.len() == 1 && rest.starts_with('\\') {
+        return None;
+    }
+    Some((scheme, rest))
 }
 
 /// Split a reference into `(path, query, fragment)`.
@@ -437,6 +444,16 @@ mod tests {
     }
 
     #[test]
+    fn single_letter_schemes_are_valid_absolute_urls() {
+        let u = url("X:/resource?q=1#frag");
+        assert_eq!(u.scheme(), "x");
+        assert_eq!(u.path(), "/resource");
+        assert_eq!(u.query(), Some("q=1"));
+        assert_eq!(u.fragment(), Some("frag"));
+        assert_eq!(u.to_string(), "x:/resource?q=1#frag");
+    }
+
+    #[test]
     fn default_ports_come_from_the_scheme() {
         assert_eq!(url("http://example.com/").port_or_default(), Some(80));
         assert_eq!(url("https://example.com/").port_or_default(), Some(443));
@@ -464,7 +481,7 @@ mod tests {
             Url::parse("/root/style.css"),
             Err(UrlError::MissingScheme(_))
         ));
-        // A Windows path must not be read as a `c:` scheme.
+        // A backslash Windows path must not be read as a `c:` scheme.
         assert!(Url::parse(r"C:\dir\page.html").is_err());
     }
 
