@@ -4,14 +4,56 @@
 //
 // Most validation lives in validation_constraints. This final facade overlays
 // structural and lexical rules that need stricter live-DOM information than the
-// older element-only validators expose: select placeholder selectedness and the
-// Number state's exact valid-floating-point-number syntax.
+// older element-only validators expose: select placeholder selectedness, exact
+// Number-state syntax, and per-input-state attribute applicability.
 
-use crate::dom::Node;
+use crate::dom::{ElementData, Node};
 use crate::forms;
 use crate::script::dom_api::{self, NodePath};
 
-pub use crate::validation_constraints::{will_validate, Validity};
+pub use crate::validation_constraints::Validity;
+
+/// Whether a control participates in constraint validation.
+///
+/// `readonly` is not a universal form-control switch. HTML only makes it bar
+/// validation for text/date/time/number-like input states and `<textarea>`.
+/// On checkbox, radio, file, range, color and `<select>` it is inapplicable and
+/// must not silently disable `required` or the rest of constraint validation.
+pub fn will_validate(element: &ElementData) -> bool {
+    if !element.is_form_control() || element.is_disabled() {
+        return false;
+    }
+    match element.tag_name.as_str() {
+        "button" => false,
+        "textarea" => !element.is_readonly(),
+        "input" => {
+            let kind = element.input_type();
+            if matches!(kind.as_str(), "hidden" | "submit" | "reset" | "button" | "image") {
+                return false;
+            }
+            !(element.is_readonly() && readonly_applies_to_input(&kind))
+        }
+        _ => true,
+    }
+}
+
+fn readonly_applies_to_input(kind: &str) -> bool {
+    matches!(
+        kind,
+        "text"
+            | "search"
+            | "tel"
+            | "url"
+            | "email"
+            | "password"
+            | "date"
+            | "month"
+            | "week"
+            | "time"
+            | "datetime-local"
+            | "number"
+    )
+}
 
 /// Compute the final validity state for a live form control.
 pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
@@ -21,13 +63,58 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
     };
 
     let participates = will_validate(element) && !forms::is_effectively_disabled(dom, path);
+    if !participates {
+        return Validity::default();
+    }
 
-    if element.tag_name == "select"
-        && element.get_attr("required").is_some()
-        && participates
-    {
+    let input_type = element.input_type();
+    let required = element.get_attr("required").is_some();
+
+    // The lower validation layers historically treated every `readonly`
+    // attribute as barring validation. When readonly is inapplicable, repair
+    // the required-state flags that those layers therefore skipped entirely.
+    // Other currently implemented constraints do not apply to these states.
+    let lower_barred_only_by_readonly = element.is_readonly()
+        && crate::validation_constraints::will_validate(element) == false
+        && match element.tag_name.as_str() {
+            "select" => true,
+            "input" => !readonly_applies_to_input(&input_type),
+            _ => false,
+        };
+
+    if lower_barred_only_by_readonly && element.tag_name == "input" && required {
+        validity.value_missing = match input_type.as_str() {
+            "checkbox" => !element.is_checked(),
+            "radio" => {
+                let group = crate::form_state::radio_group_paths(dom, path);
+                let group_required = group.iter().any(|candidate| {
+                    dom_api::node_at(dom, candidate)
+                        .and_then(|node| node.as_element())
+                        .is_some_and(|radio| radio.get_attr("required").is_some())
+                });
+                let checked = group.iter().any(|candidate| {
+                    dom_api::node_at(dom, candidate)
+                        .and_then(|node| node.as_element())
+                        .is_some_and(|radio| radio.is_checked())
+                });
+                group_required && !checked
+            }
+            "file" => element.control_value().is_empty(),
+            _ => false,
+        };
+    }
+
+    if element.tag_name == "select" && required {
         validity.value_missing = crate::select_state::required_value_missing(dom, path)
             .unwrap_or(validity.value_missing);
+    }
+
+    // `required` is not applicable to the Range or Color states. They always
+    // have a value in conforming browsers, so an author-supplied `required`
+    // attribute must never make them value-missing even in this engine's raw
+    // value model.
+    if element.tag_name == "input" && matches!(input_type.as_str(), "range" | "color") {
+        validity.value_missing = false;
     }
 
     // The base number validator deliberately keeps a raw live string, but its
@@ -36,7 +123,7 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
     // floating-point-number string. A real browser would sanitize invalid
     // strings back to empty; this engine preserves them while editing, so the
     // equivalent observable state is `bad_input`.
-    if participates && element.tag_name == "input" && element.input_type() == "number" {
+    if element.tag_name == "input" && input_type == "number" {
         let raw = element.control_value();
         if !raw.is_empty() && !valid_number_state_syntax(&raw) {
             validity.bad_input = true;
@@ -130,10 +217,14 @@ mod tests {
         control_validity(&dom, &path)
     }
 
-    fn number_validity(value: &str) -> Validity {
-        let dom = parse_html(&format!(r#"<input type="number" value="{value}">"#));
+    fn input_validity(html: &str) -> Validity {
+        let dom = parse_html(html);
         let path = dom_api::query_selector(&dom, &[], "input").unwrap();
         control_validity(&dom, &path)
+    }
+
+    fn number_validity(value: &str) -> Validity {
+        input_validity(&format!(r#"<input type="number" value="{value}">"#))
     }
 
     #[test]
@@ -155,6 +246,40 @@ mod tests {
             r#"<fieldset disabled><select required><option value="">Choose</option></select></fieldset>"#,
         );
         assert!(flags.valid());
+    }
+
+    #[test]
+    fn readonly_is_ignored_on_checkbox_file_and_select_but_not_text_controls() {
+        let flags = input_validity(r#"<input type="checkbox" required readonly>"#);
+        assert!(flags.value_missing);
+
+        let flags = input_validity(r#"<input type="file" required readonly>"#);
+        assert!(flags.value_missing);
+
+        let flags = select_validity(
+            r#"<select required readonly><option value="">Choose</option><option value="x">X</option></select>"#,
+        );
+        assert!(flags.value_missing);
+
+        let flags = input_validity(r#"<input type="text" required readonly>"#);
+        assert!(flags.valid(), "readonly text controls remain barred");
+    }
+
+    #[test]
+    fn readonly_radio_still_participates_in_group_requiredness() {
+        let dom = crate::html::parse_html(
+            r#"<form><input id="a" type="radio" name="r" required><input id="b" type="radio" name="r" readonly></form>"#,
+        );
+        let b = dom_api::get_element_by_id(&dom, "b").unwrap();
+        assert!(control_validity(&dom, &b).value_missing);
+    }
+
+    #[test]
+    fn required_is_inapplicable_to_range_and_color() {
+        for kind in ["range", "color"] {
+            let flags = input_validity(&format!(r#"<input type="{kind}" required>"#));
+            assert!(flags.valid(), "{kind} must not become value-missing");
+        }
     }
 
     #[test]
