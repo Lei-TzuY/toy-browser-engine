@@ -2,14 +2,16 @@
 //  net_final.rs — public network facade with completion accounting
 // ============================================================
 //
-// `net_base` retains the protocol/loaders and raw worker implementation. This
-// final facade strengthens two lifecycle invariants at the public boundary:
-// a started request stays busy until its completion is observed or cancelled,
-// and every start receives a fresh internal wire id so a stale answer from an
-// older generation can never be mistaken for a reused public FetchId.
+// `net_base` retains the protocol/loaders and raw implementation. This final
+// facade owns the asynchronous worker boundary used publicly: started requests
+// stay busy until observed or cancelled, every start gets a fresh internal wire
+// generation, stale generations are invisible, and worker threads are detached
+// so their JoinHandles cannot accumulate in a long-lived browser session.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,10 +26,157 @@ pub use crate::net_base::{
 };
 pub use fetch::FetchRegistry;
 
+/// Minimal threaded wire backend used behind [`CompletionTracked`].
+///
+/// It deliberately does not retain `JoinHandle`s. The completion/generation
+/// maps in the facade are the authoritative liveness state, so keeping one
+/// handle per request only creates a cleanup obligation after cancellation.
+/// Dropping the handle detaches the worker while the channel still owns the
+/// result path.
+struct DetachedThreadedBackend {
+    loader: Arc<dyn ResourceLoader>,
+    sender: Sender<FetchCompletion>,
+    receiver: Receiver<FetchCompletion>,
+    ready: RefCell<Vec<FetchCompletion>>,
+    outstanding: RefCell<HashSet<FetchId>>,
+    cancelled: RefCell<HashSet<FetchId>>,
+}
+
+impl DetachedThreadedBackend {
+    fn new(loader: Arc<dyn ResourceLoader>) -> Self {
+        let (sender, receiver) = channel();
+        Self {
+            loader,
+            sender,
+            receiver,
+            ready: RefCell::new(Vec::new()),
+            outstanding: RefCell::new(HashSet::new()),
+            cancelled: RefCell::new(HashSet::new()),
+        }
+    }
+}
+
+impl NetworkBackend for DetachedThreadedBackend {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        self.outstanding.borrow_mut().insert(id);
+        let loader = self.loader.clone();
+        let sender = self.sender.clone();
+        let request_url = request.url.to_string();
+
+        // Intentionally discard the JoinHandle: completion visibility is
+        // tracked by request id, not thread liveness. Contain a loader panic so
+        // every started generation still produces a terminal completion.
+        let _ = std::thread::spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| loader.fetch(&request))).unwrap_or_else(
+                |_| {
+                    Err(FetchError::Io(format!(
+                        "network worker panicked while fetching {request_url}"
+                    )))
+                },
+            );
+            let _ = sender.send(FetchCompletion { id, result });
+        });
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        let mut arrived = std::mem::take(&mut *self.ready.borrow_mut());
+        arrived.extend(self.receiver.try_iter());
+
+        let mut outstanding = self.outstanding.borrow_mut();
+        let mut cancelled = self.cancelled.borrow_mut();
+        arrived
+            .into_iter()
+            .filter(|completion| {
+                let active = outstanding.remove(&completion.id);
+                let was_cancelled = cancelled.remove(&completion.id);
+                active && !was_cancelled
+            })
+            .collect()
+    }
+
+    fn cancel(&self, id: FetchId) {
+        if self.outstanding.borrow_mut().remove(&id) {
+            // The detached worker may already be inside the loader. Its answer
+            // is allowed to arrive, but this marker makes that answer invisible.
+            self.cancelled.borrow_mut().insert(id);
+        }
+        self.ready
+            .borrow_mut()
+            .retain(|completion| completion.id != id);
+    }
+
+    fn is_busy(&self) -> bool {
+        !self.outstanding.borrow().is_empty() || !self.ready.borrow().is_empty()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        if !self.ready.borrow().is_empty() {
+            return true;
+        }
+        if self.outstanding.borrow().is_empty() {
+            return false;
+        }
+        match self.receiver.recv_timeout(timeout) {
+            Ok(completion) => {
+                self.ready.borrow_mut().push(completion);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+/// Scheme router used by the public default network. Local resources retain
+/// their synchronous backend; only HTTP(S) work crosses the detached worker
+/// boundary.
+struct RoutedBackend {
+    local: crate::net_base::LocalNetwork,
+    threaded: DetachedThreadedBackend,
+}
+
+impl RoutedBackend {
+    fn new(loader: Arc<dyn ResourceLoader>) -> Self {
+        Self {
+            local: crate::net_base::LocalNetwork::new(loader.clone()),
+            threaded: DetachedThreadedBackend::new(loader),
+        }
+    }
+}
+
+impl NetworkBackend for RoutedBackend {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        match request.url.scheme() {
+            "http" | "https" => self.threaded.start(id, request),
+            _ => self.local.start(id, request),
+        }
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        let mut completions = self.local.poll();
+        completions.extend(self.threaded.poll());
+        completions
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.local.cancel(id);
+        self.threaded.cancel(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.local.is_busy() || self.threaded.is_busy()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        // Local work completes during start and is ready immediately. Avoid
+        // blocking on the socket channel when that local completion is waiting.
+        self.local.is_busy() || self.threaded.wait(timeout)
+    }
+}
+
 /// Adds public-id lifecycle accounting and internal request generations around
 /// a backend.
 ///
-/// The raw backends key completion and cancellation only by `FetchId`. Passing
+/// The wire backend keys completion and cancellation only by `FetchId`. Passing
 /// a public id through unchanged therefore makes reuse unsafe: a late answer or
 /// cancellation marker from an older request can be confused with a newer
 /// request carrying the same id. `CompletionTracked` instead gives every start
@@ -141,11 +290,11 @@ impl<N: NetworkBackend> CompletionTracked<N> {
             return false;
         }
 
-        // A raw backend can wake for a completion from a generation that was
+        // A wire backend can wake for a completion from a generation that was
         // cancelled or superseded after the worker started. Such a wake is not
         // observable at this public boundary, and it must not make `wait`
         // return early while an active generation is still owed. Keep waiting
-        // with the *remaining* portion of the caller's original timeout budget.
+        // with the remaining portion of the caller's original timeout budget.
         let started = Instant::now();
         let mut remaining = timeout;
         loop {
@@ -174,13 +323,13 @@ impl<N: NetworkBackend> CompletionTracked<N> {
 /// Threaded backend whose busy state and completion identity are tied to the
 /// active request generation rather than worker-thread liveness.
 pub struct ThreadedNetwork {
-    backend: CompletionTracked<crate::net_base::ThreadedNetwork>,
+    backend: CompletionTracked<DetachedThreadedBackend>,
 }
 
 impl ThreadedNetwork {
     pub fn new(loader: Arc<dyn ResourceLoader>) -> Self {
         Self {
-            backend: CompletionTracked::new(crate::net_base::ThreadedNetwork::new(loader)),
+            backend: CompletionTracked::new(DetachedThreadedBackend::new(loader)),
         }
     }
 }
@@ -207,15 +356,16 @@ impl NetworkBackend for ThreadedNetwork {
     }
 }
 
-/// Default routing backend with the same request-generation accounting.
+/// Default routing backend with the same request-generation accounting and
+/// detached HTTP workers.
 pub struct DefaultNetwork {
-    backend: CompletionTracked<crate::net_base::DefaultNetwork>,
+    backend: CompletionTracked<RoutedBackend>,
 }
 
 impl DefaultNetwork {
     pub fn new(loader: Arc<dyn ResourceLoader>) -> Self {
         Self {
-            backend: CompletionTracked::new(crate::net_base::DefaultNetwork::new(loader)),
+            backend: CompletionTracked::new(RoutedBackend::new(loader)),
         }
     }
 }
@@ -322,6 +472,18 @@ mod tests {
         }
     }
 
+    struct PanickingLoader;
+
+    impl ResourceLoader for PanickingLoader {
+        fn load(&self, _url: &Url) -> Result<Resource, LoadError> {
+            panic!("intentional loader panic")
+        }
+
+        fn fetch(&self, _request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+            panic!("intentional loader panic")
+        }
+    }
+
     fn text_completion(wire_id: FetchId, text: &str) -> FetchCompletion {
         FetchCompletion {
             id: wire_id,
@@ -378,7 +540,6 @@ mod tests {
         let new_wire = network.public_to_wire.borrow()[&7];
         assert_ne!(old_wire, new_wire);
 
-        // The old worker answers after the public id has already been reused.
         network.inner.complete_text(old_wire, "old");
         assert!(network.poll().is_empty());
         assert!(network.is_busy(), "the new generation is still outstanding");
@@ -472,14 +633,34 @@ mod tests {
     }
 
     #[test]
+    fn worker_panic_becomes_fetch_error_and_retires_generation() {
+        let network = ThreadedNetwork::new(Arc::new(PanickingLoader));
+        network.start(77, request());
+
+        assert!(network.wait(Duration::from_secs(2)));
+        let mut completions = network.poll();
+        assert_eq!(completions.len(), 1);
+        let completion = completions.pop().unwrap();
+        assert_eq!(completion.id, 77);
+        match completion.result {
+            Err(FetchError::Io(message)) => {
+                assert!(message.contains("network worker panicked"), "{message}")
+            }
+            other => panic!("expected contained worker panic, got {other:?}"),
+        }
+        assert!(!network.is_busy());
+    }
+
+    #[test]
     fn immediate_threaded_completions_never_create_a_false_idle_window() {
         let mut loader = MemoryLoader::new();
         loader.insert("demo:///resource", "ok");
         let network = ThreadedNetwork::new(Arc::new(loader));
 
-        // Fast in-memory loads make worker/send/exit ordering extremely tight.
+        // Fast in-memory loads make worker/send ordering extremely tight.
         // Reuse public ids across many generations as well, so the stress test
-        // covers both completion visibility and public-to-wire translation.
+        // covers completion visibility and public-to-wire translation without
+        // relying on worker JoinHandle state.
         for generation in 1..=256 {
             let public_id = (generation % 5) + 1;
             network.start(public_id, request());
