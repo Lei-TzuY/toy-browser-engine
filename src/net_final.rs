@@ -127,12 +127,23 @@ impl NetworkBackend for DetachedThreadedBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WireRoute {
+    Local,
+    Threaded,
+}
+
 /// Scheme router used by the public default network. Local resources retain
 /// their synchronous backend; only HTTP(S) work crosses the detached worker
 /// boundary.
+///
+/// Route ownership is retained until completion/cancellation so an id is only
+/// cancelled in the backend that actually received it. In particular, an HTTP
+/// cancellation must never manufacture a tombstone inside raw `LocalNetwork`.
 struct RoutedBackend {
     local: crate::net_base::LocalNetwork,
     threaded: DetachedThreadedBackend,
+    routes: RefCell<HashMap<FetchId, WireRoute>>,
 }
 
 impl RoutedBackend {
@@ -140,27 +151,42 @@ impl RoutedBackend {
         Self {
             local: crate::net_base::LocalNetwork::new(loader.clone()),
             threaded: DetachedThreadedBackend::new(loader),
+            routes: RefCell::new(HashMap::new()),
         }
     }
 }
 
 impl NetworkBackend for RoutedBackend {
     fn start(&self, id: FetchId, request: FetchRequest) {
-        match request.url.scheme() {
-            "http" | "https" => self.threaded.start(id, request),
-            _ => self.local.start(id, request),
+        let route = match request.url.scheme() {
+            "http" | "https" => WireRoute::Threaded,
+            _ => WireRoute::Local,
+        };
+        self.routes.borrow_mut().insert(id, route);
+        match route {
+            WireRoute::Local => self.local.start(id, request),
+            WireRoute::Threaded => self.threaded.start(id, request),
         }
     }
 
     fn poll(&self) -> Vec<FetchCompletion> {
         let mut completions = self.local.poll();
         completions.extend(self.threaded.poll());
+        if !completions.is_empty() {
+            let mut routes = self.routes.borrow_mut();
+            for completion in &completions {
+                routes.remove(&completion.id);
+            }
+        }
         completions
     }
 
     fn cancel(&self, id: FetchId) {
-        self.local.cancel(id);
-        self.threaded.cancel(id);
+        match self.routes.borrow_mut().remove(&id) {
+            Some(WireRoute::Local) => self.local.cancel(id),
+            Some(WireRoute::Threaded) => self.threaded.cancel(id),
+            None => {}
+        }
     }
 
     fn is_busy(&self) -> bool {
@@ -636,9 +662,6 @@ mod tests {
     #[test]
     fn cancelled_wire_id_needs_no_tombstone_to_drop_late_completion() {
         let backend = DetachedThreadedBackend::new(Arc::new(MemoryLoader::new()));
-        // Model a started wire generation without racing a real worker: tests
-        // live in this module specifically so they can assert the backend's
-        // bookkeeping invariant directly.
         backend.outstanding.borrow_mut().insert(41);
         assert!(backend.is_busy());
 
@@ -649,6 +672,31 @@ mod tests {
         backend.ready.borrow_mut().push(text_completion(41, "late"));
         assert!(backend.poll().is_empty());
         assert!(!backend.is_busy());
+    }
+
+    #[test]
+    fn http_cancel_does_not_poison_later_local_reuse_of_wire_id() {
+        let mut loader = MemoryLoader::new();
+        loader.insert("demo:///resource", "ok");
+        let backend = RoutedBackend::new(Arc::new(loader));
+
+        let http = FetchRequest::get(Url::parse("http://example.test/resource").unwrap());
+        backend.start(41, http);
+        assert_eq!(backend.routes.borrow().get(&41), Some(&WireRoute::Threaded));
+        backend.cancel(41);
+        assert!(!backend.routes.borrow().contains_key(&41));
+
+        // Reuse the id directly at the router boundary to make cross-backend
+        // pollution observable. An unconditional `local.cancel(41)` from the
+        // previous HTTP request would leave a LocalNetwork tombstone that eats
+        // this otherwise valid synchronous completion.
+        backend.start(41, request());
+        assert_eq!(backend.routes.borrow().get(&41), Some(&WireRoute::Local));
+        let completions = backend.poll();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].id, 41);
+        assert_eq!(completions[0].result.as_ref().unwrap().body, b"ok");
+        assert!(!backend.routes.borrow().contains_key(&41));
     }
 
     #[test]
