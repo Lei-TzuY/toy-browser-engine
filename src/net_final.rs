@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[path = "fetch_final.rs"]
 pub mod fetch;
@@ -141,11 +141,33 @@ impl<N: NetworkBackend> CompletionTracked<N> {
             return false;
         }
 
-        let _ = self.inner.wait(timeout);
-        self.harvest();
-        // A stale cancelled generation may wake the raw backend but is not a
-        // deliverable completion at this public boundary.
-        !self.ready.borrow().is_empty()
+        // A raw backend can wake for a completion from a generation that was
+        // cancelled or superseded after the worker started. Such a wake is not
+        // observable at this public boundary, and it must not make `wait`
+        // return early while an active generation is still owed. Keep waiting
+        // with the *remaining* portion of the caller's original timeout budget.
+        let started = Instant::now();
+        let mut remaining = timeout;
+        loop {
+            let woke = self.inner.wait(remaining);
+            self.harvest();
+
+            if !self.ready.borrow().is_empty() {
+                return true;
+            }
+            if self.public_to_wire.borrow().is_empty() {
+                return false;
+            }
+            if !woke {
+                return false;
+            }
+
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return false;
+            }
+            remaining = timeout.saturating_sub(elapsed);
+        }
     }
 }
 
@@ -233,15 +255,7 @@ mod tests {
 
     impl DelayedNetwork {
         fn complete_text(&self, wire_id: FetchId, text: &str) {
-            self.ready.borrow_mut().push(FetchCompletion {
-                id: wire_id,
-                result: Ok(FetchResponse::synthetic(
-                    Url::parse("demo:///resource").unwrap(),
-                    200,
-                    Some("text/plain"),
-                    text.as_bytes().to_vec(),
-                )),
-            });
+            self.ready.borrow_mut().push(text_completion(wire_id, text));
         }
     }
 
@@ -262,6 +276,61 @@ mod tests {
         // is the authority on whether public work is still outstanding.
         fn is_busy(&self) -> bool {
             false
+        }
+    }
+
+    /// Simulates the most important wait edge after request-generation
+    /// isolation: the raw backend first wakes for a stale cancelled generation,
+    /// then for the active replacement. Cancelling is deliberately advisory so
+    /// the stale completion can still race in, just like a worker already on
+    /// the wire.
+    #[derive(Default)]
+    struct StaleThenActiveWaitNetwork {
+        started: RefCell<Vec<FetchId>>,
+        ready: RefCell<Vec<FetchCompletion>>,
+        waits: Cell<u8>,
+    }
+
+    impl NetworkBackend for StaleThenActiveWaitNetwork {
+        fn start(&self, id: FetchId, _request: FetchRequest) {
+            self.started.borrow_mut().push(id);
+        }
+
+        fn poll(&self) -> Vec<FetchCompletion> {
+            std::mem::take(&mut *self.ready.borrow_mut())
+        }
+
+        fn cancel(&self, _id: FetchId) {
+            // Advisory only: model a request that is already executing.
+        }
+
+        fn wait(&self, _timeout: Duration) -> bool {
+            let call = self.waits.get();
+            self.waits.set(call + 1);
+            let started = self.started.borrow();
+            let wire_id = match call {
+                0 => started.first().copied(),
+                1 => started.get(1).copied(),
+                _ => None,
+            };
+            let Some(wire_id) = wire_id else {
+                return false;
+            };
+            let text = if call == 0 { "stale" } else { "active" };
+            self.ready.borrow_mut().push(text_completion(wire_id, text));
+            true
+        }
+    }
+
+    fn text_completion(wire_id: FetchId, text: &str) -> FetchCompletion {
+        FetchCompletion {
+            id: wire_id,
+            result: Ok(FetchResponse::synthetic(
+                Url::parse("demo:///resource").unwrap(),
+                200,
+                Some("text/plain"),
+                text.as_bytes().to_vec(),
+            )),
         }
     }
 
@@ -339,6 +408,67 @@ mod tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].id, 9);
         assert_eq!(completions[0].result.as_ref().unwrap().body, b"new");
+    }
+
+    #[test]
+    fn wait_ignores_stale_wakeup_and_keeps_waiting_for_active_generation() {
+        let network = CompletionTracked::new(StaleThenActiveWaitNetwork::default());
+        network.start(7, request());
+        network.cancel(7);
+        network.start(7, request());
+
+        assert!(network.wait(Duration::from_secs(1)));
+        assert_eq!(network.inner.waits.get(), 2, "stale wake must be swallowed");
+
+        let completions = network.poll();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].id, 7);
+        assert_eq!(completions[0].result.as_ref().unwrap().body, b"active");
+        assert!(!network.is_busy());
+    }
+
+    #[test]
+    fn out_of_order_completions_preserve_public_identity_and_arrival_order() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
+        network.start(1, request());
+        network.start(2, request());
+        network.start(3, request());
+        let one = network.public_to_wire.borrow()[&1];
+        let two = network.public_to_wire.borrow()[&2];
+        let three = network.public_to_wire.borrow()[&3];
+
+        network.inner.complete_text(three, "three");
+        network.inner.complete_text(one, "one");
+        network.inner.complete_text(two, "two");
+
+        let completions = network.poll();
+        assert_eq!(
+            completions.iter().map(|completion| completion.id).collect::<Vec<_>>(),
+            vec![3, 1, 2]
+        );
+        assert_eq!(
+            completions
+                .iter()
+                .map(|completion| completion.result.as_ref().unwrap().body.clone())
+                .collect::<Vec<_>>(),
+            vec![b"three".to_vec(), b"one".to_vec(), b"two".to_vec()]
+        );
+        assert!(!network.is_busy());
+    }
+
+    #[test]
+    fn cancel_after_harvest_but_before_poll_discards_ready_completion() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
+        network.start(5, request());
+        let wire = network.public_to_wire.borrow()[&5];
+        network.inner.complete_text(wire, "ready");
+
+        assert!(network.is_busy(), "is_busy harvests the ready completion");
+        network.cancel(5);
+
+        assert!(network.poll().is_empty());
+        assert!(network.inner.cancelled.borrow().is_empty());
+        assert!(!network.is_busy());
     }
 
     #[test]
