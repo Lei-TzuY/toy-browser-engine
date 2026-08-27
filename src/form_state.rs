@@ -3,13 +3,100 @@
 // ============================================================
 //
 //  Event dispatch belongs to Document/Browser. This module only mutates the
-//  underlying live control state so button activation, `form.reset()`, and
-//  future DOM bindings can share one reset algorithm without duplicating the
-//  per-control rules.
+//  underlying live control state so button activation, `form.reset()`, and DOM
+//  bindings can share one state algorithm without duplicating per-control rules.
 
 use crate::dom::{Node, NodeType};
 use crate::forms;
-use crate::script::dom_api;
+use crate::script::dom_api::{self, NodePath};
+
+/// Members of the radio-button group containing `path`, in document order.
+///
+/// HTML groups radios by radio type, the same tree, equal non-empty `name`, and
+/// the same form owner. `None` is a real owner state here: two unowned radios
+/// with the same non-empty name belong to one group. An unnamed radio is a
+/// one-element group.
+pub fn radio_group_paths(dom: &Node, path: &[usize]) -> Vec<NodePath> {
+    let Some(element) = dom_api::node_at(dom, path).and_then(|node| node.as_element()) else {
+        return Vec::new();
+    };
+    if element.tag_name != "input" || element.input_type() != "radio" {
+        return Vec::new();
+    }
+    let Some(name) = element.get_attr("name").filter(|name| !name.is_empty()) else {
+        return vec![path.to_vec()];
+    };
+    let owner = forms::owning_form(dom, path);
+
+    let mut out = Vec::new();
+    collect_radio_group(dom, &mut Vec::new(), name, owner.as_deref(), dom, &mut out);
+    out
+}
+
+fn collect_radio_group(
+    node: &Node,
+    path: &mut NodePath,
+    name: &str,
+    owner: Option<&[usize]>,
+    dom: &Node,
+    out: &mut Vec<NodePath>,
+) {
+    if let Some(element) = node.as_element() {
+        let same_radio = element.tag_name == "input"
+            && element.input_type() == "radio"
+            && element.get_attr("name") == Some(name);
+        if same_radio && forms::owning_form(dom, path).as_deref() == owner {
+            out.push(path.clone());
+        }
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        path.push(index);
+        collect_radio_group(child, path, name, owner, dom, out);
+        path.pop();
+    }
+}
+
+/// Assign current checkedness while preserving radio-group exclusivity.
+///
+/// Setting a radio to true silently clears every other member of the same
+/// group, including disabled members. Setting a radio to false affects only
+/// that radio. Checkboxes are assigned directly. Returns whether the target's
+/// own checkedness changed.
+pub fn set_checked(dom: &mut Node, path: &[usize], checked: bool) -> bool {
+    let Some(element) = dom_api::node_at(dom, path).and_then(|node| node.as_element()) else {
+        return false;
+    };
+    if !element.is_checkable() {
+        return false;
+    }
+    let before = element.is_checked();
+    let is_radio = element.input_type() == "radio";
+    let group = if is_radio && checked {
+        radio_group_paths(dom, path)
+    } else {
+        Vec::new()
+    };
+
+    if is_radio && checked {
+        for candidate in group {
+            if candidate == path {
+                continue;
+            }
+            if let Some(NodeType::Element(other)) =
+                dom_api::node_at_mut(dom, &candidate).map(|node| &mut node.node_type)
+            {
+                other.set_checked(false);
+            }
+        }
+    }
+
+    if let Some(NodeType::Element(element)) =
+        dom_api::node_at_mut(dom, path).map(|node| &mut node.node_type)
+    {
+        element.set_checked(checked);
+    }
+    before != checked
+}
 
 /// Restore every control associated with a form to its HTML/default state.
 ///
@@ -54,6 +141,75 @@ mod tests {
 
     fn path(dom: &Node, id: &str) -> Vec<usize> {
         dom_api::get_element_by_id(dom, id).expect("element")
+    }
+
+    fn checked(dom: &Node, id: &str) -> bool {
+        let path = path(dom, id);
+        dom_api::node_at(dom, &path)
+            .unwrap()
+            .as_element()
+            .unwrap()
+            .is_checked()
+    }
+
+    #[test]
+    fn setting_unowned_radio_checked_clears_its_same_name_peer() {
+        let mut dom = parse_html(
+            r#"<input id="a" type="radio" name="choice" checked>
+               <div><input id="b" type="radio" name="choice"></div>"#,
+        );
+        let b = path(&dom, "b");
+        assert!(set_checked(&mut dom, &b, true));
+        assert!(!checked(&dom, "a"));
+        assert!(checked(&dom, "b"));
+    }
+
+    #[test]
+    fn radio_groups_are_isolated_by_form_owner() {
+        let mut dom = parse_html(
+            r#"<form id="a"><input id="a1" type="radio" name="choice" checked></form>
+               <form id="b"><input id="b1" type="radio" name="choice"></form>"#,
+        );
+        let b1 = path(&dom, "b1");
+        assert!(set_checked(&mut dom, &b1, true));
+        assert!(checked(&dom, "a1"));
+        assert!(checked(&dom, "b1"));
+    }
+
+    #[test]
+    fn explicit_form_owner_groups_radios_across_dom_positions() {
+        let mut dom = parse_html(
+            r#"<input id="outside" type="radio" name="choice" form="f" checked>
+               <form id="f"><input id="inside" type="radio" name="choice"></form>"#,
+        );
+        let inside = path(&dom, "inside");
+        assert!(set_checked(&mut dom, &inside, true));
+        assert!(!checked(&dom, "outside"));
+        assert!(checked(&dom, "inside"));
+    }
+
+    #[test]
+    fn checked_disabled_radio_is_cleared_when_a_peer_becomes_checked() {
+        let mut dom = parse_html(
+            r#"<form><input id="disabled" type="radio" name="choice" checked disabled>
+               <input id="enabled" type="radio" name="choice"></form>"#,
+        );
+        let enabled = path(&dom, "enabled");
+        assert!(set_checked(&mut dom, &enabled, true));
+        assert!(!checked(&dom, "disabled"));
+        assert!(checked(&dom, "enabled"));
+    }
+
+    #[test]
+    fn setting_radio_false_does_not_select_or_clear_any_peer() {
+        let mut dom = parse_html(
+            r#"<input id="a" type="radio" name="choice" checked>
+               <input id="b" type="radio" name="choice">"#,
+        );
+        let b = path(&dom, "b");
+        assert!(!set_checked(&mut dom, &b, false));
+        assert!(checked(&dom, "a"));
+        assert!(!checked(&dom, "b"));
     }
 
     #[test]
