@@ -152,11 +152,20 @@ impl<T> FetchRegistry<T> {
 
     /// Drop everything — what navigating away from a page does. The handles go
     /// with it, so no promise from the old page can ever be settled.
+    ///
+    /// Requests already removed from `pending` by an abort may still be waiting
+    /// in `cancelled` for the next network-dispatch turn. They must be returned
+    /// here too: navigation can happen before that turn, and silently clearing
+    /// those ids would leave an already-sent backend request alive after its
+    /// document disappeared.
     pub fn clear(&mut self) -> Vec<FetchId> {
-        let ids: Vec<FetchId> = self.pending.iter().map(|(id, _)| *id).collect();
+        let mut ids: Vec<FetchId> = self.pending.iter().map(|(id, _)| *id).collect();
+        ids.append(&mut self.cancelled);
+        ids.sort_unstable();
+        ids.dedup();
+
         self.pending.clear();
         self.outbox.clear();
-        self.cancelled.clear();
         ids
     }
 }
@@ -206,6 +215,41 @@ mod tests {
         );
 
         assert_eq!(registry.take_cancellations(), vec![1]);
+    }
+
+    #[test]
+    fn clear_preserves_an_unflushed_cancellation_for_the_backend() {
+        let mut registry = FetchRegistry::new().with_limit(4);
+        let sent = registry.start(request("sent"), "abort").unwrap();
+        assert_eq!(registry.take_outbox().len(), 1, "request has left the registry outbox");
+
+        let aborted = registry.take_where(|handle| *handle == "abort");
+        assert_eq!(aborted, vec![(sent, "abort")]);
+        assert!(registry.is_empty());
+
+        // Navigation happens before dispatch_network_requests() gets a chance
+        // to drain take_cancellations(). clear() must still hand the id to
+        // Document::cancel_all_tasks(), which will call network.cancel(id).
+        assert_eq!(registry.clear(), vec![sent]);
+        assert!(registry.take_cancellations().is_empty());
+    }
+
+    #[test]
+    fn clear_returns_pending_and_queued_cancellation_ids_once_each() {
+        let mut registry = FetchRegistry::new().with_limit(4);
+        let keep = registry.start(request("keep"), "keep").unwrap();
+        let doomed = registry.start(request("doomed"), "abort").unwrap();
+        registry.take_outbox();
+        registry.take_where(|handle| *handle == "abort");
+
+        let mut ids = registry.clear();
+        ids.sort_unstable();
+        let mut expected = vec![keep, doomed];
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        assert!(registry.is_empty());
+        assert!(!registry.has_pending_work());
+        assert!(registry.take_cancellations().is_empty());
     }
 
     #[test]
