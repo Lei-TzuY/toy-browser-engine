@@ -2,11 +2,9 @@
 //  image_final.rs — public raster-image facade
 // ============================================================
 //
-// Keep the existing image vocabulary and non-PNG decoders, but normalize PNG
-// sample layouts before converting them to the painter's straight RGBA8 form.
-// `png` 0.18 defaults to identity transformations, which leaves indexed,
-// sub-8-bit grayscale, and 16-bit images in layouts the original decoder did
-// not accept.
+// Keep the existing image vocabulary and JPEG decoder, normalize PNG sample
+// layouts before converting them to the painter's straight RGBA8 form, and
+// harden the tiny in-tree PPM decoder against hostile dimensions.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -19,6 +17,7 @@ pub use crate::image_base::{ImageError, ImageFormat, RasterImage};
 pub fn decode(bytes: &[u8]) -> Result<RasterImage, ImageError> {
     match ImageFormat::sniff(bytes) {
         Some(ImageFormat::Png) => decode_png_normalized(bytes),
+        Some(ImageFormat::Ppm) => decode_ppm_checked(bytes),
         _ => crate::image_base::decode(bytes),
     }
 }
@@ -57,6 +56,75 @@ fn decode_png_normalized(bytes: &[u8]) -> Result<RasterImage, ImageError> {
     };
 
     Ok(RasterImage::new(info.width, info.height, pixels))
+}
+
+fn decode_ppm_checked(bytes: &[u8]) -> Result<RasterImage, ImageError> {
+    let mut cursor = 2; // signature `P6` was already sniffed.
+    let mut fields = Vec::with_capacity(3);
+
+    while fields.len() < 3 && cursor < bytes.len() {
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor < bytes.len() && bytes[cursor] == b'#' {
+            while cursor < bytes.len() && bytes[cursor] != b'\n' {
+                cursor += 1;
+            }
+            continue;
+        }
+
+        let start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        if start == cursor {
+            return Err(ImageError::Decode("malformed PPM header".to_string()));
+        }
+        let text = std::str::from_utf8(&bytes[start..cursor])
+            .map_err(|_| ImageError::Decode("non-ASCII PPM header".to_string()))?;
+        let value = text
+            .parse::<u32>()
+            .map_err(|error| ImageError::Decode(error.to_string()))?;
+        fields.push(value);
+    }
+
+    if fields.len() != 3 {
+        return Err(ImageError::Decode("truncated PPM header".to_string()));
+    }
+    if cursor >= bytes.len() || !bytes[cursor].is_ascii_whitespace() {
+        return Err(ImageError::Decode(
+            "PPM header must end with whitespace before pixel data".to_string(),
+        ));
+    }
+    cursor += 1;
+
+    let (width, height, max) = (fields[0], fields[1], fields[2]);
+    if width == 0 || height == 0 {
+        return Err(ImageError::Decode(
+            "PPM width and height must be non-zero".to_string(),
+        ));
+    }
+    if max != 255 {
+        return Err(ImageError::Decode(format!(
+            "unsupported PPM max value {max}"
+        )));
+    }
+
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| ImageError::Decode("PPM dimensions overflow pixel buffer".to_string()))?;
+    let end = cursor
+        .checked_add(expected)
+        .ok_or_else(|| ImageError::Decode("PPM pixel offset overflow".to_string()))?;
+    if bytes.len() < end {
+        return Err(ImageError::Decode("truncated PPM pixel data".to_string()));
+    }
+
+    let pixels = expand(&bytes[cursor..end], 3, |pixel| {
+        [pixel[0], pixel[1], pixel[2], 255]
+    });
+    Ok(RasterImage::new(width, height, pixels))
 }
 
 fn expand(samples: &[u8], stride: usize, to_rgba: impl Fn(&[u8]) -> [u8; 4]) -> Vec<u8> {
@@ -131,6 +199,8 @@ mod tests {
     use super::*;
     use crate::net::MemoryLoader;
 
+    const PPM_1X1: &[u8] = b"P6\n1 1\n255\n\x12\x34\x56";
+
     fn indexed_png() -> Vec<u8> {
         let mut bytes = Vec::new();
         {
@@ -189,6 +259,29 @@ mod tests {
         assert!(Rc::ptr_eq(
             &image,
             &cache.fetch(&url, &loader).expect("cache hit")
+        ));
+    }
+
+    #[test]
+    fn checked_ppm_decoder_preserves_normal_pixels() {
+        let image = decode(PPM_1X1).expect("decoded PPM");
+        assert_eq!((image.width, image.height), (1, 1));
+        assert_eq!(image.pixel(0, 0), [0x12, 0x34, 0x56, 255]);
+    }
+
+    #[test]
+    fn ppm_rejects_zero_dimensions() {
+        assert!(matches!(
+            decode(b"P6\n0 1\n255\n"),
+            Err(ImageError::Decode(message)) if message.contains("non-zero")
+        ));
+    }
+
+    #[test]
+    fn ppm_rejects_dimension_arithmetic_overflow() {
+        assert!(matches!(
+            decode(b"P6\n4294967295 4294967295\n255\n"),
+            Err(ImageError::Decode(message)) if message.contains("overflow")
         ));
     }
 }
