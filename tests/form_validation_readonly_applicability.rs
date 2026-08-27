@@ -15,7 +15,7 @@ fn browser_for(html: &str) -> Browser {
 }
 
 #[test]
-fn readonly_required_checkbox_still_blocks_submission() {
+fn readonly_required_checkbox_still_participates_in_validation() {
     let html = r#"<form action="next">
         <input id="agree" type="checkbox" name="agree" required readonly>
         <button id="go">Go</button>
@@ -28,7 +28,15 @@ fn readonly_required_checkbox_still_blocks_submission() {
     assert_eq!(browser.url().to_string(), "demo:///form.html");
     assert_eq!(browser.document().focused_path().as_ref(), Some(&agree));
 
-    assert_eq!(browser.click_node(&agree), ClickOutcome::Script);
+    // This PR is about validation applicability, not the separate Browser
+    // activation gate. A checked readonly checkbox must satisfy `required` and
+    // serialize normally even though `readonly` is a stray/inapplicable attr.
+    let html = r#"<form action="next">
+        <input type="checkbox" name="agree" required readonly checked>
+        <button id="go">Go</button>
+    </form>"#;
+    let mut browser = browser_for(html);
+    let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
     assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
     assert_eq!(browser.url().to_string(), "demo:///next?agree=on");
 }
