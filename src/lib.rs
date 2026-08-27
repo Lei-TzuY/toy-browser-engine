@@ -31,7 +31,10 @@ mod validation_base;
 #[allow(dead_code)]
 #[path = "validation_ext.rs"]
 mod validation_constraints;
+#[allow(dead_code)]
 #[path = "validation_facade.rs"]
+mod validation_facade;
+#[path = "validation_final.rs"]
 pub mod validation;
 
 pub use browser::Browser;
