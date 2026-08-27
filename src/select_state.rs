@@ -47,21 +47,29 @@ pub fn selected_index(dom: &Node, select_path: &[usize]) -> Option<isize> {
     )
 }
 
-/// Whether a required `<select>` is suffering from `valueMissing`.
+/// Whether a `<select>` is suffering from Required-state `valueMissing`.
 ///
-/// Required-select validity is defined in terms of option *selectedness*, not
-/// successful form data and not the select's string value. In particular, a
-/// disabled selected option can satisfy `required`, and an empty-valued option
-/// only counts as missing when it is the select's special placeholder label
-/// option: the first option in the list, directly parented by the select, while
-/// the select's display size is exactly one. HTML defines this placeholder
-/// independently of `multiple`; the separate authoring requirement for a
-/// non-multiple required select does not narrow the placeholder definition.
+/// Optional selects can never suffer from Required-state valueMissing, even
+/// when they currently have no selection or their first option looks like a
+/// placeholder label option. Keeping that precondition inside this reusable
+/// state helper prevents future DOM/IDL callers from having to duplicate it.
+///
+/// For an actual required select, validity is defined in terms of option
+/// *selectedness*, not successful form data and not the select's string value.
+/// In particular, a disabled selected option can satisfy `required`, and an
+/// empty-valued option only counts as missing when it is the select's special
+/// placeholder label option: the first option in the list, directly parented by
+/// the select, while the select's display size is exactly one. HTML defines this
+/// placeholder independently of `multiple`; the separate authoring requirement
+/// for a non-multiple required select does not narrow the placeholder definition.
 pub fn required_value_missing(dom: &Node, select_path: &[usize]) -> Option<bool> {
     let select_node = dom_api::node_at(dom, select_path)?;
     let select = select_node.as_element()?;
     if select.tag_name != "select" {
         return None;
+    }
+    if select.get_attr("required").is_none() {
+        return Some(false);
     }
 
     let options = select_snapshot(dom, select_path)?;
@@ -202,6 +210,26 @@ mod tests {
         let form = dom_api::query_selector(&dom, &[], "form").unwrap();
         assert_eq!(value(&dom, &select).as_deref(), Some("x"));
         assert!(forms::form_data(&dom, &form).is_empty());
+    }
+
+    #[test]
+    fn optional_placeholder_like_selection_is_never_value_missing() {
+        let dom = parse_html(
+            r#"<select><option value="">Choose</option><option value="x">X</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(false));
+    }
+
+    #[test]
+    fn explicitly_cleared_optional_selection_is_never_value_missing() {
+        let mut dom = parse_html(
+            r#"<select><option value="a">A</option><option value="b">B</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert!(set_selected_index(&mut dom, &select, -1));
+        assert_eq!(selected_index(&dom, &select), Some(-1));
+        assert_eq!(required_value_missing(&dom, &select), Some(false));
     }
 
     #[test]
