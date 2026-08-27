@@ -120,11 +120,21 @@ impl<T> FetchRegistry<T> {
             }
         }
 
-        // A request still in the outbox must not reach the network either, and
-        // one already sent must have its answer dropped on arrival.
         let ids: Vec<FetchId> = taken.iter().map(|(id, _)| *id).collect();
+
+        // Requests still present in the outbox have never reached a backend.
+        // Abort can simply erase them: asking the backend to cancel an id it
+        // has never seen creates fake lifecycle state and unnecessarily keeps
+        // that id reserved across allocator wrap. Only ids absent from the
+        // outbox are considered already dispatched and need a real cancel.
+        let unsent: Vec<FetchId> = self
+            .outbox
+            .iter()
+            .filter_map(|(id, _)| ids.contains(id).then_some(*id))
+            .collect();
         self.outbox.retain(|(id, _)| !ids.contains(id));
-        self.cancelled.extend(ids);
+        self.cancelled
+            .extend(ids.iter().copied().filter(|id| !unsent.contains(id)));
         taken
     }
 
@@ -188,8 +198,6 @@ mod tests {
         let last = registry.start(request("last"), "last").unwrap();
         assert_eq!(last, FetchId::MAX);
 
-        // The raw allocator used to wrap directly to 1 here, colliding with
-        // `first`. The hardened allocator must move on to the next free id.
         let wrapped = registry.start(request("wrapped"), "wrapped").unwrap();
         assert_eq!(wrapped, 2);
         assert_eq!(registry.len(), 3);
@@ -203,6 +211,7 @@ mod tests {
         let mut registry = FetchRegistry::new().with_limit(4);
         let doomed = registry.start(request("doomed"), "abort").unwrap();
         assert_eq!(doomed, 1);
+        registry.take_outbox(); // this request has been dispatched
         let taken = registry.take_where(|handle| *handle == "abort");
         assert_eq!(taken, vec![(1, "abort")]);
 
@@ -218,6 +227,30 @@ mod tests {
     }
 
     #[test]
+    fn aborting_an_unsent_request_never_queues_backend_cancellation() {
+        let mut registry = FetchRegistry::new().with_limit(4);
+        let id = registry.start(request("unsent"), "abort").unwrap();
+        assert_eq!(registry.take_where(|handle| *handle == "abort"), vec![(id, "abort")]);
+
+        assert!(registry.take_outbox().is_empty());
+        assert!(registry.take_cancellations().is_empty());
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn aborting_a_dispatched_request_queues_backend_cancellation() {
+        let mut registry = FetchRegistry::new().with_limit(4);
+        let id = registry.start(request("sent"), "abort").unwrap();
+        let outbox = registry.take_outbox();
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].0, id);
+
+        assert_eq!(registry.take_where(|handle| *handle == "abort"), vec![(id, "abort")]);
+        assert_eq!(registry.take_cancellations(), vec![id]);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
     fn clear_preserves_an_unflushed_cancellation_for_the_backend() {
         let mut registry = FetchRegistry::new().with_limit(4);
         let sent = registry.start(request("sent"), "abort").unwrap();
@@ -227,9 +260,6 @@ mod tests {
         assert_eq!(aborted, vec![(sent, "abort")]);
         assert!(registry.is_empty());
 
-        // Navigation happens before dispatch_network_requests() gets a chance
-        // to drain take_cancellations(). clear() must still hand the id to
-        // Document::cancel_all_tasks(), which will call network.cancel(id).
         assert_eq!(registry.clear(), vec![sent]);
         assert!(registry.take_cancellations().is_empty());
     }
