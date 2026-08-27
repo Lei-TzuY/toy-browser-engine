@@ -60,7 +60,12 @@ fn formnovalidate_bypasses_required_but_normal_submitter_does_not() {
     let draft = dom_api::get_element_by_id(&browser.document().dom, "draft").unwrap();
     let outcome = browser.click_node(&draft);
     assert!(matches!(outcome, ClickOutcome::Navigated(_)), "{outcome:?}");
-    assert_eq!(browser.url().to_string(), "demo:///next?intent=draft");
+    // `formnovalidate` skips constraint validation; it does not remove an
+    // otherwise-successful empty named control from the submitted data set.
+    assert_eq!(
+        browser.url().to_string(),
+        "demo:///next?title=&intent=draft"
+    );
 }
 
 #[test]
