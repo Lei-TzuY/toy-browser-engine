@@ -16,6 +16,10 @@ pub mod eventloop;
 pub mod form_state;
 pub mod forms;
 pub mod html;
+#[allow(dead_code)]
+#[path = "image.rs"]
+mod image_base;
+#[path = "image_final.rs"]
 pub mod image;
 pub mod input;
 pub mod layout;
