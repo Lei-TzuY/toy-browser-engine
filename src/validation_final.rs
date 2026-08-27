@@ -68,9 +68,28 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         // but HTML does not apply minlength/maxlength to Number state. Preserve
         // numeric validity (badInput/min/max/step) while removing character-
         // count flags inherited from the older `is_text_entry()` abstraction.
+        //
+        // The lower lexical validator also deliberately separates syntax from
+        // conversion. A syntactically valid token such as `1e999` can overflow
+        // the host `f64` conversion to infinity; HTML Number state cannot expose
+        // a non-finite number, so treat that as bad input and suppress dependent
+        // range/step flags just like other unconvertible numeric values.
         "number" => {
             validity.too_short = false;
             validity.too_long = false;
+
+            let raw = element.control_value();
+            let non_finite = !raw.is_empty()
+                && raw
+                    .parse::<f64>()
+                    .ok()
+                    .is_some_and(|number| !number.is_finite());
+            if non_finite {
+                validity.bad_input = true;
+                validity.range_underflow = false;
+                validity.range_overflow = false;
+                validity.step_mismatch = false;
+            }
         }
         _ => {}
     }
@@ -172,5 +191,26 @@ mod tests {
         assert!(flags.range_underflow);
         assert!(!flags.too_short);
         assert!(!flags.too_long);
+    }
+
+    #[test]
+    fn number_overflow_to_infinity_is_bad_input() {
+        for value in ["1e999", "-1e999"] {
+            let flags = input_validity(&format!(
+                r#"<input type="number" value="{value}" min="0" max="100" step="3">"#
+            ));
+            assert!(flags.bad_input, "{value} should not produce a finite Number value");
+            assert!(!flags.range_underflow);
+            assert!(!flags.range_overflow);
+            assert!(!flags.step_mismatch);
+            assert!(!flags.valid());
+        }
+    }
+
+    #[test]
+    fn large_but_finite_number_remains_convertible() {
+        let flags = input_validity(r#"<input type="number" value="1e308">"#);
+        assert!(!flags.bad_input);
+        assert!(flags.valid());
     }
 }
