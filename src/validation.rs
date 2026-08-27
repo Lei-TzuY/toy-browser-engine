@@ -14,9 +14,11 @@ use crate::script::dom_api::{self, NodePath};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Validity {
     pub value_missing: bool,
+    pub type_mismatch: bool,
     pub pattern_mismatch: bool,
     pub range_underflow: bool,
     pub range_overflow: bool,
+    pub step_mismatch: bool,
     pub too_short: bool,
     pub too_long: bool,
 }
@@ -24,9 +26,11 @@ pub struct Validity {
 impl Validity {
     pub fn valid(self) -> bool {
         !self.value_missing
+            && !self.type_mismatch
             && !self.pattern_mismatch
             && !self.range_underflow
             && !self.range_overflow
+            && !self.step_mismatch
             && !self.too_short
             && !self.too_long
     }
@@ -72,6 +76,11 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         value.is_empty()
     };
 
+    let type_mismatch = !value.is_empty()
+        && element.tag_name == "input"
+        && input_type == "email"
+        && !email_value_valid(&value, element.get_attr("multiple").is_some());
+
     let pattern_mismatch = !value.is_empty()
         && element.tag_name == "input"
         && matches!(
@@ -83,18 +92,25 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
             .is_some_and(|pattern| !pattern_matches(pattern, &value));
 
     let number = if element.tag_name == "input" && input_type == "number" {
-        value.trim().parse::<f64>().ok()
+        value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|number| number.is_finite())
     } else {
         None
     };
     let min = element
         .get_attr("min")
-        .and_then(|text| text.trim().parse::<f64>().ok());
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .filter(|number| number.is_finite());
     let max = element
         .get_attr("max")
-        .and_then(|text| text.trim().parse::<f64>().ok());
+        .and_then(|text| text.trim().parse::<f64>().ok())
+        .filter(|number| number.is_finite());
     let range_underflow = number.zip(min).is_some_and(|(value, min)| value < min);
     let range_overflow = number.zip(max).is_some_and(|(value, max)| value > max);
+    let step_mismatch = number.is_some_and(|number| number_step_mismatch(element, number, min));
 
     let length = value.chars().count();
     let min_length = element
@@ -109,9 +125,11 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
 
     Validity {
         value_missing,
+        type_mismatch,
         pattern_mismatch,
         range_underflow,
         range_overflow,
+        step_mismatch,
         too_short,
         too_long,
     }
@@ -139,6 +157,94 @@ fn radio_group_checked(dom: &Node, path: &[usize], element: &ElementData) -> boo
                 && other.get_attr("name") == Some(name)
                 && other.is_checked()
         })
+}
+
+// ── type=email ────────────────────────────────────────────────────────────────
+
+fn email_value_valid(value: &str, multiple: bool) -> bool {
+    if multiple {
+        let mut saw_address = false;
+        for candidate in value.split(',') {
+            let candidate = trim_ascii_whitespace(candidate);
+            if candidate.is_empty() || !email_address_valid(candidate) {
+                return false;
+            }
+            saw_address = true;
+        }
+        saw_address
+    } else {
+        email_address_valid(trim_ascii_whitespace(value))
+    }
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|character: char| character.is_ascii_whitespace())
+}
+
+fn email_address_valid(value: &str) -> bool {
+    if !value.is_ascii() || value.chars().any(|character| character.is_ascii_whitespace()) {
+        return false;
+    }
+    let mut parts = value.split('@');
+    let Some(local) = parts.next() else {
+        return false;
+    };
+    let Some(domain) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() || local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    if !local.chars().all(|character| {
+        character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '.' | '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '/' | '=' | '?'
+                    | '^' | '_' | '`' | '{' | '|' | '}' | '~'
+            )
+    }) {
+        return false;
+    }
+
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+// ── type=number step= ────────────────────────────────────────────────────────
+
+fn number_step_mismatch(element: &ElementData, value: f64, min: Option<f64>) -> bool {
+    let step_attribute = element.get_attr("step").map(str::trim);
+    if step_attribute.is_some_and(|step| step.eq_ignore_ascii_case("any")) {
+        return false;
+    }
+    let step = step_attribute
+        .and_then(|step| step.parse::<f64>().ok())
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .unwrap_or(1.0);
+    let base = min.unwrap_or(0.0);
+    let steps = (value - base) / step;
+    if !steps.is_finite() {
+        return false;
+    }
+
+    // Binary floating point cannot represent values such as 0.1 exactly.
+    // Compare in step units with a small scale-aware tolerance so 0.3/0.1 is
+    // accepted while genuinely off-grid values remain invalid.
+    let tolerance = 1e-9 * steps.abs().max(1.0);
+    (steps - steps.round()).abs() > tolerance
 }
 
 // ── pattern= ─────────────────────────────────────────────────────────────────
@@ -398,6 +504,36 @@ mod tests {
     }
 
     #[test]
+    fn email_type_checks_single_and_multiple_addresses() {
+        let dom = parse_html(
+            r#"<form>
+                 <input id="ok" type="email" value="person@example.com">
+                 <input id="bad" type="email" value="person.example.com">
+                 <input id="multi" type="email" multiple value="a@one.test, b@two.test">
+                 <input id="multi-bad" type="email" multiple value="a@one.test, broken">
+                 <input id="empty" type="email" value="">
+               </form>"#,
+        );
+        assert!(control_validity(&dom, &path(&dom, "ok")).valid());
+        assert!(control_validity(&dom, &path(&dom, "bad")).type_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "multi")).valid());
+        assert!(control_validity(&dom, &path(&dom, "multi-bad")).type_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "empty")).valid());
+    }
+
+    #[test]
+    fn email_rejects_bad_domain_labels_and_extra_at_signs() {
+        let dom = parse_html(
+            r#"<form>
+                 <input id="hyphen" type="email" value="a@-example.test">
+                 <input id="double-at" type="email" value="a@b@example.test">
+               </form>"#,
+        );
+        assert!(control_validity(&dom, &path(&dom, "hyphen")).type_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "double-at")).type_mismatch);
+    }
+
+    #[test]
     fn pattern_is_a_full_match() {
         let dom = parse_html(
             r#"<form>
@@ -421,6 +557,36 @@ mod tests {
         assert!(control_validity(&dom, &path(&dom, "low")).range_underflow);
         assert!(control_validity(&dom, &path(&dom, "ok")).valid());
         assert!(control_validity(&dom, &path(&dom, "high")).range_overflow);
+    }
+
+    #[test]
+    fn number_step_uses_default_min_base_and_any() {
+        let dom = parse_html(
+            r#"<form>
+                 <input id="default-bad" type="number" value="1.5">
+                 <input id="min-base" type="number" min="0.5" step="1" value="1.5">
+                 <input id="quarter-bad" type="number" step="0.25" value="0.3">
+                 <input id="any" type="number" step="any" value="0.3">
+                 <input id="float" type="number" step="0.1" value="0.3">
+               </form>"#,
+        );
+        assert!(control_validity(&dom, &path(&dom, "default-bad")).step_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "min-base")).valid());
+        assert!(control_validity(&dom, &path(&dom, "quarter-bad")).step_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "any")).valid());
+        assert!(control_validity(&dom, &path(&dom, "float")).valid());
+    }
+
+    #[test]
+    fn invalid_step_values_fall_back_to_the_default_step() {
+        let dom = parse_html(
+            r#"<form>
+                 <input id="zero" type="number" step="0" value="1.5">
+                 <input id="garbage" type="number" step="wat" value="2">
+               </form>"#,
+        );
+        assert!(control_validity(&dom, &path(&dom, "zero")).step_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "garbage")).valid());
     }
 
     #[test]
