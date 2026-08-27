@@ -232,4 +232,32 @@ mod tests {
         assert!(!network.is_busy());
         assert!(network.poll().is_empty());
     }
+
+    #[test]
+    fn immediate_threaded_completions_never_create_a_false_idle_window() {
+        let mut loader = MemoryLoader::new();
+        loader.insert("demo:///resource", "ok");
+        let network = ThreadedNetwork::new(Arc::new(loader));
+
+        // Fast in-memory loads make the worker/send/exit ordering extremely
+        // tight, which amplifies the race seen on macOS ARM without relying on
+        // sleeps or wall-clock deadlines. Reuse one backend so channel and
+        // worker bookkeeping are exercised repeatedly too.
+        for id in 1..=256 {
+            network.start(id, request());
+            loop {
+                if let Some(completion) = network.poll().into_iter().next() {
+                    assert_eq!(completion.id, id);
+                    assert_eq!(completion.result.unwrap().text(), "ok");
+                    break;
+                }
+                assert!(
+                    network.is_busy(),
+                    "request {id} became falsely idle before its completion was observed"
+                );
+                std::thread::yield_now();
+            }
+            assert!(!network.is_busy());
+        }
+    }
 }
