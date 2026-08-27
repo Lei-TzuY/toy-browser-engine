@@ -129,7 +129,7 @@ fn parse_date_days(text: &str) -> Option<i64> {
     if day == 0 || day > month_days {
         return None;
     }
-    Some(days_from_civil(year, month, day))
+    days_from_civil(year, month, day)
 }
 
 fn is_leap_year(year: i64) -> bool {
@@ -137,14 +137,25 @@ fn is_leap_year(year: i64) -> bool {
 }
 
 /// Proleptic-Gregorian civil date to days since 1970-01-01.
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let year = year - i64::from(month <= 2);
+///
+/// Extremely large syntactically valid years can exceed this engine's `i64`
+/// day axis. Checked arithmetic turns those values into an unrepresentable
+/// parse result instead of allowing debug builds to panic on overflow.
+fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
+    let year = year.checked_sub(i64::from(month <= 2))?;
     let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
+    let era_start_year = era.checked_mul(400)?;
+    let year_of_era = year.checked_sub(era_start_year)?;
     let shifted_month = i64::from(month) + if month > 2 { -3 } else { 9 };
     let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
+    let day_of_era = year_of_era
+        .checked_mul(365)?
+        .checked_add(year_of_era / 4)?
+        .checked_sub(year_of_era / 100)?
+        .checked_add(day_of_year)?;
+    era.checked_mul(146_097)?
+        .checked_add(day_of_era)?
+        .checked_sub(719_468)
 }
 
 // ── type=month ───────────────────────────────────────────────────────────────
@@ -201,7 +212,9 @@ fn parse_month_index(text: &str) -> Option<i64> {
     if year == 0 || !(1..=12).contains(&month) {
         return None;
     }
-    Some((year - 1970).checked_mul(12)? + (month - 1))
+    year.checked_sub(1970)?
+        .checked_mul(12)?
+        .checked_add(month - 1)
 }
 
 // ── type=week ────────────────────────────────────────────────────────────────
@@ -268,16 +281,16 @@ fn iso_week1_monday(year: i64) -> Option<i64> {
     if year <= 0 {
         return None;
     }
-    let jan4 = days_from_civil(year, 1, 4);
+    let jan4 = days_from_civil(year, 1, 4)?;
     // 1970-01-01 was Thursday. With Monday=0, Thursday has index 3.
-    let weekday = (jan4 + 3).rem_euclid(7);
+    let weekday = jan4.checked_add(3)?.rem_euclid(7);
     jan4.checked_sub(weekday)
 }
 
 fn iso_weeks_in_year(year: i64) -> Option<i64> {
     let this = iso_week1_monday(year)?;
     let next = iso_week1_monday(year.checked_add(1)?)?;
-    Some((next - this) / 7)
+    next.checked_sub(this)?.checked_div(7)
 }
 
 // ── type=time ────────────────────────────────────────────────────────────────
@@ -404,7 +417,7 @@ fn time_step_mismatch(element: &ElementData, value: i64, base: i64) -> bool {
         .filter(|step| step.is_finite() && *step > 0.0)
         .unwrap_or(60.0);
     let allowed_millis = step_seconds * 1000.0;
-    let steps = (value - base) as f64 / allowed_millis;
+    let steps = (value as f64 - base as f64) / allowed_millis;
     let tolerance = 1e-9 * steps.abs().max(1.0);
     (steps - steps.round()).abs() > tolerance
 }
@@ -473,7 +486,7 @@ fn discrete_step_mismatch(element: &ElementData, value: i64, base: i64, default_
         .and_then(|step| step.parse::<f64>().ok())
         .filter(|step| step.is_finite() && *step > 0.0)
         .unwrap_or(default_step);
-    let steps = (value - base) as f64 / step;
+    let steps = (value as f64 - base as f64) / step;
     let tolerance = 1e-9 * steps.abs().max(1.0);
     (steps - steps.round()).abs() > tolerance
 }
@@ -732,6 +745,30 @@ mod tests {
     #[test]
     fn malformed_nonempty_datetime_local_sets_bad_input() {
         let flags = validity(r#"<input type="datetime-local" value="2026-02-30T12:00">"#);
+        assert!(flags.bad_input);
+        assert!(!flags.valid());
+    }
+
+    #[test]
+    fn oversized_calendar_values_fail_safely_and_oversized_bounds_are_ignored() {
+        const HUGE_YEAR: &str = "9223372036854775807";
+
+        assert!(parse_date_days(&format!("{HUGE_YEAR}-01-01")).is_none());
+        assert!(parse_month_index(&format!("{HUGE_YEAR}-01")).is_none());
+        assert!(parse_week_index(&format!("{HUGE_YEAR}-W01")).is_none());
+        assert!(parse_datetime_local_millis(&format!("{HUGE_YEAR}-01-01T00:00")).is_none());
+
+        let flags = validity(&format!(
+            r#"<input type="date" value="2026-08-27" min="{HUGE_YEAR}-01-01">"#
+        ));
+        assert!(!flags.bad_input);
+        assert!(!flags.range_underflow);
+        assert!(!flags.range_overflow);
+        assert!(!flags.step_mismatch);
+
+        let flags = validity(&format!(
+            r#"<input type="date" value="{HUGE_YEAR}-01-01">"#
+        ));
         assert!(flags.bad_input);
         assert!(!flags.valid());
     }
