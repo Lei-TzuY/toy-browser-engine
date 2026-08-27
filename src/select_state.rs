@@ -54,7 +54,9 @@ pub fn selected_index(dom: &Node, select_path: &[usize]) -> Option<isize> {
 /// disabled selected option can satisfy `required`, and an empty-valued option
 /// only counts as missing when it is the select's special placeholder label
 /// option: the first option in the list, directly parented by the select, while
-/// the select's display size is exactly one.
+/// the select's display size is exactly one. HTML defines this placeholder
+/// independently of `multiple`; the separate authoring requirement for a
+/// non-multiple required select does not narrow the placeholder definition.
 pub fn required_value_missing(dom: &Node, select_path: &[usize]) -> Option<bool> {
     let select_node = dom_api::node_at(dom, select_path)?;
     let select = select_node.as_element()?;
@@ -239,6 +241,15 @@ mod tests {
         );
         let select = select_path(&dom);
         assert_eq!(required_value_missing(&dom, &select), Some(false));
+    }
+
+    #[test]
+    fn multiple_size_one_still_uses_placeholder_label_option_semantics() {
+        let dom = parse_html(
+            r#"<select required multiple size="1"><option value="" selected>Choose</option><option value="x">X</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(true));
     }
 
     #[test]
