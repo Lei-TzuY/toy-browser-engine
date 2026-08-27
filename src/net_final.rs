@@ -13,12 +13,16 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[path = "fetch_final.rs"]
+pub mod fetch;
+
 pub use crate::net_base::{
-    fetch, http, mime_from_path, static_fetch, url, url_from_argument, DefaultLoader, FileLoader,
-    FetchCompletion, FetchError, FetchId, FetchRegistry, FetchRequest, FetchResponse, HeaderMap,
-    HttpConfig, HttpLoader, LoadError, LocalNetwork, ManualNetwork, MemoryLoader, Method,
-    NetworkBackend, OfflineNetwork, Origin, Resource, ResourceLoader, Url, UrlError,
+    http, mime_from_path, static_fetch, url, url_from_argument, DefaultLoader, FileLoader,
+    FetchCompletion, FetchError, FetchId, FetchRequest, FetchResponse, HeaderMap, HttpConfig,
+    HttpLoader, LoadError, LocalNetwork, ManualNetwork, MemoryLoader, Method, NetworkBackend,
+    OfflineNetwork, Origin, Resource, ResourceLoader, Url, UrlError,
 };
+pub use fetch::FetchRegistry;
 
 /// Adds request-id accounting around a backend.
 ///
