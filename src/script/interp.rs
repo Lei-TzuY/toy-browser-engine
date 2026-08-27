@@ -80,6 +80,8 @@ pub enum JsValue {
     ClassList(NodeRef),
     /// `element.dataset`
     Dataset(NodeRef),
+    /// `window.getComputedStyle(element)`
+    ComputedStyle(NodeRef),
     /// A built-in namespace or function (`document`, `console`, `Math`, `parseInt`).
     Builtin(Builtin),
     /// A promise, shared with everything that holds a handle to it.
@@ -121,6 +123,7 @@ pub struct CombinatorHandler {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Builtin {
+    Window,
     Document,
     Console,
     EventCtor,
@@ -129,6 +132,7 @@ pub enum Builtin {
     DOMParser,
     XMLSerializerCtor,
     XMLSerializer,
+    GetComputedStyle,
     PromiseCtor,
     QueueMicrotask,
     Fetch,
@@ -194,6 +198,7 @@ impl fmt::Debug for JsValue {
             JsValue::Style(_) => write!(f, "[CSSStyleDeclaration]"),
             JsValue::ClassList(_) => write!(f, "[DOMTokenList]"),
             JsValue::Dataset(_) => write!(f, "[DOMStringMap]"),
+            JsValue::ComputedStyle(_) => write!(f, "[CSSStyleDeclaration]"),
             JsValue::Builtin(b) => write!(f, "[{:?}]", b),
             JsValue::Promise(state) => write!(f, "[Promise {:?}]", state.borrow().status),
             JsValue::PromiseResolver { reject, .. } => {
@@ -1907,6 +1912,43 @@ impl JsRuntime {
                 .flatten()
                 .unwrap_or(JsValue::Undefined)
             }
+            JsValue::ComputedStyle(r) => {
+                let css_prop = dom_api::camel_to_kebab(prop);
+                let stylesheet = dom_api::collect_active_stylesheet(dom);
+                let style_map_opt = if let Some(path) = self.tree_path_of(r) {
+                    crate::style::compute_element_style(dom, &path, &stylesheet, 800.0)
+                } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                    self.detached.get(slot).and_then(|s| s.node.as_ref()).and_then(|root| {
+                        crate::style::compute_element_style(root, &path, &stylesheet, 800.0)
+                    })
+                } else {
+                    None
+                };
+                if let Some(map) = style_map_opt {
+                    if let Some(val) = map.get(&css_prop).or_else(|| map.get(prop)) {
+                        JsValue::Str(val.to_css_string())
+                    } else {
+                        JsValue::Str(String::new())
+                    }
+                } else {
+                    JsValue::Str(String::new())
+                }
+            }
+            JsValue::Builtin(Builtin::Window) => match prop {
+                "document" => JsValue::Builtin(Builtin::Document),
+                "window" | "self" => JsValue::Builtin(Builtin::Window),
+                "location" => JsValue::Builtin(Builtin::Location),
+                "navigator" => JsValue::Builtin(Builtin::Navigator),
+                "screen" => JsValue::Builtin(Builtin::Screen),
+                "history" => JsValue::Builtin(Builtin::History),
+                "localStorage" => JsValue::Builtin(Builtin::LocalStorage),
+                "sessionStorage" => JsValue::Builtin(Builtin::SessionStorage),
+                "getComputedStyle" => JsValue::Builtin(Builtin::GetComputedStyle),
+                "innerWidth" | "outerWidth" => JsValue::Number(800.0),
+                "innerHeight" | "outerHeight" => JsValue::Number(600.0),
+                "devicePixelRatio" => JsValue::Number(1.0),
+                _ => global_builtin(prop).unwrap_or(JsValue::Undefined),
+            },
             JsValue::Builtin(Builtin::Document) => match prop {
                 "body" => dom_api::body_path(dom)
                     .map(|p| JsValue::Element(NodeRef::Tree(p)))
@@ -2611,6 +2653,45 @@ impl JsRuntime {
                 _ => JsValue::Undefined,
             },
             JsValue::ClassList(r) => self.class_list_method(dom, r, prop, &args),
+            JsValue::ComputedStyle(r) => match prop {
+                "getPropertyValue" => {
+                    let req_prop = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    let css_prop = dom_api::camel_to_kebab(&req_prop);
+                    let stylesheet = dom_api::collect_active_stylesheet(dom);
+                    let style_map_opt = if let Some(path) = self.tree_path_of(r) {
+                        crate::style::compute_element_style(dom, &path, &stylesheet, 800.0)
+                    } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                        self.detached.get(slot).and_then(|s| s.node.as_ref()).and_then(|root| {
+                            crate::style::compute_element_style(root, &path, &stylesheet, 800.0)
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(map) = style_map_opt {
+                        if let Some(val) = map.get(&req_prop).or_else(|| map.get(&css_prop)) {
+                            JsValue::Str(val.to_css_string())
+                        } else {
+                            JsValue::Str(String::new())
+                        }
+                    } else {
+                        JsValue::Str(String::new())
+                    }
+                }
+                _ => JsValue::Undefined,
+            },
+            JsValue::Builtin(Builtin::Window) => match prop {
+                "getComputedStyle" => {
+                    if let Some(JsValue::Element(r)) = args.first() {
+                        JsValue::ComputedStyle(r.clone())
+                    } else {
+                        JsValue::Undefined
+                    }
+                }
+                _ => {
+                    let target = global_builtin(prop).unwrap_or(JsValue::Undefined);
+                    self.call_value(dom, &target, args)
+                }
+            },
             JsValue::Element(r) => self.element_method(dom, &r.clone(), prop, args),
             JsValue::Host(host) => self.host_method(&host.clone(), prop, args),
             _ => JsValue::Undefined,
@@ -3258,6 +3339,13 @@ impl JsRuntime {
                 }
                 JsValue::Undefined
             }
+            Builtin::GetComputedStyle => {
+                if let Some(JsValue::Element(r)) = args.first() {
+                    JsValue::ComputedStyle(r.clone())
+                } else {
+                    JsValue::Undefined
+                }
+            }
             Builtin::ClearTimeout | Builtin::ClearInterval => {
                 if let Some(id) = task_id(&arg) {
                     self.scheduler.clear_timer(id);
@@ -3487,12 +3575,14 @@ fn task_id(value: &JsValue) -> Option<crate::eventloop::TaskId> {
 
 fn global_builtin(name: &str) -> Option<JsValue> {
     let builtin = match name {
+        "window" | "self" => Builtin::Window,
         "document" => Builtin::Document,
         "console" => Builtin::Console,
         "Event" => Builtin::EventCtor,
         "CustomEvent" => Builtin::CustomEventCtor,
         "DOMParser" => Builtin::DOMParserCtor,
         "XMLSerializer" => Builtin::XMLSerializerCtor,
+        "getComputedStyle" => Builtin::GetComputedStyle,
         "Promise" => Builtin::PromiseCtor,
         "queueMicrotask" => Builtin::QueueMicrotask,
         "fetch" => Builtin::Fetch,
@@ -3657,6 +3747,7 @@ pub fn to_string(value: &JsValue) -> String {
         JsValue::Style(_) => "[object CSSStyleDeclaration]".to_string(),
         JsValue::ClassList(_) => "[object DOMTokenList]".to_string(),
         JsValue::Dataset(_) => "[object DOMStringMap]".to_string(),
+        JsValue::ComputedStyle(_) => "[object CSSStyleDeclaration]".to_string(),
         JsValue::Builtin(b) => format!("[object {:?}]", b),
         JsValue::Promise(_) => "[object Promise]".to_string(),
         JsValue::PromiseResolver { .. } | JsValue::Combinator(_) => "function".to_string(),
@@ -3722,6 +3813,7 @@ fn strict_equals(a: &JsValue, b: &JsValue) -> bool {
         (JsValue::Object(x), JsValue::Object(y)) => Rc::ptr_eq(x, y),
         (JsValue::Function(x), JsValue::Function(y)) => Rc::ptr_eq(x, y),
         (JsValue::Element(x), JsValue::Element(y)) => x == y,
+        (JsValue::Builtin(x), JsValue::Builtin(y)) => x == y,
         // Promises compare by identity, like any other object.
         (JsValue::Promise(x), JsValue::Promise(y)) => Rc::ptr_eq(x, y),
         _ => false,

@@ -433,6 +433,29 @@ pub fn kebab_to_camel(s: &str) -> String {
     out
 }
 
+/// Collects and parses all inline `<style>` stylesheet rules from the DOM tree.
+pub fn collect_active_stylesheet(dom: &Node) -> crate::css::parser::Stylesheet {
+    let mut stylesheet = crate::css::parser::Stylesheet {
+        rules: Vec::new(),
+        keyframes: std::collections::HashMap::new(),
+    };
+    fn walk(node: &Node, sheet: &mut crate::css::parser::Stylesheet) {
+        if let Some(elem) = node.as_element() {
+            if elem.tag_name == "style" {
+                let css = text_content(node);
+                let parsed = crate::css::parser::parse_css(&css);
+                sheet.rules.extend(parsed.rules);
+                sheet.keyframes.extend(parsed.keyframes);
+            }
+        }
+        for child in &node.children {
+            walk(child, sheet);
+        }
+    }
+    walk(dom, &mut stylesheet);
+    stylesheet
+}
+
 /// Path of the first element whose `id` attribute equals `id`.
 /// Path of the element with a given stable identity.
 ///

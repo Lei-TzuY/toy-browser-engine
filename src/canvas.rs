@@ -26,20 +26,13 @@ struct CanvasState {
     font_size: f32,
     text_align: TextAlign,
     global_alpha: f32,
+    transform: [f32; 6],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PathCommand {
     MoveTo(f32, f32),
     LineTo(f32, f32),
-    Arc {
-        cx: f32,
-        cy: f32,
-        radius: f32,
-        start_angle: f32,
-        end_angle: f32,
-        counterclockwise: bool,
-    },
     ClosePath,
 }
 
@@ -54,6 +47,7 @@ pub struct CanvasContext2D {
     pub font_size: f32,
     pub text_align: TextAlign,
     pub global_alpha: f32,
+    pub transform: [f32; 6],
     state_stack: Vec<CanvasState>,
     path: Vec<PathCommand>,
     current_point: (f32, f32),
@@ -74,6 +68,7 @@ impl CanvasContext2D {
             font_size: 10.0,
             text_align: TextAlign::Left,
             global_alpha: 1.0,
+            transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
             state_stack: Vec::new(),
             path: Vec::new(),
             current_point: (0.0, 0.0),
@@ -92,6 +87,7 @@ impl CanvasContext2D {
             font_size: self.font_size,
             text_align: self.text_align,
             global_alpha: self.global_alpha,
+            transform: self.transform,
         });
     }
 
@@ -103,7 +99,57 @@ impl CanvasContext2D {
             self.font_size = state.font_size;
             self.text_align = state.text_align;
             self.global_alpha = state.global_alpha;
+            self.transform = state.transform;
         }
+    }
+
+    // ── 2D Transformation Matrix ──────────────────────────────────────────────
+
+    #[inline]
+    pub fn transform_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let [a, b, c, d, e, f] = self.transform;
+        (a * x + c * y + e, b * x + d * y + f)
+    }
+
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        let [a, b, c, d, e, f] = self.transform;
+        self.transform[4] = a * dx + c * dy + e;
+        self.transform[5] = b * dx + d * dy + f;
+    }
+
+    pub fn scale(&mut self, sx: f32, sy: f32) {
+        self.transform[0] *= sx;
+        self.transform[1] *= sx;
+        self.transform[2] *= sy;
+        self.transform[3] *= sy;
+    }
+
+    pub fn rotate(&mut self, angle: f32) {
+        let cos = angle.cos();
+        let sin = angle.sin();
+        let [a, b, c, d, _e, _f] = self.transform;
+        self.transform[0] = a * cos + c * sin;
+        self.transform[1] = b * cos + d * sin;
+        self.transform[2] = a * -sin + c * cos;
+        self.transform[3] = b * -sin + d * cos;
+    }
+
+    pub fn transform_matrix(&mut self, a2: f32, b2: f32, c2: f32, d2: f32, e2: f32, f2: f32) {
+        let [a, b, c, d, e, f] = self.transform;
+        self.transform[0] = a * a2 + c * b2;
+        self.transform[1] = b * a2 + d * b2;
+        self.transform[2] = a * c2 + c * d2;
+        self.transform[3] = b * c2 + d * d2;
+        self.transform[4] = a * e2 + c * f2 + e;
+        self.transform[5] = b * e2 + d * f2 + f;
+    }
+
+    pub fn set_transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
+        self.transform = [a, b, c, d, e, f];
+    }
+
+    pub fn reset_transform(&mut self) {
+        self.transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     }
 
     // ── Pixel manipulation helpers ────────────────────────────────────────────
@@ -181,43 +227,73 @@ impl CanvasContext2D {
     }
 
     pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        let x0 = (x.min(x + w)).floor().max(0.0) as u32;
-        let y0 = (y.min(y + h)).floor().max(0.0) as u32;
-        let x1 = (x.max(x + w)).ceil().min(self.width as f32) as u32;
-        let y1 = (y.max(y + h)).ceil().min(self.height as f32) as u32;
+        if self.transform == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+            let x0 = (x.min(x + w)).floor().max(0.0) as u32;
+            let y0 = (y.min(y + h)).floor().max(0.0) as u32;
+            let x1 = (x.max(x + w)).ceil().min(self.width as f32) as u32;
+            let y1 = (y.max(y + h)).ceil().min(self.height as f32) as u32;
 
-        let color = self.fill_style;
-        for cy in y0..y1 {
-            for cx in x0..x1 {
-                self.blend_pixel(cx as i32, cy as i32, color);
+            let color = self.fill_style;
+            for cy in y0..y1 {
+                for cx in x0..x1 {
+                    self.blend_pixel(cx as i32, cy as i32, color);
+                }
             }
+        } else {
+            let p0 = self.transform_point(x, y);
+            let p1 = self.transform_point(x + w, y);
+            let p2 = self.transform_point(x + w, y + h);
+            let p3 = self.transform_point(x, y + h);
+            let color = self.fill_style;
+            self.fill_polygon(&[p0, p1, p2, p3], color);
         }
     }
 
     pub fn stroke_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        let lw = self.line_width;
-        let half = lw / 2.0;
+        let p0 = self.transform_point(x, y);
+        let p1 = self.transform_point(x + w, y);
+        let p2 = self.transform_point(x + w, y + h);
+        let p3 = self.transform_point(x, y + h);
         let color = self.stroke_style;
+        let lw = self.line_width.max(1.0);
 
-        // Top, bottom, left, right edges
-        let x0 = x - half;
-        let y0 = y - half;
-
-        self.fill_rect_color(x0, y0, w + lw, lw, color);
-        self.fill_rect_color(x0, y + h - half, w + lw, lw, color);
-        self.fill_rect_color(x0, y0, lw, h + lw, color);
-        self.fill_rect_color(x + w - half, y0, lw, h + lw, color);
+        self.draw_line(p0.0, p0.1, p1.0, p1.1, lw, color);
+        self.draw_line(p1.0, p1.1, p2.0, p2.1, lw, color);
+        self.draw_line(p2.0, p2.1, p3.0, p3.1, lw, color);
+        self.draw_line(p3.0, p3.1, p0.0, p0.1, lw, color);
     }
 
-    fn fill_rect_color(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
-        let x0 = (x.min(x + w)).floor().max(0.0) as u32;
-        let y0 = (y.min(y + h)).floor().max(0.0) as u32;
-        let x1 = (x.max(x + w)).ceil().min(self.width as f32) as u32;
-        let y1 = (y.max(y + h)).ceil().min(self.height as f32) as u32;
+    fn fill_polygon(&mut self, pts: &[(f32, f32)], color: Color) {
+        if pts.len() < 3 {
+            return;
+        }
+        let h = self.height as i32;
+        let w = self.width as i32;
+        let min_y = pts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min).floor() as i32;
+        let max_y = pts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max).ceil() as i32;
+        let y_start = min_y.max(0);
+        let y_end = max_y.min(h);
 
-        for cy in y0..y1 {
-            for cx in x0..x1 {
-                self.blend_pixel(cx as i32, cy as i32, color);
+        for scan_y in y_start..y_end {
+            let y = scan_y as f32 + 0.5;
+            let mut intersections: Vec<f32> = Vec::new();
+            for i in 0..pts.len() {
+                let p0 = pts[i];
+                let p1 = pts[(i + 1) % pts.len()];
+                if (p0.1 <= y && p1.1 > y) || (p1.1 <= y && p0.1 > y) {
+                    let t = (y - p0.1) / (p1.1 - p0.1);
+                    intersections.push(p0.0 + t * (p1.0 - p0.0));
+                }
+            }
+            intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            for chunk in intersections.chunks(2) {
+                if chunk.len() == 2 {
+                    let x0 = chunk[0].floor().max(0.0) as i32;
+                    let x1 = chunk[1].ceil().min(w as f32) as i32;
+                    for x in x0..x1 {
+                        self.blend_pixel(x, scan_y, color);
+                    }
+                }
             }
         }
     }
@@ -234,13 +310,15 @@ impl CanvasContext2D {
     }
 
     pub fn move_to(&mut self, x: f32, y: f32) {
-        self.current_point = (x, y);
-        self.path.push(PathCommand::MoveTo(x, y));
+        let (tx, ty) = self.transform_point(x, y);
+        self.current_point = (tx, ty);
+        self.path.push(PathCommand::MoveTo(tx, ty));
     }
 
     pub fn line_to(&mut self, x: f32, y: f32) {
-        self.current_point = (x, y);
-        self.path.push(PathCommand::LineTo(x, y));
+        let (tx, ty) = self.transform_point(x, y);
+        self.current_point = (tx, ty);
+        self.path.push(PathCommand::LineTo(tx, ty));
     }
 
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
@@ -249,6 +327,39 @@ impl CanvasContext2D {
         self.line_to(x + w, y + h);
         self.line_to(x, y + h);
         self.close_path();
+    }
+
+    pub fn quadratic_curve_to(&mut self, cpx: f32, cpy: f32, x: f32, y: f32) {
+        let (x0, y0) = self.current_point;
+        let (tcp_x, tcp_y) = self.transform_point(cpx, cpy);
+        let (tx, ty) = self.transform_point(x, y);
+
+        let steps = 16;
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let u = 1.0 - t;
+            let px = u * u * x0 + 2.0 * u * t * tcp_x + t * t * tx;
+            let py = u * u * y0 + 2.0 * u * t * tcp_y + t * t * ty;
+            self.current_point = (px, py);
+            self.path.push(PathCommand::LineTo(px, py));
+        }
+    }
+
+    pub fn bezier_curve_to(&mut self, cp1x: f32, cp1y: f32, cp2x: f32, cp2y: f32, x: f32, y: f32) {
+        let (x0, y0) = self.current_point;
+        let (tcp1_x, tcp1_y) = self.transform_point(cp1x, cp1y);
+        let (tcp2_x, tcp2_y) = self.transform_point(cp2x, cp2y);
+        let (tx, ty) = self.transform_point(x, y);
+
+        let steps = 24;
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let u = 1.0 - t;
+            let px = u * u * u * x0 + 3.0 * u * u * t * tcp1_x + 3.0 * u * t * t * tcp2_x + t * t * t * tx;
+            let py = u * u * u * y0 + 3.0 * u * u * t * tcp1_y + 3.0 * u * t * t * tcp2_y + t * t * t * ty;
+            self.current_point = (px, py);
+            self.path.push(PathCommand::LineTo(px, py));
+        }
     }
 
     pub fn arc(
@@ -260,18 +371,34 @@ impl CanvasContext2D {
         end_angle: f32,
         counterclockwise: bool,
     ) {
-        self.path.push(PathCommand::Arc {
-            cx,
-            cy,
-            radius,
-            start_angle,
-            end_angle,
-            counterclockwise,
-        });
-        // Update current point to arc end
-        let end_x = cx + radius * end_angle.cos();
-        let end_y = cy + radius * end_angle.sin();
-        self.current_point = (end_x, end_y);
+        let mut start = start_angle;
+        let mut end = end_angle;
+        let two_pi = std::f32::consts::PI * 2.0;
+
+        if counterclockwise {
+            if start <= end {
+                start += two_pi;
+            }
+        } else if end <= start {
+            end += two_pi;
+        }
+
+        let diff = (end - start).abs();
+        let steps = (diff * radius / 3.0).ceil().max(16.0) as usize;
+        let step_angle = (end - start) / steps as f32;
+
+        for i in 0..=steps {
+            let theta = start + step_angle * i as f32;
+            let px = cx + radius * theta.cos();
+            let py = cy + radius * theta.sin();
+            let (tx, ty) = self.transform_point(px, py);
+            if i == 0 && self.path.is_empty() {
+                self.move_to(px, py);
+            } else {
+                self.current_point = (tx, ty);
+                self.path.push(PathCommand::LineTo(tx, ty));
+            }
+        }
     }
 
     /// Flatten path commands into lists of connected line segments / polygons.
@@ -293,37 +420,6 @@ impl CanvasContext2D {
                         current_subpath.push((*x, *y));
                     } else {
                         current_subpath.push((*x, *y));
-                    }
-                }
-                PathCommand::Arc {
-                    cx,
-                    cy,
-                    radius,
-                    start_angle,
-                    end_angle,
-                    counterclockwise,
-                } => {
-                    let mut start = *start_angle;
-                    let mut end = *end_angle;
-                    let two_pi = std::f32::consts::PI * 2.0;
-
-                    if *counterclockwise {
-                        if start <= end {
-                            start += two_pi;
-                        }
-                    } else if end <= start {
-                        end += two_pi;
-                    }
-
-                    let diff = (end - start).abs();
-                    let steps = (diff * radius / 3.0).ceil().max(12.0) as usize;
-                    let step_angle = (end - start) / steps as f32;
-
-                    for i in 0..=steps {
-                        let theta = start + step_angle * i as f32;
-                        let px = cx + radius * theta.cos();
-                        let py = cy + radius * theta.sin();
-                        current_subpath.push((px, py));
                     }
                 }
                 PathCommand::ClosePath => {
@@ -463,12 +559,13 @@ impl CanvasContext2D {
         }
 
         let color = self.fill_style;
-        let mut cursor_x = x;
+        let (tx, ty) = self.transform_point(x, y);
+        let mut cursor_x = tx;
 
         for c in text.chars() {
             if let Some((metrics, bitmap)) = rasterize(c, font_size) {
                 let gx = cursor_x + metrics.xmin as f32;
-                let gy = y - metrics.height as f32 - metrics.ymin as f32;
+                let gy = ty - metrics.height as f32 - metrics.ymin as f32;
 
                 for row in 0..metrics.height {
                     for col in 0..metrics.width {
@@ -491,6 +588,18 @@ impl CanvasContext2D {
                 cursor_x += font_size * 0.6;
             }
         }
+    }
+
+    pub fn stroke_text(&mut self, text: &str, x: f32, y: f32) {
+        // In simple rasterization, stroke text draws filled glyphs with stroke_style
+        let old_fill = self.fill_style;
+        self.fill_style = self.stroke_style;
+        self.fill_text(text, x, y);
+        self.fill_style = old_fill;
+    }
+
+    pub fn measure_text(&self, text: &str) -> f32 {
+        measure_text(text, self.font_size)
     }
 
     // ── Image Data ────────────────────────────────────────────────────────────

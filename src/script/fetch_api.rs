@@ -528,12 +528,84 @@ impl JsRuntime {
                 c.stroke();
                 JsValue::Undefined
             }
+            "translate" => {
+                let dx = args.first().map(to_number).unwrap_or(0.0);
+                let dy = args.get(1).map(to_number).unwrap_or(0.0);
+                c.translate(dx, dy);
+                JsValue::Undefined
+            }
+            "scale" => {
+                let sx = args.first().map(to_number).unwrap_or(1.0);
+                let sy = args.get(1).map(to_number).unwrap_or(1.0);
+                c.scale(sx, sy);
+                JsValue::Undefined
+            }
+            "rotate" => {
+                let angle = args.first().map(to_number).unwrap_or(0.0);
+                c.rotate(angle);
+                JsValue::Undefined
+            }
+            "transform" => {
+                let a = args.first().map(to_number).unwrap_or(1.0);
+                let b = args.get(1).map(to_number).unwrap_or(0.0);
+                let c_val = args.get(2).map(to_number).unwrap_or(0.0);
+                let d = args.get(3).map(to_number).unwrap_or(1.0);
+                let e = args.get(4).map(to_number).unwrap_or(0.0);
+                let f = args.get(5).map(to_number).unwrap_or(0.0);
+                c.transform_matrix(a, b, c_val, d, e, f);
+                JsValue::Undefined
+            }
+            "setTransform" => {
+                let a = args.first().map(to_number).unwrap_or(1.0);
+                let b = args.get(1).map(to_number).unwrap_or(0.0);
+                let c_val = args.get(2).map(to_number).unwrap_or(0.0);
+                let d = args.get(3).map(to_number).unwrap_or(1.0);
+                let e = args.get(4).map(to_number).unwrap_or(0.0);
+                let f = args.get(5).map(to_number).unwrap_or(0.0);
+                c.set_transform(a, b, c_val, d, e, f);
+                JsValue::Undefined
+            }
+            "resetTransform" => {
+                c.reset_transform();
+                JsValue::Undefined
+            }
+            "quadraticCurveTo" => {
+                let cpx = args.first().map(to_number).unwrap_or(0.0);
+                let cpy = args.get(1).map(to_number).unwrap_or(0.0);
+                let x = args.get(2).map(to_number).unwrap_or(0.0);
+                let y = args.get(3).map(to_number).unwrap_or(0.0);
+                c.quadratic_curve_to(cpx, cpy, x, y);
+                JsValue::Undefined
+            }
+            "bezierCurveTo" => {
+                let cp1x = args.first().map(to_number).unwrap_or(0.0);
+                let cp1y = args.get(1).map(to_number).unwrap_or(0.0);
+                let cp2x = args.get(2).map(to_number).unwrap_or(0.0);
+                let cp2y = args.get(3).map(to_number).unwrap_or(0.0);
+                let x = args.get(4).map(to_number).unwrap_or(0.0);
+                let y = args.get(5).map(to_number).unwrap_or(0.0);
+                c.bezier_curve_to(cp1x, cp1y, cp2x, cp2y, x, y);
+                JsValue::Undefined
+            }
             "fillText" => {
                 let text = to_string(args.first().unwrap_or(&JsValue::Undefined));
                 let x = args.get(1).map(to_number).unwrap_or(0.0);
                 let y = args.get(2).map(to_number).unwrap_or(0.0);
                 c.fill_text(&text, x, y);
                 JsValue::Undefined
+            }
+            "strokeText" => {
+                let text = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                let x = args.get(1).map(to_number).unwrap_or(0.0);
+                let y = args.get(2).map(to_number).unwrap_or(0.0);
+                c.stroke_text(&text, x, y);
+                JsValue::Undefined
+            }
+            "measureText" => {
+                let text = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                let w = c.measure_text(&text);
+                let obj = vec![("width".to_string(), JsValue::Number(w))];
+                JsValue::Object(Rc::new(std::cell::RefCell::new(obj)))
             }
             "save" => {
                 c.save();
@@ -587,12 +659,6 @@ impl JsRuntime {
                     c.put_image_data(&data, dx, dy, sw, sh);
                 }
                 JsValue::Undefined
-            }
-            "measureText" => {
-                let text = to_string(args.first().unwrap_or(&JsValue::Undefined));
-                let width = crate::text::measure_text(&text, c.font_size);
-                let obj = vec![("width".to_string(), JsValue::Number(width))];
-                JsValue::Object(Rc::new(std::cell::RefCell::new(obj)))
             }
             _ => JsValue::Undefined,
         }

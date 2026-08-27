@@ -57,6 +57,14 @@ pub struct StyledNode<'a> {
 }
 
 impl<'a> StyledNode<'a> {
+    pub fn find_at_path(&self, path: &[usize]) -> Option<&StyledNode<'a>> {
+        let mut cur = self;
+        for &idx in path {
+            cur = cur.children.get(idx)?;
+        }
+        Some(cur)
+    }
+
     pub fn value(&self, name: &str) -> Option<&Value> {
         self.specified_values.get(name)
     }
@@ -544,10 +552,29 @@ fn compute_specified_values(
         }
     }
 
+    // Retain all inherited custom properties in the specified_values map
+    // so getComputedStyle() and introspection can read them directly.
+    for (k, v) in inherited {
+        if k.starts_with("--") && !map.contains_key(k) {
+            map.insert(k.clone(), v.clone());
+        }
+    }
+
     map
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+/// Compute the final specified/computed property map for an element at a given path in the DOM tree.
+pub fn compute_element_style(
+    root: &Node,
+    target_path: &[usize],
+    stylesheet: &Stylesheet,
+    viewport_width: f32,
+) -> Option<PropertyMap> {
+    let tree = style_tree_for_viewport(root, stylesheet, viewport_width);
+    tree.find_at_path(target_path).map(|sn| sn.specified_values.clone())
+}
 
 /// Build a style tree assuming an 800 px viewport (for backwards compatibility).
 pub fn style_tree<'a>(root: &'a Node, stylesheet: &Stylesheet) -> StyledNode<'a> {

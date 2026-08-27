@@ -382,6 +382,33 @@ impl Value {
             _ => 0.0,
         }
     }
+
+    /// Format this CSS value as a standard CSS string.
+    pub fn to_css_string(&self) -> String {
+        match self {
+            Value::Keyword(k) => k.clone(),
+            Value::Length(n, Unit::Px) => format!("{}px", n),
+            Value::Length(n, Unit::Em) => format!("{}em", n),
+            Value::Length(n, Unit::Percent) => format!("{}%", n),
+            Value::Length(n, Unit::Fr) => format!("{}fr", n),
+            Value::Color(c) => {
+                if c.a == 255 {
+                    format!("rgb({}, {}, {})", c.r, c.g, c.b)
+                } else {
+                    let a_float = c.a as f32 / 255.0;
+                    format!("rgba({}, {}, {}, {})", c.r, c.g, c.b, a_float)
+                }
+            }
+            Value::Number(n) => format!("{}", n),
+            Value::Calc(_) => "calc(...)".to_string(),
+            Value::Var { name, .. } => format!("var({})", name),
+            Value::LinearGradient(_) => "linear-gradient(...)".to_string(),
+            Value::BoxShadow(_) => "box-shadow(...)".to_string(),
+            Value::Transform(_) => "transform(...)".to_string(),
+            Value::Transition(_) => "transition(...)".to_string(),
+            Value::Animation(_) => "animation(...)".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
