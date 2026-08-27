@@ -117,7 +117,27 @@ pub fn form_controls(dom: &Node, form_path: &[usize]) -> Vec<NodePath> {
     }
 }
 
-/// True when an element can be the submitter for a normal form submission.
+/// True when an element is structurally a submit button.
+///
+/// This deliberately ignores `disabled`: `requestSubmit(submitter)` is allowed
+/// to name a disabled submit button, even though disabled controls are not
+/// successful form-data controls and cannot be activated by a user click.
+pub fn is_submit_button(element: &ElementData) -> bool {
+    match element.tag_name.as_str() {
+        "button" => element
+            .get_attr("type")
+            .map(|kind| kind.eq_ignore_ascii_case("submit"))
+            .unwrap_or(true),
+        "input" => matches!(element.input_type().as_str(), "submit" | "image"),
+        _ => false,
+    }
+}
+
+/// True when an element can be the submitter for normal user activation.
+///
+/// Image-submit activation is not wired through the pointer pipeline yet, so
+/// this helper intentionally keeps the engine's existing activation subset;
+/// `requestSubmit()` uses [`is_submit_button`] instead.
 pub fn is_submit_control(element: &ElementData) -> bool {
     if element.is_disabled() {
         return false;
@@ -130,6 +150,41 @@ pub fn is_submit_control(element: &ElementData) -> bool {
         "input" => element.input_type() == "submit",
         _ => false,
     }
+}
+
+/// Errors produced while resolving the optional `requestSubmit(submitter)`
+/// argument. They map directly onto the Web API's `TypeError` and
+/// `NotFoundError` DOMException branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestSubmitterError {
+    NotSubmitButton,
+    NotOwnedByForm,
+}
+
+/// Validate and resolve the optional submitter used by `requestSubmit()`.
+///
+/// Omission means the form itself acts as the submitter and therefore returns
+/// `Ok(None)`. A supplied element must first be a submit button and then have
+/// this exact form as its owner; the order matters because the HTML algorithm
+/// exposes different exception types for those two failures.
+pub fn request_submitter<'a>(
+    dom: &'a Node,
+    form_path: &[usize],
+    submitter: Option<&'a [usize]>,
+) -> Result<Option<&'a [usize]>, RequestSubmitterError> {
+    let Some(path) = submitter else {
+        return Ok(None);
+    };
+    let Some(element) = dom_api::node_at(dom, path).and_then(|node| node.as_element()) else {
+        return Err(RequestSubmitterError::NotSubmitButton);
+    };
+    if !is_submit_button(element) {
+        return Err(RequestSubmitterError::NotSubmitButton);
+    }
+    if owning_form(dom, path).as_deref() != Some(form_path) {
+        return Err(RequestSubmitterError::NotOwnedByForm);
+    }
+    Ok(Some(path))
 }
 
 /// The first enabled submit button used by implicit Enter submission.
@@ -165,13 +220,13 @@ pub fn submission_skips_validation(
     if form.get_attr("novalidate").is_some() {
         return true;
     }
-    valid_submitter(dom, form_path, submitter)
+    associated_submitter(dom, form_path, submitter)
         .and_then(|path| dom_api::node_at(dom, path))
         .and_then(|node| node.as_element())
         .is_some_and(|element| element.get_attr("formnovalidate").is_some())
 }
 
-fn valid_submitter<'a>(
+fn associated_submitter<'a>(
     dom: &'a Node,
     form_path: &[usize],
     submitter: Option<&'a [usize]>,
@@ -181,7 +236,7 @@ fn valid_submitter<'a>(
         return None;
     }
     let element = dom_api::node_at(dom, path)?.as_element()?;
-    is_submit_control(element).then_some(path)
+    is_submit_button(element).then_some(path)
 }
 
 // ── Submission ────────────────────────────────────────────────────────────────
@@ -201,7 +256,7 @@ pub fn form_data_with_submitter(
     form_path: &[usize],
     submitter: Option<&[usize]>,
 ) -> Vec<FormEntry> {
-    let submitter = valid_submitter(dom, form_path, submitter);
+    let submitter = associated_submitter(dom, form_path, submitter);
     let mut entries = Vec::new();
     for path in form_controls(dom, form_path) {
         let Some(element) = dom_api::node_at(dom, &path).and_then(|n| n.as_element()) else {
@@ -213,6 +268,22 @@ pub fn form_data_with_submitter(
 
         let is_submitter = submitter.is_some_and(|candidate| candidate == path.as_slice());
         if is_submitter {
+            // Image submit buttons contribute coordinates rather than their
+            // value. A scripted requestSubmit has no pointer position, so the
+            // standard default coordinate is represented as 0,0.
+            if element.tag_name == "input" && element.input_type() == "image" {
+                match element.get_attr("name").filter(|name| !name.is_empty()) {
+                    Some(name) => {
+                        entries.push((format!("{name}.x"), "0".to_string()));
+                        entries.push((format!("{name}.y"), "0".to_string()));
+                    }
+                    None => {
+                        entries.push(("x".to_string(), "0".to_string()));
+                        entries.push(("y".to_string(), "0".to_string()));
+                    }
+                }
+                continue;
+            }
             if let Some(name) = element.get_attr("name").filter(|name| !name.is_empty()) {
                 entries.push((
                     name.to_string(),
@@ -317,7 +388,7 @@ pub fn prepare_submission_with_submitter(
     base: &Url,
 ) -> Option<Submission> {
     let form = dom_api::node_at(dom, form_path)?.as_element()?;
-    let submitter = valid_submitter(dom, form_path, submitter);
+    let submitter = associated_submitter(dom, form_path, submitter);
     let submitter_element = submitter
         .and_then(|path| dom_api::node_at(dom, path))
         .and_then(|node| node.as_element());
@@ -540,6 +611,72 @@ mod tests {
             form_data_with_submitter(&dom, &form, Some(&reset)),
             vec![("q".into(), "v".into())]
         );
+    }
+
+    #[test]
+    fn request_submitter_distinguishes_type_and_ownership_errors() {
+        let dom = parse_html(
+            r#"<form id="a"><button id="ok">Go</button><button id="plain" type="button">Plain</button></form>
+               <form id="b"><input id="foreign" type="submit"></form>"#,
+        );
+        let form = dom_api::get_element_by_id(&dom, "a").unwrap();
+        let ok = dom_api::get_element_by_id(&dom, "ok").unwrap();
+        let plain = dom_api::get_element_by_id(&dom, "plain").unwrap();
+        let foreign = dom_api::get_element_by_id(&dom, "foreign").unwrap();
+
+        assert_eq!(request_submitter(&dom, &form, None), Ok(None));
+        assert_eq!(request_submitter(&dom, &form, Some(&ok)), Ok(Some(ok.as_slice())));
+        assert_eq!(
+            request_submitter(&dom, &form, Some(&plain)),
+            Err(RequestSubmitterError::NotSubmitButton)
+        );
+        assert_eq!(
+            request_submitter(&dom, &form, Some(&foreign)),
+            Err(RequestSubmitterError::NotOwnedByForm)
+        );
+    }
+
+    #[test]
+    fn request_submitter_accepts_disabled_and_image_submit_buttons() {
+        let (dom, form) = form_of(
+            r#"<form><button id="disabled" disabled>Go</button><input id="image" type="image" name="spot"></form>"#,
+        );
+        let disabled = dom_api::get_element_by_id(&dom, "disabled").unwrap();
+        let image = dom_api::get_element_by_id(&dom, "image").unwrap();
+
+        assert!(request_submitter(&dom, &form, Some(&disabled)).is_ok());
+        assert!(request_submitter(&dom, &form, Some(&image)).is_ok());
+        assert!(!is_submit_control(element(&dom, &disabled)));
+        assert!(!is_submit_control(element(&dom, &image)));
+        assert!(is_submit_button(element(&dom, &disabled)));
+        assert!(is_submit_button(element(&dom, &image)));
+    }
+
+    #[test]
+    fn image_submitter_serializes_default_coordinates() {
+        let (dom, form) = form_of(
+            r#"<form><input name="q" value="v"><input id="image" type="image" name="spot" formaction="/image"></form>"#,
+        );
+        let image = dom_api::get_element_by_id(&dom, "image").unwrap();
+        let base = Url::parse("http://example.com/form").unwrap();
+        let submission =
+            prepare_submission_with_submitter(&dom, &form, Some(&image), &base).unwrap();
+        assert_eq!(submission.url.to_string(), "http://example.com/image?q=v&spot.x=0&spot.y=0");
+    }
+
+    #[test]
+    fn disabled_request_submitter_keeps_overrides_but_is_not_successful_data() {
+        let (dom, form) = form_of(
+            r#"<form action="/default"><input name="q" value="v"><button id="draft" disabled name="intent" value="draft" formaction="/draft" formmethod="post" formnovalidate>Draft</button></form>"#,
+        );
+        let draft = dom_api::get_element_by_id(&dom, "draft").unwrap();
+        let base = Url::parse("http://example.com/form").unwrap();
+        assert!(submission_skips_validation(&dom, &form, Some(&draft)));
+        let submission =
+            prepare_submission_with_submitter(&dom, &form, Some(&draft), &base).unwrap();
+        assert_eq!(submission.method, SubmissionMethod::Post);
+        assert_eq!(submission.url.to_string(), "http://example.com/draft");
+        assert_eq!(submission.entries, vec![("q".into(), "v".into())]);
     }
 
     #[test]
