@@ -4,15 +4,64 @@
 //
 // Most validation lives in validation_constraints. This final facade overlays
 // structural and lexical rules that need stricter live-DOM information than the
-// older element-only validators expose: select placeholder selectedness, the
-// Number state's exact valid-floating-point-number syntax, and Range-state
-// defaults/constraints whose applicability differs from ordinary text inputs.
+// older element-only validators expose: select placeholder selectedness, exact
+// readonly applicability, the Number state's valid-floating-point-number syntax,
+// and Range-state defaults/constraints.
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
 use crate::script::dom_api::{self, NodePath};
 
-pub use crate::validation_constraints::{will_validate, Validity};
+pub use crate::validation_constraints::Validity;
+
+/// Whether a control is structurally eligible for constraint validation.
+///
+/// The older validator treats the mere presence of `readonly` as barring every
+/// form control. HTML only gives `readonly` that meaning for textarea and the
+/// textual/numeric input states that actually support the attribute. Stray
+/// `readonly` attributes on checkbox, radio, file, range, color and select are
+/// ignored rather than turning those controls into validation escape hatches.
+pub fn will_validate(element: &ElementData) -> bool {
+    if !element.is_form_control() || element.is_disabled() {
+        return false;
+    }
+
+    match element.tag_name.as_str() {
+        "button" => false,
+        "textarea" => !element.is_readonly(),
+        "input" => {
+            let input_type = element.input_type();
+            if matches!(
+                input_type.as_str(),
+                "hidden" | "submit" | "reset" | "button" | "image"
+            ) {
+                return false;
+            }
+            !(element.is_readonly() && readonly_applies_to_input(&input_type))
+        }
+        // `readonly` does not apply to select. Other form controls that reach
+        // this branch are likewise not barred by a stray readonly attribute.
+        _ => true,
+    }
+}
+
+fn readonly_applies_to_input(input_type: &str) -> bool {
+    matches!(
+        input_type,
+        "text"
+            | "search"
+            | "tel"
+            | "url"
+            | "email"
+            | "password"
+            | "date"
+            | "month"
+            | "week"
+            | "time"
+            | "datetime-local"
+            | "number"
+    )
+}
 
 /// Compute the final validity state for a live form control.
 pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
@@ -34,6 +83,13 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
 
     if element.tag_name == "input" {
         match element.input_type().as_str() {
+            // `readonly` does not apply to checkboxes. The base validator can
+            // therefore incorrectly return an all-valid state for
+            // `<input type=checkbox required readonly>`; restore the actual
+            // Required-state rule here.
+            "checkbox" if participates && element.get_attr("required").is_some() => {
+                validity.value_missing = !element.is_checked();
+            }
             // The base number validator deliberately keeps a raw live string,
             // but its numeric parser trims whitespace and delegates to Rust's
             // permissive float parser. HTML's Number state is stricter: the
@@ -53,10 +109,8 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
                     validity.step_mismatch = false;
                 }
             }
-            // `required` and `readonly` do not apply to Range state. The base
-            // validator treats both generically, so Range must be overlaid even
-            // when a stray `readonly` attribute made `will_validate()` false.
-            // Disabledness still bars validation normally.
+            // `required` and `readonly` do not apply to Range state. Disabled
+            // controls are still barred normally.
             "range" if !effectively_disabled => apply_range_validity(element, &mut validity),
             _ => {}
         }
@@ -240,8 +294,68 @@ mod tests {
         control_validity(&dom, &path)
     }
 
+    fn input_element(html: &str) -> ElementData {
+        let dom = parse_html(html);
+        dom_api::query_selector(&dom, &[], "input")
+            .and_then(|path| dom_api::node_at(&dom, &path))
+            .and_then(|node| node.as_element())
+            .expect("input")
+            .clone()
+    }
+
     fn number_validity(value: &str) -> Validity {
         input_validity(&format!(r#"<input type="number" value="{value}">"#))
+    }
+
+    #[test]
+    fn readonly_only_bars_the_input_states_that_support_it() {
+        for input_type in [
+            "text",
+            "search",
+            "tel",
+            "url",
+            "email",
+            "password",
+            "date",
+            "month",
+            "week",
+            "time",
+            "datetime-local",
+            "number",
+        ] {
+            let element = input_element(&format!(r#"<input type="{input_type}" readonly>"#));
+            assert!(!will_validate(&element), "{input_type} should be readonly-barred");
+        }
+
+        for input_type in ["checkbox", "radio", "file", "range", "color"] {
+            let element = input_element(&format!(r#"<input type="{input_type}" readonly>"#));
+            assert!(will_validate(&element), "readonly must not bar {input_type}");
+        }
+    }
+
+    #[test]
+    fn readonly_does_not_bar_select_validation() {
+        let dom = parse_html(r#"<select id="s" readonly><option>One</option></select>"#);
+        let path = dom_api::get_element_by_id(&dom, "s").unwrap();
+        let element = dom_api::node_at(&dom, &path).unwrap().as_element().unwrap();
+        assert!(will_validate(element));
+    }
+
+    #[test]
+    fn readonly_required_checkbox_still_suffers_value_missing() {
+        let flags = input_validity(r#"<input type="checkbox" required readonly>"#);
+        assert!(flags.value_missing);
+
+        let flags = input_validity(r#"<input type="checkbox" required readonly checked>"#);
+        assert!(!flags.value_missing);
+    }
+
+    #[test]
+    fn readonly_required_select_still_uses_placeholder_semantics() {
+        let flags = select_validity(
+            r#"<select required readonly><option value="">Choose</option><option value="x">X</option></select>"#,
+        );
+        assert!(flags.value_missing);
     }
 
     #[test]
