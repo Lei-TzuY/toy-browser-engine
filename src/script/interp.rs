@@ -78,6 +78,8 @@ pub enum JsValue {
     Style(NodeRef),
     /// `element.classList`
     ClassList(NodeRef),
+    /// `element.dataset`
+    Dataset(NodeRef),
     /// A built-in namespace or function (`document`, `console`, `Math`, `parseInt`).
     Builtin(Builtin),
     /// A promise, shared with everything that holds a handle to it.
@@ -123,6 +125,10 @@ pub enum Builtin {
     Console,
     EventCtor,
     CustomEventCtor,
+    DOMParserCtor,
+    DOMParser,
+    XMLSerializerCtor,
+    XMLSerializer,
     PromiseCtor,
     QueueMicrotask,
     Fetch,
@@ -187,6 +193,7 @@ impl fmt::Debug for JsValue {
             JsValue::Element(r) => write!(f, "[Element {:?}]", r),
             JsValue::Style(_) => write!(f, "[CSSStyleDeclaration]"),
             JsValue::ClassList(_) => write!(f, "[DOMTokenList]"),
+            JsValue::Dataset(_) => write!(f, "[DOMStringMap]"),
             JsValue::Builtin(b) => write!(f, "[{:?}]", b),
             JsValue::Promise(state) => write!(f, "[Promise {:?}]", state.borrow().status),
             JsValue::PromiseResolver { reject, .. } => {
@@ -632,6 +639,8 @@ impl JsRuntime {
                 }
                 JsValue::Object(Rc::new(RefCell::new(fields)))
             }
+            JsValue::Builtin(Builtin::DOMParserCtor) => JsValue::Builtin(Builtin::DOMParser),
+            JsValue::Builtin(Builtin::XMLSerializerCtor) => JsValue::Builtin(Builtin::XMLSerializer),
             JsValue::Builtin(
                 builtin @ (Builtin::HeadersCtor
                 | Builtin::RequestCtor
@@ -1890,6 +1899,14 @@ impl JsRuntime {
                 ),
                 _ => JsValue::Undefined,
             },
+            JsValue::Dataset(r) => {
+                let attr_name = format!("data-{}", dom_api::camel_to_kebab(prop));
+                self.with_element(dom, r, |e| {
+                    e.get_attr(&attr_name).map(|v| JsValue::Str(v.to_string()))
+                })
+                .flatten()
+                .unwrap_or(JsValue::Undefined)
+            }
             JsValue::Builtin(Builtin::Document) => match prop {
                 "body" => dom_api::body_path(dom)
                     .map(|p| JsValue::Element(NodeRef::Tree(p)))
@@ -1978,6 +1995,32 @@ impl JsRuntime {
         match prop {
             "style" => return JsValue::Style(r.clone()),
             "classList" => return JsValue::ClassList(r.clone()),
+            "dataset" => return JsValue::Dataset(r.clone()),
+            "body" | "head" | "documentElement" => {
+                let doc_root = match self.resolve_ref(r) {
+                    Resolved::InTree(_) => Some(dom as &Node),
+                    Resolved::InPool { slot, .. } => self.detached.get(slot).and_then(|s| s.node.as_ref()),
+                    Resolved::Gone => None,
+                };
+                if let Some(root) = doc_root {
+                    let sel = match prop {
+                        "body" => "body",
+                        "head" => "head",
+                        "documentElement" => "html",
+                        _ => "",
+                    };
+                    if let Some(p) = dom_api::query_selector(root, &[], sel) {
+                        return match self.resolve_ref(r) {
+                            Resolved::InTree(_) => JsValue::Element(NodeRef::Tree(p)),
+                            Resolved::InPool { slot, .. } => {
+                                JsValue::Element(NodeRef::Detached { slot, path: p })
+                            }
+                            _ => JsValue::Null,
+                        };
+                    }
+                }
+                return JsValue::Null;
+            }
             "parentElement" | "parentNode" => {
                 let Some(path) = self.tree_path_of(r) else {
                     return JsValue::Null;
@@ -2126,6 +2169,13 @@ impl JsRuntime {
                 let css = dom_api::css_property_name(prop);
                 let text = to_string(&value);
                 self.with_element_mut(dom, r, |e| dom_api::set_style_property(e, &css, &text));
+            }
+            JsValue::Dataset(r) => {
+                let attr_name = format!("data-{}", dom_api::camel_to_kebab(prop));
+                let val_str = to_string(&value);
+                self.with_element_mut(dom, r, |e| {
+                    e.set_attr(&attr_name, &val_str);
+                });
             }
             JsValue::Element(r) => {
                 let text = to_string(&value);
@@ -2461,6 +2511,31 @@ impl JsRuntime {
                     _ => JsValue::Undefined,
                 }
             }
+            JsValue::Builtin(Builtin::DOMParser) => match prop {
+                "parseFromString" => {
+                    let html_str = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    let doc_node = crate::html::parse_html(&html_str);
+                    let slot = self.push_detached(doc_node);
+                    JsValue::Element(NodeRef::Detached {
+                        slot,
+                        path: Vec::new(),
+                    })
+                }
+                _ => JsValue::Undefined,
+            },
+            JsValue::Builtin(Builtin::XMLSerializer) => match prop {
+                "serializeToString" => {
+                    if let Some(JsValue::Element(r)) = args.first() {
+                        let html = self
+                            .with_node(dom, r, |n| dom_api::outer_html(n))
+                            .unwrap_or_default();
+                        JsValue::Str(html)
+                    } else {
+                        JsValue::Str(String::new())
+                    }
+                }
+                _ => JsValue::Undefined,
+            },
             JsValue::Str(s) => string_method(s, prop, &args),
             JsValue::Number(n) => number_method(*n, prop, &args),
             JsValue::Array(items) => self.array_method(dom, items, prop, args),
@@ -2749,21 +2824,141 @@ impl JsRuntime {
                 }
                 JsValue::Bool(false)
             }
-            "querySelector" => {
-                let Some(scope) = self.tree_path_of(r) else {
-                    return JsValue::Null;
+            "matches" => {
+                let matched = if let Some(path) = self.tree_path_of(r) {
+                    dom_api::element_matches(dom, &path, &arg0)
+                } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                    self.detached
+                        .get(slot)
+                        .and_then(|s| s.node.as_ref())
+                        .map(|root| dom_api::element_matches(root, &path, &arg0))
+                        .unwrap_or(false)
+                } else {
+                    false
                 };
-                dom_api::query_selector(dom, &scope, &arg0)
-                    .map(|p| JsValue::Element(NodeRef::Tree(p)))
-                    .unwrap_or(JsValue::Null)
+                JsValue::Bool(matched)
             }
-            "querySelectorAll" => {
-                let items = match self.tree_path_of(r) {
-                    Some(scope) => dom_api::query_selector_all(dom, &scope, &arg0)
+            "closest" => {
+                if let Some(path) = self.tree_path_of(r) {
+                    dom_api::element_closest(dom, &path, &arg0)
+                        .map(|p| JsValue::Element(NodeRef::Tree(p)))
+                        .unwrap_or(JsValue::Null)
+                } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                    if let Some(root) = self.detached.get(slot).and_then(|s| s.node.as_ref()) {
+                        dom_api::element_closest(root, &path, &arg0)
+                            .map(|p| JsValue::Element(NodeRef::Detached { slot, path: p }))
+                            .unwrap_or(JsValue::Null)
+                    } else {
+                        JsValue::Null
+                    }
+                } else {
+                    JsValue::Null
+                }
+            }
+            "cloneNode" => {
+                let deep = args.first().map(to_boolean).unwrap_or(false);
+                let cloned_opt = self.with_node(dom, r, |n| dom_api::clone_node(n, deep));
+                if let Some(cloned) = cloned_opt {
+                    let slot = self.push_detached(cloned);
+                    JsValue::Element(NodeRef::Detached {
+                        slot,
+                        path: Vec::new(),
+                    })
+                } else {
+                    JsValue::Null
+                }
+            }
+            "getElementById" => {
+                if let Some(_) = self.tree_path_of(r) {
+                    dom_api::get_element_by_id(dom, &arg0)
+                        .map(|p| JsValue::Element(NodeRef::Tree(p)))
+                        .unwrap_or(JsValue::Null)
+                } else if let Resolved::InPool { slot, .. } = self.resolve_ref(r) {
+                    if let Some(root) = self.detached.get(slot).and_then(|s| s.node.as_ref()) {
+                        dom_api::get_element_by_id(root, &arg0)
+                            .map(|p| JsValue::Element(NodeRef::Detached { slot, path: p }))
+                            .unwrap_or(JsValue::Null)
+                    } else {
+                        JsValue::Null
+                    }
+                } else {
+                    JsValue::Null
+                }
+            }
+            "getElementsByTagName" => {
+                let items = if let Some(scope) = self.tree_path_of(r) {
+                    dom_api::query_selector_all(dom, &scope, &arg0)
                         .into_iter()
                         .map(|p| JsValue::Element(NodeRef::Tree(p)))
-                        .collect(),
-                    None => Vec::new(),
+                        .collect()
+                } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                    if let Some(root) = self.detached.get(slot).and_then(|s| s.node.as_ref()) {
+                        dom_api::query_selector_all(root, &path, &arg0)
+                            .into_iter()
+                            .map(|p| JsValue::Element(NodeRef::Detached { slot, path: p }))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+                JsValue::Array(Rc::new(RefCell::new(items)))
+            }
+            "getElementsByClassName" => {
+                let items = if let Some(scope) = self.tree_path_of(r) {
+                    dom_api::query_selector_all(dom, &scope, &format!(".{}", arg0))
+                        .into_iter()
+                        .map(|p| JsValue::Element(NodeRef::Tree(p)))
+                        .collect()
+                } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                    if let Some(root) = self.detached.get(slot).and_then(|s| s.node.as_ref()) {
+                        dom_api::query_selector_all(root, &path, &format!(".{}", arg0))
+                            .into_iter()
+                            .map(|p| JsValue::Element(NodeRef::Detached { slot, path: p }))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+                JsValue::Array(Rc::new(RefCell::new(items)))
+            }
+            "querySelector" => {
+                if let Some(scope) = self.tree_path_of(r) {
+                    dom_api::query_selector(dom, &scope, &arg0)
+                        .map(|p| JsValue::Element(NodeRef::Tree(p)))
+                        .unwrap_or(JsValue::Null)
+                } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                    if let Some(root) = self.detached.get(slot).and_then(|s| s.node.as_ref()) {
+                        dom_api::query_selector(root, &path, &arg0)
+                            .map(|p| JsValue::Element(NodeRef::Detached { slot, path: p }))
+                            .unwrap_or(JsValue::Null)
+                    } else {
+                        JsValue::Null
+                    }
+                } else {
+                    JsValue::Null
+                }
+            }
+            "querySelectorAll" => {
+                let items = if let Some(scope) = self.tree_path_of(r) {
+                    dom_api::query_selector_all(dom, &scope, &arg0)
+                        .into_iter()
+                        .map(|p| JsValue::Element(NodeRef::Tree(p)))
+                        .collect()
+                } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
+                    if let Some(root) = self.detached.get(slot).and_then(|s| s.node.as_ref()) {
+                        dom_api::query_selector_all(root, &path, &arg0)
+                            .into_iter()
+                            .map(|p| JsValue::Element(NodeRef::Detached { slot, path: p }))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
                 };
                 JsValue::Array(Rc::new(RefCell::new(items)))
             }
@@ -2785,11 +2980,17 @@ impl JsRuntime {
             }
             "contains" => match args.first() {
                 Some(JsValue::Element(other)) => {
-                    let (Some(a), Some(b)) = (self.tree_path_of(r), self.tree_path_of(other))
-                    else {
-                        return JsValue::Bool(false);
-                    };
-                    JsValue::Bool(b.starts_with(&a))
+                    if let (Some(a), Some(b)) = (self.tree_path_of(r), self.tree_path_of(other)) {
+                        JsValue::Bool(b.starts_with(&a))
+                    } else if let (
+                        Resolved::InPool { slot: s1, path: p1 },
+                        Resolved::InPool { slot: s2, path: p2 },
+                    ) = (self.resolve_ref(r), self.resolve_ref(other))
+                    {
+                        JsValue::Bool(s1 == s2 && p2.starts_with(&p1))
+                    } else {
+                        JsValue::Bool(false)
+                    }
                 }
                 _ => JsValue::Bool(false),
             },
@@ -3290,6 +3491,8 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "console" => Builtin::Console,
         "Event" => Builtin::EventCtor,
         "CustomEvent" => Builtin::CustomEventCtor,
+        "DOMParser" => Builtin::DOMParserCtor,
+        "XMLSerializer" => Builtin::XMLSerializerCtor,
         "Promise" => Builtin::PromiseCtor,
         "queueMicrotask" => Builtin::QueueMicrotask,
         "fetch" => Builtin::Fetch,
@@ -3453,6 +3656,7 @@ pub fn to_string(value: &JsValue) -> String {
         JsValue::Element(_) => "[object HTMLElement]".to_string(),
         JsValue::Style(_) => "[object CSSStyleDeclaration]".to_string(),
         JsValue::ClassList(_) => "[object DOMTokenList]".to_string(),
+        JsValue::Dataset(_) => "[object DOMStringMap]".to_string(),
         JsValue::Builtin(b) => format!("[object {:?}]", b),
         JsValue::Promise(_) => "[object Promise]".to_string(),
         JsValue::PromiseResolver { .. } | JsValue::Combinator(_) => "function".to_string(),

@@ -367,6 +367,72 @@ pub fn query_selector(root: &Node, scope: &[usize], selector: &str) -> Option<No
     query_selector_all(root, scope, selector).into_iter().next()
 }
 
+/// Tests whether the element at `path` matches `selector`.
+pub fn element_matches(root: &Node, path: &[usize], selector: &str) -> bool {
+    let selectors = parse_selector_list(selector);
+    if selectors.is_empty() {
+        return false;
+    }
+    selectors.iter().any(|s| selector_matches_path(root, path, s))
+}
+
+/// Finds the closest ancestor element (starting with `path`) matching `selector`.
+pub fn element_closest(root: &Node, path: &[usize], selector: &str) -> Option<NodePath> {
+    let selectors = parse_selector_list(selector);
+    if selectors.is_empty() {
+        return None;
+    }
+    for n in (0..=path.len()).rev() {
+        let candidate = &path[..n];
+        if node_at(root, candidate).and_then(|node| node.as_element()).is_some() {
+            if selectors.iter().any(|s| selector_matches_path(root, candidate, s)) {
+                return Some(candidate.to_vec());
+            }
+        }
+    }
+    None
+}
+
+/// Clones a node, optionally performing a deep clone with all child subtrees.
+pub fn clone_node(node: &Node, deep: bool) -> Node {
+    let mut cloned = node.clone();
+    if !deep {
+        cloned.children.clear();
+    }
+    cloned
+}
+
+/// Converts a camelCase identifier (`userId`) to kebab-case (`user-id`).
+pub fn camel_to_kebab(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_uppercase() {
+            out.push('-');
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Converts a kebab-case identifier (`user-id`) to camelCase (`userId`).
+pub fn kebab_to_camel(s: &str) -> String {
+    let mut out = String::new();
+    let mut capitalize_next = false;
+    for c in s.chars() {
+        if c == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            out.push(c.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Path of the first element whose `id` attribute equals `id`.
 /// Path of the element with a given stable identity.
 ///

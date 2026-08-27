@@ -1616,23 +1616,233 @@ impl<'a> LayoutBox<'a> {
         let row_gap = style.value("row-gap").map(|v| v.to_px()).unwrap_or(gap);
         let col_gap = style.value("column-gap").map(|v| v.to_px()).unwrap_or(gap);
 
-        // Parse grid-template-columns
+        let container_justify_items = parse_alignment_keyword(Some(style), "justify-items").unwrap_or("stretch");
+        let container_align_items = parse_alignment_keyword(Some(style), "align-items").unwrap_or("stretch");
+
+        // Parse grid-template-columns and grid-template-rows
         let col_spec = match style.value("grid-template-columns") {
             Some(Value::Keyword(s)) => s.clone(),
-            _ => "1fr 1fr".to_string(), // default 2 equal tracks
+            _ => "1fr 1fr".to_string(),
         };
-        let col_tokens: Vec<&str> = col_spec.split_whitespace().collect();
-        let num_cols = col_tokens.len().max(1);
+        let row_spec = match style.value("grid-template-rows") {
+            Some(Value::Keyword(s)) => s.clone(),
+            _ => "".to_string(),
+        };
+
+        let col_tokens = crate::css::expand_grid_template_tracks(&col_spec);
+        let row_tokens = if row_spec.is_empty() {
+            Vec::new()
+        } else {
+            crate::css::expand_grid_template_tracks(&row_spec)
+        };
+
+        let num_template_cols = col_tokens.len().max(1);
+
+        struct ItemPlacement {
+            child_idx: usize,
+            col: usize,
+            col_span: usize,
+            row: usize,
+            row_span: usize,
+            justify_self: &'static str,
+            align_self: &'static str,
+        }
+
+        struct PendingItem {
+            child_idx: usize,
+            col_req: Option<usize>,
+            col_span: usize,
+            row_req: Option<usize>,
+            row_span: usize,
+            justify_self: &'static str,
+            align_self: &'static str,
+        }
+
+        let mut pending = Vec::new();
+        for (i, child) in self.children.iter().enumerate() {
+            let (c_req, c_span, r_req, r_span) = parse_grid_item_placement(child.style());
+            let j_self = parse_alignment_keyword(child.style(), "justify-self").unwrap_or(container_justify_items);
+            let a_self = parse_alignment_keyword(child.style(), "align-self").unwrap_or(container_align_items);
+            pending.push(PendingItem {
+                child_idx: i,
+                col_req: c_req,
+                col_span: c_span.max(1),
+                row_req: r_req,
+                row_span: r_span.max(1),
+                justify_self: j_self,
+                align_self: a_self,
+            });
+        }
+
+        let mut placements = Vec::new();
+        let mut occupied = std::collections::HashSet::<(usize, usize)>::new();
+
+        // 1. Place items with explicit row and col
+        for item in &pending {
+            if let (Some(r), Some(c)) = (item.row_req, item.col_req) {
+                for dr in 0..item.row_span {
+                    for dc in 0..item.col_span {
+                        occupied.insert((r + dr, c + dc));
+                    }
+                }
+                placements.push(ItemPlacement {
+                    child_idx: item.child_idx,
+                    col: c,
+                    col_span: item.col_span,
+                    row: r,
+                    row_span: item.row_span,
+                    justify_self: item.justify_self,
+                    align_self: item.align_self,
+                });
+            }
+        }
+
+        // 2. Place items with explicit row only
+        for item in &pending {
+            if item.row_req.is_some() && item.col_req.is_none() {
+                let r = item.row_req.unwrap();
+                let mut c = 0;
+                loop {
+                    let mut fits = true;
+                    for dr in 0..item.row_span {
+                        for dc in 0..item.col_span {
+                            if occupied.contains(&(r + dr, c + dc)) {
+                                fits = false;
+                                break;
+                            }
+                        }
+                        if !fits {
+                            break;
+                        }
+                    }
+                    if fits {
+                        break;
+                    }
+                    c += 1;
+                }
+                for dr in 0..item.row_span {
+                    for dc in 0..item.col_span {
+                        occupied.insert((r + dr, c + dc));
+                    }
+                }
+                placements.push(ItemPlacement {
+                    child_idx: item.child_idx,
+                    col: c,
+                    col_span: item.col_span,
+                    row: r,
+                    row_span: item.row_span,
+                    justify_self: item.justify_self,
+                    align_self: item.align_self,
+                });
+            }
+        }
+
+        // 3. Place items with explicit col only
+        for item in &pending {
+            if item.row_req.is_none() && item.col_req.is_some() {
+                let c = item.col_req.unwrap();
+                let mut r = 0;
+                loop {
+                    let mut fits = true;
+                    for dr in 0..item.row_span {
+                        for dc in 0..item.col_span {
+                            if occupied.contains(&(r + dr, c + dc)) {
+                                fits = false;
+                                break;
+                            }
+                        }
+                        if !fits {
+                            break;
+                        }
+                    }
+                    if fits {
+                        break;
+                    }
+                    r += 1;
+                }
+                for dr in 0..item.row_span {
+                    for dc in 0..item.col_span {
+                        occupied.insert((r + dr, c + dc));
+                    }
+                }
+                placements.push(ItemPlacement {
+                    child_idx: item.child_idx,
+                    col: c,
+                    col_span: item.col_span,
+                    row: r,
+                    row_span: item.row_span,
+                    justify_self: item.justify_self,
+                    align_self: item.align_self,
+                });
+            }
+        }
+
+        // 4. Place fully auto items
+        let mut auto_cursor_row = 0;
+        let mut auto_cursor_col = 0;
+        for item in &pending {
+            if item.row_req.is_none() && item.col_req.is_none() {
+                loop {
+                    if auto_cursor_col + item.col_span > num_template_cols && auto_cursor_col > 0 {
+                        auto_cursor_col = 0;
+                        auto_cursor_row += 1;
+                    }
+                    let mut fits = true;
+                    for dr in 0..item.row_span {
+                        for dc in 0..item.col_span {
+                            if occupied.contains(&(auto_cursor_row + dr, auto_cursor_col + dc)) {
+                                fits = false;
+                                break;
+                            }
+                        }
+                        if !fits {
+                            break;
+                        }
+                    }
+                    if fits {
+                        for dr in 0..item.row_span {
+                            for dc in 0..item.col_span {
+                                occupied.insert((auto_cursor_row + dr, auto_cursor_col + dc));
+                            }
+                        }
+                        placements.push(ItemPlacement {
+                            child_idx: item.child_idx,
+                            col: auto_cursor_col,
+                            col_span: item.col_span,
+                            row: auto_cursor_row,
+                            row_span: item.row_span,
+                            justify_self: item.justify_self,
+                            align_self: item.align_self,
+                        });
+                        auto_cursor_col += item.col_span;
+                        break;
+                    }
+                    auto_cursor_col += 1;
+                    if auto_cursor_col >= num_template_cols {
+                        auto_cursor_col = 0;
+                        auto_cursor_row += 1;
+                    }
+                }
+            }
+        }
+
+        placements.sort_by_key(|p| p.child_idx);
+
+        // 2. Determine column widths
+        let max_col_used = placements.iter().map(|p| p.col + p.col_span).max().unwrap_or(0);
+        let num_cols = num_template_cols.max(max_col_used);
 
         let container_w = self.dimensions.content.width;
-        let avail_w = (container_w - (num_cols - 1) as f32 * col_gap).max(0.0);
+        let avail_w = (container_w - (num_cols.saturating_sub(1)) as f32 * col_gap).max(0.0);
 
-        // Calculate column widths
         let mut col_widths = vec![0.0f32; num_cols];
         let mut fr_total = 0.0f32;
         let mut allocated_w = 0.0f32;
 
         for (i, tok) in col_tokens.iter().enumerate() {
+            if i >= num_cols {
+                break;
+            }
             if tok.ends_with("fr") {
                 let weight: f32 = tok.trim_end_matches("fr").parse().unwrap_or(1.0);
                 fr_total += weight;
@@ -1655,15 +1865,24 @@ impl<'a> LayoutBox<'a> {
                 }
             }
         }
+        for _ in col_tokens.len()..num_cols {
+            fr_total += 1.0;
+        }
 
         let remaining_w = (avail_w - allocated_w).max(0.0);
         if fr_total > 0.0 {
-            for (i, tok) in col_tokens.iter().enumerate() {
-                if tok.ends_with("fr")
-                    || (!tok.ends_with("px") && !tok.ends_with('%') && tok.parse::<f32>().is_err())
-                {
-                    let weight: f32 = if tok.ends_with("fr") {
-                        tok.trim_end_matches("fr").parse().unwrap_or(1.0)
+            for i in 0..num_cols {
+                let is_fr = if i < col_tokens.len() {
+                    col_tokens[i].ends_with("fr")
+                        || (!col_tokens[i].ends_with("px")
+                            && !col_tokens[i].ends_with('%')
+                            && col_tokens[i].parse::<f32>().is_err())
+                } else {
+                    true
+                };
+                if is_fr {
+                    let weight: f32 = if i < col_tokens.len() && col_tokens[i].ends_with("fr") {
+                        col_tokens[i].trim_end_matches("fr").parse().unwrap_or(1.0)
                     } else {
                         1.0
                     };
@@ -1672,67 +1891,71 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
-        // Place children into grid cells
-        let mut cur_row = 0usize;
-        let mut cur_col = 0usize;
-        let mut row_heights = Vec::<f32>::new();
+        // 3. Determine row count and heights
+        let max_row_used = placements.iter().map(|p| p.row + p.row_span).max().unwrap_or(0);
+        let num_rows = row_tokens.len().max(max_row_used).max(1);
+
+        let mut row_heights = vec![0.0f32; num_rows];
+        for (r, tok) in row_tokens.iter().enumerate() {
+            if r < num_rows {
+                if tok.ends_with("px") {
+                    row_heights[r] = tok.trim_end_matches("px").parse().unwrap_or(0.0);
+                } else if let Ok(n) = tok.parse::<f32>() {
+                    row_heights[r] = n;
+                }
+            }
+        }
 
         let grid_x = self.dimensions.content.x;
         let grid_y = self.dimensions.content.y;
 
-        for child in &mut self.children {
-            if cur_col >= num_cols {
-                cur_col = 0;
-                cur_row += 1;
-            }
-
-            let cell_x = grid_x + (0..cur_col).map(|i| col_widths[i] + col_gap).sum::<f32>();
-            let cell_w = col_widths[cur_col];
-            let cell_y = grid_y
-                + (0..cur_row)
-                    .map(|r| row_heights.get(r).copied().unwrap_or(0.0) + row_gap)
-                    .sum::<f32>();
+        // Measure children across cells
+        for p in &placements {
+            let cell_w = (p.col..p.col + p.col_span).map(|c| col_widths[c]).sum::<f32>()
+                + col_gap * (p.col_span.saturating_sub(1) as f32);
 
             let cell_containing = Dimensions {
                 content: Rect {
-                    x: cell_x,
-                    y: cell_y,
+                    x: 0.0,
+                    y: 0.0,
                     width: cell_w,
                     height: 0.0,
                 },
                 ..Default::default()
             };
 
+            let child = &mut self.children[p.child_idx];
             child.layout(cell_containing);
             let child_h = child.dimensions.margin_box().height;
 
-            if cur_row >= row_heights.len() {
-                row_heights.push(child_h);
+            if p.row_span == 1 {
+                row_heights[p.row] = row_heights[p.row].max(child_h);
             } else {
-                row_heights[cur_row] = row_heights[cur_row].max(child_h);
+                let current_span_h: f32 = (p.row..p.row + p.row_span)
+                    .map(|r| row_heights[r])
+                    .sum::<f32>()
+                    + row_gap * (p.row_span - 1) as f32;
+                if child_h > current_span_h {
+                    let diff = (child_h - current_span_h) / p.row_span as f32;
+                    for r in p.row..p.row + p.row_span {
+                        row_heights[r] += diff;
+                    }
+                }
             }
-
-            cur_col += 1;
         }
 
-        // Final pass: enforce row heights
-        cur_row = 0;
-        cur_col = 0;
-        for child in &mut self.children {
-            if cur_col >= num_cols {
-                cur_col = 0;
-                cur_row += 1;
-            }
-            let cell_x = grid_x + (0..cur_col).map(|i| col_widths[i] + col_gap).sum::<f32>();
-            let cell_y = grid_y
-                + (0..cur_row)
-                    .map(|r| row_heights.get(r).copied().unwrap_or(0.0) + row_gap)
-                    .sum::<f32>();
-            let cell_w = col_widths[cur_col];
+        // 4. Final layout and alignment pass
+        for p in &placements {
+            let cell_x = grid_x
+                + (0..p.col).map(|c| col_widths[c] + col_gap).sum::<f32>();
+            let cell_w = (p.col..p.col + p.col_span).map(|c| col_widths[c]).sum::<f32>()
+                + col_gap * (p.col_span.saturating_sub(1) as f32);
 
-            // Height stays 0 here: `calc_position` treats the containing block's
-            // height as the block-flow cursor, so a non-zero value would push the
-            // item down by a whole row.
+            let cell_y = grid_y
+                + (0..p.row).map(|r| row_heights[r] + row_gap).sum::<f32>();
+            let cell_h = (p.row..p.row + p.row_span).map(|r| row_heights[r]).sum::<f32>()
+                + row_gap * (p.row_span.saturating_sub(1) as f32);
+
             let cell_containing = Dimensions {
                 content: Rect {
                     x: cell_x,
@@ -1743,25 +1966,41 @@ impl<'a> LayoutBox<'a> {
                 ..Default::default()
             };
 
+            let child = &mut self.children[p.child_idx];
             child.layout(cell_containing);
 
-            // Grid items stretch to fill their row (the default `align-items`).
             let d = child.dimensions;
-            let vertical_edges = d.margin.top
-                + d.margin.bottom
-                + d.border.top
-                + d.border.bottom
-                + d.padding.top
-                + d.padding.bottom;
-            child.dimensions.content.height =
-                (row_heights[cur_row] - vertical_edges).max(d.content.height);
+            let mb_w = d.margin_box().width;
+            let mb_h = d.margin_box().height;
 
-            cur_col += 1;
+            let offset_x = match p.justify_self {
+                "center" => ((cell_w - mb_w) / 2.0).max(0.0),
+                "end" => (cell_w - mb_w).max(0.0),
+                _ => 0.0,
+            };
+
+            let offset_y = match p.align_self {
+                "center" => ((cell_h - mb_h) / 2.0).max(0.0),
+                "end" => (cell_h - mb_h).max(0.0),
+                _ => 0.0,
+            };
+
+            if p.justify_self == "stretch" && child.style().and_then(|s| s.value("width")).is_none() {
+                let h_edges = d.margin.left + d.margin.right + d.border.left + d.border.right + d.padding.left + d.padding.right;
+                child.dimensions.content.width = (cell_w - h_edges).max(d.content.width);
+            }
+
+            if p.align_self == "stretch" && child.style().and_then(|s| s.value("height")).is_none() {
+                let v_edges = d.margin.top + d.margin.bottom + d.border.top + d.border.bottom + d.padding.top + d.padding.bottom;
+                child.dimensions.content.height = (cell_h - v_edges).max(d.content.height);
+            }
+
+            child.place_margin_box_at(cell_x + offset_x, cell_y + offset_y);
         }
 
         let total_h: f32 = row_heights.iter().sum::<f32>()
             + (row_heights.len().saturating_sub(1)) as f32 * row_gap;
-        self.dimensions.content.height = total_h;
+        self.dimensions.content.height = self.explicit_height().unwrap_or(total_h);
         self.calc_height();
     }
 
@@ -1923,6 +2162,86 @@ impl JustifyContent {
                 (gap, gap)
             }
         }
+    }
+}
+
+// ── Grid helpers ─────────────────────────────────────────────────────────────
+
+fn parse_grid_line_val(style: Option<&StyledNode>, prop: &str) -> (Option<usize>, usize) {
+    let Some(style) = style else {
+        return (None, 1);
+    };
+    let Some(val) = style.value(prop) else {
+        return (None, 1);
+    };
+    let s = match val {
+        Value::Keyword(k) => k.trim(),
+        Value::Number(n) => return (Some((*n as usize).saturating_sub(1)), 1),
+        _ => return (None, 1),
+    };
+    if s.is_empty() || s == "auto" {
+        return (None, 1);
+    }
+    if s.starts_with("span") {
+        let span: usize = s.trim_start_matches("span").trim().parse().unwrap_or(1);
+        return (None, span.max(1));
+    }
+    if let Ok(line) = s.parse::<usize>() {
+        return (Some(line.saturating_sub(1)), 1);
+    }
+    (None, 1)
+}
+
+fn parse_grid_item_placement(
+    style: Option<&StyledNode>,
+) -> (Option<usize>, usize, Option<usize>, usize) {
+    let (col_start_raw, col_start_span) = parse_grid_line_val(style, "grid-column-start");
+    let (col_end_raw, col_end_span) = parse_grid_line_val(style, "grid-column-end");
+
+    let col_span = if col_start_span > 1 {
+        col_start_span
+    } else if col_end_span > 1 {
+        col_end_span
+    } else if let (Some(s), Some(e)) = (col_start_raw, col_end_raw) {
+        if e > s {
+            e - s
+        } else {
+            1
+        }
+    } else {
+        1
+    };
+
+    let (row_start_raw, row_start_span) = parse_grid_line_val(style, "grid-row-start");
+    let (row_end_raw, row_end_span) = parse_grid_line_val(style, "grid-row-end");
+
+    let row_span = if row_start_span > 1 {
+        row_start_span
+    } else if row_end_span > 1 {
+        row_end_span
+    } else if let (Some(s), Some(e)) = (row_start_raw, row_end_raw) {
+        if e > s {
+            e - s
+        } else {
+            1
+        }
+    } else {
+        1
+    };
+
+    (col_start_raw, col_span, row_start_raw, row_span)
+}
+
+fn parse_alignment_keyword(style: Option<&StyledNode>, prop: &str) -> Option<&'static str> {
+    match style.and_then(|s| s.value(prop)) {
+        Some(Value::Keyword(k)) => match k.to_ascii_lowercase().as_str() {
+            "start" | "flex-start" => Some("start"),
+            "end" | "flex-end" => Some("end"),
+            "center" => Some("center"),
+            "stretch" => Some("stretch"),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

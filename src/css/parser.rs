@@ -1244,6 +1244,18 @@ impl Parser {
                 let values = self.parse_shorthand_values(first_value);
                 expand_gap_shorthand(values)
             }
+            "grid-column" | "grid-row" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, Unit::Px) => format!("{}px", n),
+                    Value::Number(n) => format!("{}", n),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                raw.push(' ');
+                raw.push_str(&rest);
+                expand_grid_placement_shorthand(&name, raw.trim())
+            }
             "box-shadow" => {
                 let values = self.parse_shorthand_values(first_value);
                 let mut lengths = Vec::new();
@@ -1744,6 +1756,100 @@ fn expand_gap_shorthand(values: Vec<Value>) -> Vec<Declaration> {
         Declaration::new("row-gap", row),
         Declaration::new("column-gap", column),
     ]
+}
+
+/// `grid-column: <start> [ / <end> ]` and `grid-row: <start> [ / <end> ]`.
+fn expand_grid_placement_shorthand(name: &str, raw: &str) -> Vec<Declaration> {
+    let (start_prop, end_prop) = if name == "grid-column" {
+        ("grid-column-start", "grid-column-end")
+    } else {
+        ("grid-row-start", "grid-row-end")
+    };
+    let parts: Vec<&str> = raw.split('/').map(|s| s.trim()).collect();
+    if parts.len() == 2 {
+        vec![
+            Declaration::new(start_prop, Value::Keyword(parts[0].to_string())),
+            Declaration::new(end_prop, Value::Keyword(parts[1].to_string())),
+        ]
+    } else if parts.len() == 1 {
+        let val = parts[0];
+        if val.starts_with("span") {
+            vec![
+                Declaration::new(start_prop, Value::Keyword("auto".to_string())),
+                Declaration::new(end_prop, Value::Keyword(val.to_string())),
+            ]
+        } else {
+            vec![
+                Declaration::new(start_prop, Value::Keyword(val.to_string())),
+                Declaration::new(end_prop, Value::Keyword("auto".to_string())),
+            ]
+        }
+    } else {
+        vec![Declaration::new(name, Value::Keyword(raw.to_string()))]
+    }
+}
+
+/// Expands `repeat(count, track...)` expressions and returns individual track definitions.
+pub fn expand_grid_template_tracks(spec: &str) -> Vec<String> {
+    let mut tracks = Vec::new();
+    let chars: Vec<char> = spec.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+
+        let mut token = String::new();
+        while i < chars.len() {
+            let ch = chars[i];
+            if ch.is_whitespace() {
+                break;
+            }
+            if ch == '(' {
+                token.push(ch);
+                i += 1;
+                let mut depth = 1;
+                while i < chars.len() && depth > 0 {
+                    let c = chars[i];
+                    token.push(c);
+                    if c == '(' {
+                        depth += 1;
+                    } else if c == ')' {
+                        depth -= 1;
+                    }
+                    i += 1;
+                }
+            } else {
+                token.push(ch);
+                i += 1;
+            }
+        }
+
+        let token_trim = token.trim();
+        if token_trim.starts_with("repeat(") && token_trim.ends_with(')') {
+            let inner = &token_trim[7..token_trim.len() - 1];
+            if let Some((count_str, track_spec)) = inner.split_once(',') {
+                let count: usize = count_str.trim().parse().unwrap_or(1);
+                let sub_tracks = expand_grid_template_tracks(track_spec.trim());
+                for _ in 0..count {
+                    tracks.extend(sub_tracks.clone());
+                }
+            } else {
+                tracks.push(token_trim.to_string());
+            }
+        } else if !token_trim.is_empty() {
+            tracks.push(token_trim.to_string());
+        }
+    }
+
+    if tracks.is_empty() {
+        tracks.push("1fr".to_string());
+    }
+    tracks
 }
 
 // ── Border shorthand expansion ────────────────────────────────────────────────
