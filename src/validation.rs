@@ -102,15 +102,16 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
     };
     let min = element
         .get_attr("min")
-        .and_then(|text| text.trim().parse::<f64>().ok())
-        .filter(|number| number.is_finite());
+        .and_then(parse_finite_number);
     let max = element
         .get_attr("max")
-        .and_then(|text| text.trim().parse::<f64>().ok())
-        .filter(|number| number.is_finite());
+        .and_then(parse_finite_number);
     let range_underflow = number.zip(min).is_some_and(|(value, min)| value < min);
     let range_overflow = number.zip(max).is_some_and(|(value, max)| value > max);
-    let step_mismatch = number.is_some_and(|number| number_step_mismatch(element, number, min));
+    let step_base = min
+        .or_else(|| element.get_attr("value").and_then(parse_finite_number))
+        .unwrap_or(0.0);
+    let step_mismatch = number.is_some_and(|number| number_step_mismatch(element, number, step_base));
 
     let length = value.chars().count();
     let min_length = element
@@ -141,6 +142,13 @@ pub fn invalid_controls(dom: &Node, form_path: &[usize]) -> Vec<NodePath> {
         .into_iter()
         .filter(|path| !control_validity(dom, path).valid())
         .collect()
+}
+
+fn parse_finite_number(text: &str) -> Option<f64> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|number| number.is_finite())
 }
 
 fn radio_group_checked(dom: &Node, path: &[usize], element: &ElementData) -> bool {
@@ -225,7 +233,7 @@ fn email_address_valid(value: &str) -> bool {
 
 // ── type=number step= ────────────────────────────────────────────────────────
 
-fn number_step_mismatch(element: &ElementData, value: f64, min: Option<f64>) -> bool {
+fn number_step_mismatch(element: &ElementData, value: f64, base: f64) -> bool {
     let step_attribute = element.get_attr("step").map(str::trim);
     if step_attribute.is_some_and(|step| step.eq_ignore_ascii_case("any")) {
         return false;
@@ -234,7 +242,6 @@ fn number_step_mismatch(element: &ElementData, value: f64, min: Option<f64>) -> 
         .and_then(|step| step.parse::<f64>().ok())
         .filter(|step| step.is_finite() && *step > 0.0)
         .unwrap_or(1.0);
-    let base = min.unwrap_or(0.0);
     let steps = (value - base) / step;
     if !steps.is_finite() {
         return false;
@@ -477,6 +484,7 @@ fn match_pattern(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dom::NodeType;
     use crate::html::parse_html;
 
     fn path(dom: &Node, id: &str) -> NodePath {
@@ -485,6 +493,15 @@ mod tests {
 
     fn form(dom: &Node) -> NodePath {
         dom_api::query_selector(dom, &[], "form").expect("form")
+    }
+
+    fn set_live_value(dom: &mut Node, id: &str, value: &str) {
+        let control = path(dom, id);
+        let node = dom_api::node_at_mut(dom, &control).expect("control node");
+        let NodeType::Element(element) = &mut node.node_type else {
+            panic!("control is not an element");
+        };
+        element.set_control_value(value);
     }
 
     #[test]
@@ -560,31 +577,41 @@ mod tests {
     }
 
     #[test]
-    fn number_step_uses_default_min_base_and_any() {
-        let dom = parse_html(
+    fn number_step_uses_min_then_value_attribute_then_zero_as_base() {
+        let mut dom = parse_html(
             r#"<form>
-                 <input id="default-bad" type="number" value="1.5">
+                 <input id="default" type="number">
+                 <input id="value-base" type="number" step="2" value="3">
                  <input id="min-base" type="number" min="0.5" step="1" value="1.5">
-                 <input id="quarter-bad" type="number" step="0.25" value="0.3">
-                 <input id="any" type="number" step="any" value="0.3">
-                 <input id="float" type="number" step="0.1" value="0.3">
+                 <input id="quarter" type="number" step="0.25" value="0">
+                 <input id="any" type="number" step="any" value="0">
+                 <input id="float" type="number" step="0.1" value="0">
                </form>"#,
         );
-        assert!(control_validity(&dom, &path(&dom, "default-bad")).step_mismatch);
+        set_live_value(&mut dom, "default", "1.5");
+        set_live_value(&mut dom, "value-base", "5");
+        set_live_value(&mut dom, "quarter", "0.3");
+        set_live_value(&mut dom, "any", "0.3");
+        set_live_value(&mut dom, "float", "0.3");
+
+        assert!(control_validity(&dom, &path(&dom, "default")).step_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "value-base")).valid());
         assert!(control_validity(&dom, &path(&dom, "min-base")).valid());
-        assert!(control_validity(&dom, &path(&dom, "quarter-bad")).step_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "quarter")).step_mismatch);
         assert!(control_validity(&dom, &path(&dom, "any")).valid());
         assert!(control_validity(&dom, &path(&dom, "float")).valid());
     }
 
     #[test]
     fn invalid_step_values_fall_back_to_the_default_step() {
-        let dom = parse_html(
+        let mut dom = parse_html(
             r#"<form>
-                 <input id="zero" type="number" step="0" value="1.5">
-                 <input id="garbage" type="number" step="wat" value="2">
+                 <input id="zero" type="number" step="0" value="0">
+                 <input id="garbage" type="number" step="wat" value="0">
                </form>"#,
         );
+        set_live_value(&mut dom, "zero", "1.5");
+        set_live_value(&mut dom, "garbage", "2");
         assert!(control_validity(&dom, &path(&dom, "zero")).step_mismatch);
         assert!(control_validity(&dom, &path(&dom, "garbage")).valid());
     }
