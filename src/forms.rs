@@ -85,8 +85,27 @@ fn focusable_candidates(dom: &Node) -> Vec<NodePath> {
 
 // ── Form association ──────────────────────────────────────────────────────────
 
-/// The nearest ancestor `<form>` of `path`.
+/// The form owner of a form-associated control.
+///
+/// A `form="id"` attribute explicitly reassociates a control, even when the
+/// control is physically nested in another form. If the id does not resolve to
+/// a `<form>`, the control is deliberately unowned; it does not fall back to an
+/// ancestor form. Without an explicit owner, the nearest ancestor form wins.
 pub fn owning_form(dom: &Node, path: &[usize]) -> Option<NodePath> {
+    let element = dom_api::node_at(dom, path)?.as_element()?;
+    if element.is_form_control() {
+        if let Some(form_id) = element.get_attr("form") {
+            if form_id.is_empty() {
+                return None;
+            }
+            let candidate = dom_api::get_element_by_id(dom, form_id)?;
+            let is_form = dom_api::node_at(dom, &candidate)
+                .and_then(|node| node.as_element())
+                .is_some_and(|owner| owner.tag_name == "form");
+            return is_form.then_some(candidate);
+        }
+    }
+
     dom_api::ancestor_paths(path).into_iter().find(|candidate| {
         dom_api::node_at(dom, candidate)
             .and_then(|n| n.as_element())
@@ -94,24 +113,41 @@ pub fn owning_form(dom: &Node, path: &[usize]) -> Option<NodePath> {
     })
 }
 
-/// Every form control inside `form_path`, in document order.
+/// Every control owned by `form_path`, in whole-document order.
+///
+/// Scanning the document rather than only the form subtree is required for
+/// controls using `form="id"`. It also means a nested control explicitly
+/// reassociated to another form is excluded from its physical ancestor's
+/// `elements` collection and successful form data.
 pub fn form_controls(dom: &Node, form_path: &[usize]) -> Vec<NodePath> {
+    let is_form = dom_api::node_at(dom, form_path)
+        .and_then(|node| node.as_element())
+        .is_some_and(|element| element.tag_name == "form");
+    if !is_form {
+        return Vec::new();
+    }
+
     let mut out = Vec::new();
-    let Some(form) = dom_api::node_at(dom, form_path) else {
-        return out;
-    };
-    walk(form, &mut form_path.to_vec(), &mut out);
+    walk(dom, &mut Vec::new(), dom, form_path, &mut out);
     return out;
 
-    fn walk(node: &Node, path: &mut NodePath, out: &mut Vec<NodePath>) {
+    fn walk(
+        node: &Node,
+        path: &mut NodePath,
+        dom: &Node,
+        form_path: &[usize],
+        out: &mut Vec<NodePath>,
+    ) {
         if let NodeType::Element(element) = &node.node_type {
-            if element.is_form_control() {
+            if element.is_form_control()
+                && owning_form(dom, path).as_deref() == Some(form_path)
+            {
                 out.push(path.clone());
             }
         }
         for (index, child) in node.children.iter().enumerate() {
             path.push(index);
-            walk(child, path, out);
+            walk(child, path, dom, form_path, out);
             path.pop();
         }
     }
