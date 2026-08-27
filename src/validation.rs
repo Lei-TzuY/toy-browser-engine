@@ -8,6 +8,7 @@
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
+use crate::net::Url;
 use crate::script::dom_api::{self, NodePath};
 
 /// The validity flags this educational engine currently models.
@@ -15,6 +16,7 @@ use crate::script::dom_api::{self, NodePath};
 pub struct Validity {
     pub value_missing: bool,
     pub type_mismatch: bool,
+    pub bad_input: bool,
     pub pattern_mismatch: bool,
     pub range_underflow: bool,
     pub range_overflow: bool,
@@ -27,6 +29,7 @@ impl Validity {
     pub fn valid(self) -> bool {
         !self.value_missing
             && !self.type_mismatch
+            && !self.bad_input
             && !self.pattern_mismatch
             && !self.range_underflow
             && !self.range_overflow
@@ -76,10 +79,15 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         value.is_empty()
     };
 
-    let type_mismatch = !value.is_empty()
-        && element.tag_name == "input"
-        && input_type == "email"
-        && !email_value_valid(&value, element.get_attr("multiple").is_some());
+    let type_mismatch = if value.is_empty() || element.tag_name != "input" {
+        false
+    } else {
+        match input_type.as_str() {
+            "email" => !email_value_valid(&value, element.get_attr("multiple").is_some()),
+            "url" => !url_value_valid(&value),
+            _ => false,
+        }
+    };
 
     let pattern_mismatch = !value.is_empty()
         && element.tag_name == "input"
@@ -91,27 +99,22 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
             .get_attr("pattern")
             .is_some_and(|pattern| !pattern_matches(pattern, &value));
 
-    let number = if element.tag_name == "input" && input_type == "number" {
-        value
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|number| number.is_finite())
-    } else {
-        None
-    };
-    let min = element
-        .get_attr("min")
-        .and_then(parse_finite_number);
-    let max = element
-        .get_attr("max")
-        .and_then(parse_finite_number);
+    let number_input = element.tag_name == "input" && input_type == "number";
+    let number = number_input.then(|| parse_finite_number(&value)).flatten();
+    // Real browsers sanitize invalid number strings aggressively. This engine
+    // intentionally keeps a raw live value while editing, so `bad_input`
+    // models the validity state that would otherwise be lost.
+    let bad_input = number_input && !value.trim().is_empty() && number.is_none();
+
+    let min = element.get_attr("min").and_then(parse_finite_number);
+    let max = element.get_attr("max").and_then(parse_finite_number);
     let range_underflow = number.zip(min).is_some_and(|(value, min)| value < min);
     let range_overflow = number.zip(max).is_some_and(|(value, max)| value > max);
     let step_base = min
         .or_else(|| element.get_attr("value").and_then(parse_finite_number))
         .unwrap_or(0.0);
-    let step_mismatch = number.is_some_and(|number| number_step_mismatch(element, number, step_base));
+    let step_mismatch =
+        number.is_some_and(|number| number_step_mismatch(element, number, step_base));
 
     let length = value.chars().count();
     let min_length = element
@@ -127,6 +130,7 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
     Validity {
         value_missing,
         type_mismatch,
+        bad_input,
         pattern_mismatch,
         range_underflow,
         range_overflow,
@@ -167,7 +171,7 @@ fn radio_group_checked(dom: &Node, path: &[usize], element: &ElementData) -> boo
         })
 }
 
-// ── type=email ────────────────────────────────────────────────────────────────
+// ── type=email / type=url ────────────────────────────────────────────────────
 
 fn email_value_valid(value: &str, multiple: bool) -> bool {
     if multiple {
@@ -229,6 +233,13 @@ fn email_address_valid(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     })
+}
+
+fn url_value_valid(value: &str) -> bool {
+    let value = trim_ascii_whitespace(value);
+    !value.is_empty()
+        && !value.chars().any(char::is_whitespace)
+        && Url::parse(value).is_ok()
 }
 
 // ── type=number step= ────────────────────────────────────────────────────────
@@ -551,6 +562,26 @@ mod tests {
     }
 
     #[test]
+    fn url_type_requires_an_absolute_url_without_internal_whitespace() {
+        let dom = parse_html(
+            r#"<form>
+                 <input id="https" type="url" value="https://example.com/a?b=1">
+                 <input id="mailto" type="url" value="mailto:person@example.com">
+                 <input id="relative" type="url" value="/docs/start">
+                 <input id="bare" type="url" value="example.com">
+                 <input id="space" type="url" value="https://exa mple.com">
+                 <input id="empty" type="url" value="">
+               </form>"#,
+        );
+        assert!(control_validity(&dom, &path(&dom, "https")).valid());
+        assert!(control_validity(&dom, &path(&dom, "mailto")).valid());
+        assert!(control_validity(&dom, &path(&dom, "relative")).type_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "bare")).type_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "space")).type_mismatch);
+        assert!(control_validity(&dom, &path(&dom, "empty")).valid());
+    }
+
+    #[test]
     fn pattern_is_a_full_match() {
         let dom = parse_html(
             r#"<form>
@@ -574,6 +605,26 @@ mod tests {
         assert!(control_validity(&dom, &path(&dom, "low")).range_underflow);
         assert!(control_validity(&dom, &path(&dom, "ok")).valid());
         assert!(control_validity(&dom, &path(&dom, "high")).range_overflow);
+    }
+
+    #[test]
+    fn malformed_nonempty_number_sets_bad_input() {
+        let mut dom = parse_html(
+            r#"<form>
+                 <input id="bad" type="number">
+                 <input id="nan" type="number">
+                 <input id="empty" type="number">
+                 <input id="ok" type="number">
+               </form>"#,
+        );
+        set_live_value(&mut dom, "bad", "abc");
+        set_live_value(&mut dom, "nan", "NaN");
+        set_live_value(&mut dom, "ok", "12");
+
+        assert!(control_validity(&dom, &path(&dom, "bad")).bad_input);
+        assert!(control_validity(&dom, &path(&dom, "nan")).bad_input);
+        assert!(control_validity(&dom, &path(&dom, "empty")).valid());
+        assert!(control_validity(&dom, &path(&dom, "ok")).valid());
     }
 
     #[test]
