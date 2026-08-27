@@ -163,13 +163,18 @@ impl<T> FetchRegistry<T> {
     /// Drop everything — what navigating away from a page does. The handles go
     /// with it, so no promise from the old page can ever be settled.
     ///
-    /// Requests already removed from `pending` by an abort may still be waiting
-    /// in `cancelled` for the next network-dispatch turn. They must be returned
-    /// here too: navigation can happen before that turn, and silently clearing
-    /// those ids would leave an already-sent backend request alive after its
-    /// document disappeared.
+    /// Only requests that have left the outbox can need a backend cancellation.
+    /// An unsent request has never acquired backend lifecycle state and should
+    /// disappear locally, just like an unsent abort in `take_where()`. Already
+    /// queued abort cancellations are included too, because navigation can race
+    /// the normal cancellation-flush turn.
     pub fn clear(&mut self) -> Vec<FetchId> {
-        let mut ids: Vec<FetchId> = self.pending.iter().map(|(id, _)| *id).collect();
+        let unsent: Vec<FetchId> = self.outbox.iter().map(|(id, _)| *id).collect();
+        let mut ids: Vec<FetchId> = self
+            .pending
+            .iter()
+            .filter_map(|(id, _)| (!unsent.contains(id)).then_some(*id))
+            .collect();
         ids.append(&mut self.cancelled);
         ids.sort_unstable();
         ids.dedup();
@@ -248,6 +253,31 @@ mod tests {
         assert_eq!(registry.take_where(|handle| *handle == "abort"), vec![(id, "abort")]);
         assert_eq!(registry.take_cancellations(), vec![id]);
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn clear_drops_an_unsent_request_without_backend_cancellation() {
+        let mut registry = FetchRegistry::new().with_limit(4);
+        let unsent = registry.start(request("unsent"), "unsent").unwrap();
+        assert!(registry.contains(unsent));
+
+        assert!(registry.clear().is_empty());
+        assert!(registry.is_empty());
+        assert!(registry.take_outbox().is_empty());
+        assert!(registry.take_cancellations().is_empty());
+    }
+
+    #[test]
+    fn clear_cancels_dispatched_but_not_newly_queued_requests() {
+        let mut registry = FetchRegistry::new().with_limit(4);
+        let sent = registry.start(request("sent"), "sent").unwrap();
+        assert_eq!(registry.take_outbox().len(), 1);
+        let unsent = registry.start(request("unsent"), "unsent").unwrap();
+
+        assert_eq!(registry.clear(), vec![sent]);
+        assert!(!registry.contains(sent));
+        assert!(!registry.contains(unsent));
+        assert!(!registry.has_pending_work());
     }
 
     #[test]
