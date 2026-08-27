@@ -6,8 +6,8 @@
 // stacked PRs build on them. This final wrapper repairs the remaining cases
 // where those layers cannot express live, path-aware HTML semantics cleanly:
 // radio groups use the canonical form-state grouping algorithm, stray readonly
-// on file controls must not disable `required`, and `required` is inapplicable
-// to Color state.
+// on file controls must not disable `required`, `required` is inapplicable to
+// Color state, and character-length constraints do not apply to Number state.
 
 use crate::dom::Node;
 use crate::forms;
@@ -62,6 +62,15 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         // valueMissing.
         "color" => {
             validity.value_missing = false;
+        }
+
+        // Number is editable through the engine's generic single-line editor,
+        // but HTML does not apply minlength/maxlength to Number state. Preserve
+        // numeric validity (badInput/min/max/step) while removing character-
+        // count flags inherited from the older `is_text_entry()` abstraction.
+        "number" => {
+            validity.too_short = false;
+            validity.too_long = false;
         }
         _ => {}
     }
@@ -143,5 +152,25 @@ mod tests {
 
         let flags = input_validity(r#"<input type="radio" required readonly disabled>"#);
         assert!(flags.valid());
+    }
+
+    #[test]
+    fn number_ignores_minlength_and_maxlength_validity_flags() {
+        let flags = input_validity(
+            r#"<input type="number" value="12" minlength="5" maxlength="1">"#,
+        );
+        assert!(!flags.too_short);
+        assert!(!flags.too_long);
+        assert!(flags.valid());
+    }
+
+    #[test]
+    fn number_length_applicability_does_not_mask_numeric_errors() {
+        let flags = input_validity(
+            r#"<input type="number" value="12" min="20" minlength="1" maxlength="1">"#,
+        );
+        assert!(flags.range_underflow);
+        assert!(!flags.too_short);
+        assert!(!flags.too_long);
     }
 }
