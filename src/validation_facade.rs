@@ -4,10 +4,11 @@
 //
 // Most validation lives in validation_constraints. This final facade overlays
 // structural and lexical rules that need stricter live-DOM information than the
-// older element-only validators expose: select placeholder selectedness and the
-// Number state's exact valid-floating-point-number syntax.
+// older element-only validators expose: select placeholder selectedness, the
+// Number state's exact valid-floating-point-number syntax, and Range-state
+// defaults/constraints whose applicability differs from ordinary text inputs.
 
-use crate::dom::Node;
+use crate::dom::{ElementData, Node};
 use crate::forms;
 use crate::script::dom_api::{self, NodePath};
 
@@ -20,7 +21,8 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         return validity;
     };
 
-    let participates = will_validate(element) && !forms::is_effectively_disabled(dom, path);
+    let effectively_disabled = forms::is_effectively_disabled(dom, path);
+    let participates = will_validate(element) && !effectively_disabled;
 
     if element.tag_name == "select"
         && element.get_attr("required").is_some()
@@ -30,29 +32,40 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
             .unwrap_or(validity.value_missing);
     }
 
-    // The base number validator deliberately keeps a raw live string, but its
-    // numeric parser trims whitespace and delegates to Rust's permissive float
-    // parser. HTML's Number state is stricter: the value must itself be a valid
-    // floating-point-number string. A real browser would sanitize invalid
-    // strings back to empty; this engine preserves them while editing, so the
-    // equivalent observable state is `bad_input`.
-    if participates && element.tag_name == "input" && element.input_type() == "number" {
-        let raw = element.control_value();
-        if !raw.is_empty() && !valid_number_state_syntax(&raw) {
-            validity.bad_input = true;
-            // Range and step constraints only apply after the value parses as a
-            // Number-state value; do not leak flags computed from a trimmed or
-            // otherwise more permissive host-language parse.
-            validity.range_underflow = false;
-            validity.range_overflow = false;
-            validity.step_mismatch = false;
+    if element.tag_name == "input" {
+        match element.input_type().as_str() {
+            // The base number validator deliberately keeps a raw live string,
+            // but its numeric parser trims whitespace and delegates to Rust's
+            // permissive float parser. HTML's Number state is stricter: the
+            // value must itself be a valid floating-point-number string. A real
+            // browser would sanitize invalid strings back to empty; this engine
+            // preserves them while editing, so the equivalent observable state
+            // is `bad_input`.
+            "number" if participates => {
+                let raw = element.control_value();
+                if !raw.is_empty() && !valid_number_state_syntax(&raw) {
+                    validity.bad_input = true;
+                    // Range and step constraints only apply after the value
+                    // parses as a Number-state value; do not leak flags computed
+                    // from a trimmed or otherwise more permissive host parse.
+                    validity.range_underflow = false;
+                    validity.range_overflow = false;
+                    validity.step_mismatch = false;
+                }
+            }
+            // `required` and `readonly` do not apply to Range state. The base
+            // validator treats both generically, so Range must be overlaid even
+            // when a stray `readonly` attribute made `will_validate()` false.
+            // Disabledness still bars validation normally.
+            "range" if !effectively_disabled => apply_range_validity(element, &mut validity),
+            _ => {}
         }
     }
 
     validity
 }
 
-/// HTML's valid floating-point-number lexical grammar used by `type=number`.
+/// HTML's valid floating-point-number lexical grammar used by numeric states.
 ///
 /// Accepted examples include `12`, `-0.5`, `.5`, `-.5`, `1e2`, and `1e+2`.
 /// A leading `+`, surrounding whitespace, a trailing decimal point, a missing
@@ -110,6 +123,97 @@ fn valid_number_state_syntax(value: &str) -> bool {
     index == bytes.len()
 }
 
+/// Parse a live numeric-state value using the strict HTML lexical grammar.
+fn parse_live_finite_number(value: &str) -> Option<f64> {
+    if !valid_number_state_syntax(value) {
+        return None;
+    }
+    value.parse::<f64>().ok().filter(|number| number.is_finite())
+}
+
+/// Parse a numeric content attribute using the engine's existing forgiving
+/// attribute convention: surrounding whitespace and a non-conforming leading
+/// plus are tolerated by the parsing algorithm, but the whole remaining token
+/// must still be a finite host number.
+fn parse_numeric_attribute(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|number| number.is_finite())
+}
+
+/// Overlay Range-state validation on top of the older generic validator.
+///
+/// A browser normally sanitizes/clamps a range value so malformed or out-of-
+/// range strings are difficult to observe. This engine deliberately preserves
+/// arbitrary raw live strings, like its Number/Date implementations, so we
+/// expose the corresponding bad-input/range/step flags instead of silently
+/// rewriting DOM state here. Full Range value sanitization remains separate.
+fn apply_range_validity(element: &ElementData, validity: &mut Validity) {
+    // Range always has a value in the browser model; `required` does not apply.
+    validity.value_missing = false;
+
+    let raw = element.control_value();
+    if raw.is_empty() {
+        // The real Range sanitizer would replace this with its default value.
+        // Until DOM sanitization exists, an empty raw value must at least not be
+        // mistaken for a Required-state failure.
+        validity.bad_input = false;
+        validity.range_underflow = false;
+        validity.range_overflow = false;
+        validity.step_mismatch = false;
+        return;
+    }
+
+    let value = parse_live_finite_number(&raw);
+    validity.bad_input = value.is_none();
+    let Some(value) = value else {
+        validity.range_underflow = false;
+        validity.range_overflow = false;
+        validity.step_mismatch = false;
+        return;
+    };
+
+    // Range, unlike Number, has actual default bounds.
+    let min = element
+        .get_attr("min")
+        .and_then(parse_numeric_attribute)
+        .unwrap_or(0.0);
+    let max = element
+        .get_attr("max")
+        .and_then(parse_numeric_attribute)
+        .unwrap_or(100.0);
+    validity.range_underflow = value < min;
+    validity.range_overflow = value > max;
+
+    // Generic step-base precedence is an explicit valid min attribute, then a
+    // valid content value, then zero. The default Range step is one.
+    let step_base = element
+        .get_attr("min")
+        .and_then(parse_numeric_attribute)
+        .or_else(|| element.get_attr("value").and_then(parse_numeric_attribute))
+        .unwrap_or(0.0);
+    validity.step_mismatch = range_step_mismatch(element, value, step_base);
+}
+
+fn range_step_mismatch(element: &ElementData, value: f64, base: f64) -> bool {
+    let step_attribute = element.get_attr("step").map(str::trim);
+    if step_attribute.is_some_and(|step| step.eq_ignore_ascii_case("any")) {
+        return false;
+    }
+    let step = step_attribute
+        .and_then(parse_numeric_attribute)
+        .filter(|step| *step > 0.0)
+        .unwrap_or(1.0);
+    let steps = (value - base) / step;
+    if !steps.is_finite() {
+        return false;
+    }
+    let tolerance = 1e-9 * steps.abs().max(1.0);
+    (steps - steps.round()).abs() > tolerance
+}
+
 /// Every invalid control owned by a form, in document order.
 pub fn invalid_controls(dom: &Node, form_path: &[usize]) -> Vec<NodePath> {
     forms::form_controls(dom, form_path)
@@ -130,10 +234,14 @@ mod tests {
         control_validity(&dom, &path)
     }
 
-    fn number_validity(value: &str) -> Validity {
-        let dom = parse_html(&format!(r#"<input type="number" value="{value}">"#));
+    fn input_validity(html: &str) -> Validity {
+        let dom = parse_html(html);
         let path = dom_api::query_selector(&dom, &[], "input").unwrap();
         control_validity(&dom, &path)
+    }
+
+    fn number_validity(value: &str) -> Validity {
+        input_validity(&format!(r#"<input type="number" value="{value}">"#))
     }
 
     #[test]
@@ -193,5 +301,53 @@ mod tests {
         let dom = parse_html(r#"<fieldset disabled><input id="n" type="number" value="+12"></fieldset>"#);
         let path = dom_api::get_element_by_id(&dom, "n").unwrap();
         assert!(control_validity(&dom, &path).valid());
+    }
+
+    #[test]
+    fn range_required_and_readonly_do_not_bar_or_require_the_control() {
+        let flags = input_validity(r#"<input type="range" required readonly min="10" value="5">"#);
+        assert!(!flags.value_missing);
+        assert!(flags.range_underflow, "readonly does not apply to Range state");
+    }
+
+    #[test]
+    fn range_uses_zero_and_one_hundred_as_default_bounds() {
+        let flags = input_validity(r#"<input type="range" value="-1">"#);
+        assert!(flags.range_underflow);
+        assert!(!flags.range_overflow);
+
+        let flags = input_validity(r#"<input type="range" value="101">"#);
+        assert!(!flags.range_underflow);
+        assert!(flags.range_overflow);
+
+        assert!(input_validity(r#"<input type="range" value="50">"#).valid());
+    }
+
+    #[test]
+    fn range_step_uses_min_then_content_value_as_its_base() {
+        let flags = input_validity(r#"<input type="range" min="0.5" max="10" step="2" value="4.5">"#);
+        assert!(flags.valid(), "min-based grid should accept 4.5: {flags:?}");
+
+        let flags = input_validity(r#"<input type="range" min="0.5" max="10" step="2" value="3.5">"#);
+        assert!(flags.step_mismatch);
+
+        let flags = input_validity(r#"<input type="range" max="10" step="2" value="0.5">"#);
+        assert!(flags.valid(), "content value defines the base when min is absent");
+    }
+
+    #[test]
+    fn malformed_range_raw_value_sets_only_bad_input() {
+        let flags = input_validity(r#"<input type="range" required min="20" max="30" step="3" value="+12">"#);
+        assert!(flags.bad_input);
+        assert!(!flags.value_missing);
+        assert!(!flags.range_underflow);
+        assert!(!flags.range_overflow);
+        assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn disabled_range_remains_barred_from_validation() {
+        let flags = input_validity(r#"<input type="range" disabled min="20" value="5">"#);
+        assert!(flags.valid());
     }
 }
