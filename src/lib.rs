@@ -3,7 +3,7 @@
 //! Pipeline:
 //!  HTML string
 //!   → `html::parse_html`      → DOM tree  (`dom::Node`)
-//!   → `style::style_tree`     → Styled tree  (`style::StyledNode`)
+//!   → `style::style_tree`     → Styled tree (`style::StyledNode`)
 //!   → `layout::layout_tree`   → Layout tree  (`layout::LayoutBox`)
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
@@ -19,6 +19,10 @@ pub mod html;
 pub mod image;
 pub mod input;
 pub mod layout;
+#[allow(dead_code)]
+#[path = "net/mod.rs"]
+mod net_base;
+#[path = "net_final.rs"]
 pub mod net;
 pub mod paint;
 pub mod script;
