@@ -25,7 +25,10 @@ mod image_prev;
 #[allow(dead_code)]
 #[path = "image_ascii_final.rs"]
 mod image_prev2;
+#[allow(dead_code)]
 #[path = "image_pgm_final.rs"]
+mod image_prev3;
+#[path = "image_pbm_final.rs"]
 pub mod image;
 pub mod input;
 pub mod layout;
