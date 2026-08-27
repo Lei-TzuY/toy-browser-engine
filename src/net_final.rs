@@ -248,7 +248,7 @@ mod tests {
             loop {
                 if let Some(completion) = network.poll().into_iter().next() {
                     assert_eq!(completion.id, id);
-                    assert_eq!(completion.result.unwrap().text(), "ok");
+                    assert_eq!(completion.result.unwrap().body, b"ok");
                     break;
                 }
                 assert!(
