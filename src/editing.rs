@@ -56,8 +56,25 @@ impl EditResult {
 }
 
 /// The most characters this control accepts, from `maxlength`.
+///
+/// HTML only applies `maxlength` to textarea and the textual input states.
+/// Number remains keyboard-editable in this engine, but its length is governed
+/// by numeric constraints (`min`/`max`/`step`), never by character count.
 fn max_length(element: &ElementData) -> Option<usize> {
-    element.get_attr("maxlength")?.trim().parse::<usize>().ok()
+    let applies = match element.tag_name.as_str() {
+        "textarea" => true,
+        "input" => matches!(
+            element.input_type().as_str(),
+            "text" | "search" | "url" | "tel" | "email" | "password"
+        ),
+        _ => false,
+    };
+    applies
+        .then(|| element.get_attr("maxlength"))
+        .flatten()?
+        .trim()
+        .parse::<usize>()
+        .ok()
 }
 
 /// Apply `command` to a text-entry element.
@@ -317,6 +334,14 @@ mod tests {
         let mut input = text_input(&[("maxlength", "3")]);
         type_text(&mut input, "abcdef");
         assert_eq!(input.control_value(), "abc");
+    }
+
+    #[test]
+    fn number_ignores_maxlength_while_remaining_keyboard_editable() {
+        let mut input = text_input(&[("type", "number"), ("maxlength", "2")]);
+        type_text(&mut input, "1234");
+        assert_eq!(input.control_value(), "1234");
+        assert_eq!(input.caret(), 4);
     }
 
     #[test]
