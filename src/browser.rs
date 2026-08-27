@@ -239,6 +239,19 @@ impl Browser {
     /// A handler that calls `preventDefault()` suppresses the navigation, as
     /// in a real browser.
     pub fn click_node(&mut self, path: &NodePath) -> ClickOutcome {
+        // Disabled form controls suppress user-interaction click dispatch
+        // entirely. This check must run before focus and listeners so inherited
+        // `<fieldset disabled>` state cannot leak any activation side effects.
+        let disabled_form_control = crate::script::dom_api::node_at(&self.document.dom, path)
+            .and_then(|node| node.as_element())
+            .is_some_and(|element| {
+                element.is_form_control()
+                    && forms::is_effectively_disabled(&self.document.dom, path)
+            });
+        if disabled_form_control {
+            return ClickOutcome::Ignored;
+        }
+
         // Focus moves on press, before the click event — that is the order a
         // handler sees when it reads `document.activeElement`.
         self.document.focus_from_click(path);
