@@ -3,13 +3,13 @@
 // ============================================================
 //
 // `net_base` retains the protocol/loaders and raw worker implementation. This
-// final facade strengthens one lifecycle invariant at the public boundary:
-// once `start(id, ...)` returns, `is_busy()` stays true until that id is either
-// observed as a completion or explicitly cancelled. Worker-thread liveness is
-// therefore no longer used as a proxy for completion visibility.
+// final facade strengthens two lifecycle invariants at the public boundary:
+// a started request stays busy until its completion is observed or cancelled,
+// and every start receives a fresh internal wire id so a stale answer from an
+// older generation can never be mistaken for a reused public FetchId.
 
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,17 +24,24 @@ pub use crate::net_base::{
 };
 pub use fetch::FetchRegistry;
 
-/// Adds request-id accounting around a backend.
+/// Adds public-id lifecycle accounting and internal request generations around
+/// a backend.
 ///
-/// A completion is the only normal operation that retires an outstanding id.
-/// This avoids a subtle race in threaded backends where a worker can be
-/// observed as finished immediately before its channel send becomes visible to
-/// a non-blocking receiver. `is_busy()` is about unfinished *requests*, not
-/// worker handles, so it must not return false during that window.
+/// The raw backends key completion and cancellation only by `FetchId`. Passing
+/// a public id through unchanged therefore makes reuse unsafe: a late answer or
+/// cancellation marker from an older request can be confused with a newer
+/// request carrying the same id. `CompletionTracked` instead gives every start
+/// a monotonically increasing internal wire id and translates only the active
+/// generation back to the caller's public id.
 struct CompletionTracked<N> {
     inner: N,
     ready: RefCell<Vec<FetchCompletion>>,
-    outstanding: RefCell<HashSet<FetchId>>,
+    public_to_wire: RefCell<HashMap<FetchId, FetchId>>,
+    wire_to_public: RefCell<HashMap<FetchId, FetchId>>,
+    /// Internal ids deliberately never wrap. Exhausting 2^64 generations in a
+    /// single backend lifetime is treated as a fatal invariant violation rather
+    /// than silently reusing a token that a stale worker may still carry.
+    next_wire_id: Cell<FetchId>,
 }
 
 impl<N: NetworkBackend> CompletionTracked<N> {
@@ -42,29 +49,65 @@ impl<N: NetworkBackend> CompletionTracked<N> {
         Self {
             inner,
             ready: RefCell::new(Vec::new()),
-            outstanding: RefCell::new(HashSet::new()),
+            public_to_wire: RefCell::new(HashMap::new()),
+            wire_to_public: RefCell::new(HashMap::new()),
+            next_wire_id: Cell::new(1),
         }
     }
 
-    fn start(&self, id: FetchId, request: FetchRequest) {
-        self.outstanding.borrow_mut().insert(id);
-        self.inner.start(id, request);
+    fn allocate_wire_id(&self) -> FetchId {
+        let wire = self.next_wire_id.get();
+        let next = wire
+            .checked_add(1)
+            .expect("network request generation id space exhausted");
+        self.next_wire_id.set(next);
+        wire
     }
 
-    /// Drain the inner backend and move only still-outstanding completions into
-    /// the public ready queue. A late answer for a cancelled id is discarded.
+    fn start(&self, public_id: FetchId, request: FetchRequest) {
+        // A duplicate public id is treated as a new generation. Retire the old
+        // generation first so a stale completion cannot settle the replacement.
+        if let Some(old_wire) = self.public_to_wire.borrow_mut().remove(&public_id) {
+            self.wire_to_public.borrow_mut().remove(&old_wire);
+            self.inner.cancel(old_wire);
+        }
+        self.ready
+            .borrow_mut()
+            .retain(|completion| completion.id != public_id);
+
+        let wire_id = self.allocate_wire_id();
+        self.public_to_wire
+            .borrow_mut()
+            .insert(public_id, wire_id);
+        self.wire_to_public
+            .borrow_mut()
+            .insert(wire_id, public_id);
+        self.inner.start(wire_id, request);
+    }
+
+    /// Drain the inner backend and translate only the currently active wire
+    /// generation. A late answer for a cancelled/superseded generation has no
+    /// mapping and is discarded even if its public id has since been reused.
     fn harvest(&self) {
         let completions = self.inner.poll();
         if completions.is_empty() {
             return;
         }
 
-        let mut outstanding = self.outstanding.borrow_mut();
+        let mut wire_to_public = self.wire_to_public.borrow_mut();
+        let mut public_to_wire = self.public_to_wire.borrow_mut();
         let mut ready = self.ready.borrow_mut();
-        for completion in completions {
-            if outstanding.remove(&completion.id) {
-                ready.push(completion);
+        for mut completion in completions {
+            let wire_id = completion.id;
+            let Some(public_id) = wire_to_public.remove(&wire_id) else {
+                continue;
+            };
+            if public_to_wire.get(&public_id).copied() != Some(wire_id) {
+                continue;
             }
+            public_to_wire.remove(&public_id);
+            completion.id = public_id;
+            ready.push(completion);
         }
     }
 
@@ -73,17 +116,20 @@ impl<N: NetworkBackend> CompletionTracked<N> {
         std::mem::take(&mut *self.ready.borrow_mut())
     }
 
-    fn cancel(&self, id: FetchId) {
-        self.outstanding.borrow_mut().remove(&id);
+    fn cancel(&self, public_id: FetchId) {
         self.ready
             .borrow_mut()
-            .retain(|completion| completion.id != id);
-        self.inner.cancel(id);
+            .retain(|completion| completion.id != public_id);
+        let wire_id = self.public_to_wire.borrow_mut().remove(&public_id);
+        if let Some(wire_id) = wire_id {
+            self.wire_to_public.borrow_mut().remove(&wire_id);
+            self.inner.cancel(wire_id);
+        }
     }
 
     fn is_busy(&self) -> bool {
         self.harvest();
-        !self.ready.borrow().is_empty() || !self.outstanding.borrow().is_empty()
+        !self.ready.borrow().is_empty() || !self.public_to_wire.borrow().is_empty()
     }
 
     fn wait(&self, timeout: Duration) -> bool {
@@ -91,18 +137,20 @@ impl<N: NetworkBackend> CompletionTracked<N> {
         if !self.ready.borrow().is_empty() {
             return true;
         }
-        if self.outstanding.borrow().is_empty() {
+        if self.public_to_wire.borrow().is_empty() {
             return false;
         }
 
-        let arrived = self.inner.wait(timeout);
+        let _ = self.inner.wait(timeout);
         self.harvest();
-        arrived || !self.ready.borrow().is_empty()
+        // A stale cancelled generation may wake the raw backend but is not a
+        // deliverable completion at this public boundary.
+        !self.ready.borrow().is_empty()
     }
 }
 
-/// Threaded backend whose busy state is tied to request completion rather than
-/// the worker thread's instantaneous liveness.
+/// Threaded backend whose busy state and completion identity are tied to the
+/// active request generation rather than worker-thread liveness.
 pub struct ThreadedNetwork {
     backend: CompletionTracked<crate::net_base::ThreadedNetwork>,
 }
@@ -137,7 +185,7 @@ impl NetworkBackend for ThreadedNetwork {
     }
 }
 
-/// Default routing backend with the same request-completion accounting.
+/// Default routing backend with the same request-generation accounting.
 pub struct DefaultNetwork {
     backend: CompletionTracked<crate::net_base::DefaultNetwork>,
 }
@@ -175,31 +223,43 @@ impl NetworkBackend for DefaultNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
-    /// Models the exact bad ordering from the real threaded backend: the first
-    /// non-blocking poll sees nothing even though the backend itself already
-    /// reports idle; the completion becomes visible on the next poll.
-    struct CompletionAfterFalseIdle {
-        polls: Cell<u8>,
+    #[derive(Default)]
+    struct DelayedNetwork {
+        started: RefCell<Vec<FetchId>>,
+        cancelled: RefCell<Vec<FetchId>>,
+        ready: RefCell<Vec<FetchCompletion>>,
     }
 
-    impl NetworkBackend for CompletionAfterFalseIdle {
-        fn start(&self, _id: FetchId, _request: FetchRequest) {}
+    impl DelayedNetwork {
+        fn complete_text(&self, wire_id: FetchId, text: &str) {
+            self.ready.borrow_mut().push(FetchCompletion {
+                id: wire_id,
+                result: Ok(FetchResponse::synthetic(
+                    Url::parse("demo:///resource").unwrap(),
+                    200,
+                    Some("text/plain"),
+                    text.as_bytes().to_vec(),
+                )),
+            });
+        }
+    }
 
-        fn poll(&self) -> Vec<FetchCompletion> {
-            let poll = self.polls.get();
-            self.polls.set(poll + 1);
-            if poll == 1 {
-                vec![FetchCompletion {
-                    id: 7,
-                    result: Err(FetchError::Aborted),
-                }]
-            } else {
-                Vec::new()
-            }
+    impl NetworkBackend for DelayedNetwork {
+        fn start(&self, id: FetchId, _request: FetchRequest) {
+            self.started.borrow_mut().push(id);
         }
 
+        fn poll(&self) -> Vec<FetchCompletion> {
+            std::mem::take(&mut *self.ready.borrow_mut())
+        }
+
+        fn cancel(&self, id: FetchId) {
+            self.cancelled.borrow_mut().push(id);
+        }
+
+        // Deliberately false: the wrapper's own request map, not raw liveness,
+        // is the authority on whether public work is still outstanding.
         fn is_busy(&self) -> bool {
             false
         }
@@ -210,31 +270,75 @@ mod tests {
     }
 
     #[test]
-    fn outstanding_id_keeps_false_idle_backend_busy_until_completion_is_observed() {
-        let network = CompletionTracked::new(CompletionAfterFalseIdle {
-            polls: Cell::new(0),
-        });
+    fn active_request_stays_busy_even_if_inner_backend_reports_idle() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
         network.start(7, request());
+        let wire = network.public_to_wire.borrow()[&7];
 
-        // First harvest sees no channel item. The request id itself is the
-        // authoritative proof that work is still outstanding.
         assert!(network.is_busy());
+        network.inner.complete_text(wire, "ok");
 
         let completions = network.poll();
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].id, 7);
+        assert_eq!(completions[0].result.as_ref().unwrap().body, b"ok");
         assert!(!network.is_busy());
     }
 
     #[test]
-    fn cancellation_retires_the_id_and_discards_a_late_completion() {
-        let network = CompletionTracked::new(CompletionAfterFalseIdle {
-            polls: Cell::new(0),
-        });
+    fn cancellation_retires_the_generation_and_discards_a_late_completion() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
         network.start(7, request());
+        let wire = network.public_to_wire.borrow()[&7];
         network.cancel(7);
-        assert!(!network.is_busy());
+
+        assert_eq!(&*network.inner.cancelled.borrow(), &[wire]);
+        network.inner.complete_text(wire, "late");
         assert!(network.poll().is_empty());
+        assert!(!network.is_busy());
+    }
+
+    #[test]
+    fn reused_public_id_is_isolated_from_the_cancelled_generation() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
+        network.start(7, request());
+        let old_wire = network.public_to_wire.borrow()[&7];
+        network.cancel(7);
+
+        network.start(7, request());
+        let new_wire = network.public_to_wire.borrow()[&7];
+        assert_ne!(old_wire, new_wire);
+
+        // The old worker answers after the public id has already been reused.
+        network.inner.complete_text(old_wire, "old");
+        assert!(network.poll().is_empty());
+        assert!(network.is_busy(), "the new generation is still outstanding");
+
+        network.inner.complete_text(new_wire, "new");
+        let completions = network.poll();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].id, 7);
+        assert_eq!(completions[0].result.as_ref().unwrap().body, b"new");
+        assert!(!network.is_busy());
+    }
+
+    #[test]
+    fn duplicate_active_public_id_supersedes_the_old_generation() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
+        network.start(9, request());
+        let old_wire = network.public_to_wire.borrow()[&9];
+        network.start(9, request());
+        let new_wire = network.public_to_wire.borrow()[&9];
+
+        assert_ne!(old_wire, new_wire);
+        assert_eq!(&*network.inner.cancelled.borrow(), &[old_wire]);
+
+        network.inner.complete_text(old_wire, "old");
+        network.inner.complete_text(new_wire, "new");
+        let completions = network.poll();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].id, 9);
+        assert_eq!(completions[0].result.as_ref().unwrap().body, b"new");
     }
 
     #[test]
@@ -243,21 +347,21 @@ mod tests {
         loader.insert("demo:///resource", "ok");
         let network = ThreadedNetwork::new(Arc::new(loader));
 
-        // Fast in-memory loads make the worker/send/exit ordering extremely
-        // tight, which amplifies the race seen on macOS ARM without relying on
-        // sleeps or wall-clock deadlines. Reuse one backend so channel and
-        // worker bookkeeping are exercised repeatedly too.
-        for id in 1..=256 {
-            network.start(id, request());
+        // Fast in-memory loads make worker/send/exit ordering extremely tight.
+        // Reuse public ids across many generations as well, so the stress test
+        // covers both completion visibility and public-to-wire translation.
+        for generation in 1..=256 {
+            let public_id = (generation % 5) + 1;
+            network.start(public_id, request());
             loop {
                 if let Some(completion) = network.poll().into_iter().next() {
-                    assert_eq!(completion.id, id);
+                    assert_eq!(completion.id, public_id);
                     assert_eq!(completion.result.unwrap().body, b"ok");
                     break;
                 }
                 assert!(
                     network.is_busy(),
-                    "request {id} became falsely idle before its completion was observed"
+                    "generation {generation} became falsely idle before completion"
                 );
                 std::thread::yield_now();
             }
