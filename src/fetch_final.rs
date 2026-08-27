@@ -155,9 +155,13 @@ impl<T> FetchRegistry<T> {
         self.pending.is_empty()
     }
 
-    /// True while anything is in flight or waiting to be sent.
+    /// True while anything is in flight or waiting to cross the backend boundary.
+    ///
+    /// Queued cancellations count as pending work too: the promise may already
+    /// be gone, but the next event-loop turn still has to flush `network.cancel`
+    /// before the page can be considered idle.
     pub fn has_pending_work(&self) -> bool {
-        !self.pending.is_empty() || !self.outbox.is_empty()
+        !self.pending.is_empty() || !self.outbox.is_empty() || !self.cancelled.is_empty()
     }
 
     /// Drop everything — what navigating away from a page does. The handles go
@@ -277,6 +281,19 @@ mod tests {
         assert_eq!(registry.clear(), vec![sent]);
         assert!(!registry.contains(sent));
         assert!(!registry.contains(unsent));
+        assert!(!registry.has_pending_work());
+    }
+
+    #[test]
+    fn queued_cancellation_keeps_registry_non_idle_until_flushed() {
+        let mut registry = FetchRegistry::new().with_limit(4);
+        let sent = registry.start(request("sent"), "abort").unwrap();
+        assert_eq!(registry.take_outbox().len(), 1);
+        assert_eq!(registry.take_where(|handle| *handle == "abort"), vec![(sent, "abort")]);
+
+        assert!(registry.is_empty(), "the promise handle is already gone");
+        assert!(registry.has_pending_work(), "backend cancellation still needs a turn");
+        assert_eq!(registry.take_cancellations(), vec![sent]);
         assert!(!registry.has_pending_work());
     }
 
