@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::net::{LoadError, ResourceLoader, Url};
 
-pub use crate::image::{ImageError, ImageFormat, RasterImage};
+pub use crate::image_prev6::{ImageError, ImageFormat, RasterImage};
 
 /// Decode image bytes into straight RGBA8, adding uncompressed Windows BMP
 /// support on top of the existing PNG/JPEG/PNM/PAM/PFM stack.
@@ -15,7 +15,7 @@ pub fn decode(bytes: &[u8]) -> Result<RasterImage, ImageError> {
     if bytes.starts_with(b"BM") {
         decode_bmp(bytes)
     } else {
-        crate::image::decode(bytes)
+        crate::image_prev6::decode(bytes)
     }
 }
 
@@ -231,7 +231,6 @@ mod tests {
 
     #[test]
     fn decodes_bottom_up_24_bit_with_row_padding() {
-        // width=1 means each 3-byte BGR row has one padding byte.
         let bytes = bmp(1, 2, 24, &[0, 0, 255, 0, 0, 255, 0, 0]);
         let image = decode(&bytes).expect("24-bit BMP");
         assert_eq!(image.pixel(0, 0), [0, 255, 0, 255]);
