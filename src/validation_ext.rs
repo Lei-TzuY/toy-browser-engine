@@ -5,7 +5,7 @@
 // The core validity algorithms remain in validation.rs. This facade adds DOM
 // relationships and input states that cannot be answered from ElementData
 // alone: inherited fieldset disabledness, radio-button group-wide requiredness,
-// and calendar-aware date constraints.
+// and calendar-aware date/month constraints.
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
@@ -39,8 +39,12 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         validity.value_missing = required && !checked;
     }
 
-    if element.tag_name == "input" && element.input_type() == "date" {
-        apply_date_validity(element, &mut validity);
+    if element.tag_name == "input" {
+        match element.input_type().as_str() {
+            "date" => apply_date_validity(element, &mut validity),
+            "month" => apply_month_validity(element, &mut validity),
+            _ => {}
+        }
     }
     validity
 }
@@ -83,14 +87,10 @@ fn apply_date_validity(element: &ElementData, validity: &mut Validity) {
     let step_base = min
         .or_else(|| element.get_attr("value").and_then(parse_date_days))
         .unwrap_or(0);
-    validity.step_mismatch = date_step_mismatch(element, value, step_base);
+    validity.step_mismatch = discrete_step_mismatch(element, value, step_base, 1.0);
 }
 
 /// Parse an HTML valid date string into whole days from 1970-01-01.
-///
-/// The year is four or more ASCII digits and must be greater than zero; month
-/// and day are exactly two digits. Gregorian month lengths and leap years are
-/// checked before conversion.
 fn parse_date_days(text: &str) -> Option<i64> {
     if text.trim() != text || !text.is_ascii() {
         return None;
@@ -144,7 +144,66 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-fn date_step_mismatch(element: &ElementData, value: i64, base: i64) -> bool {
+// ── type=month ───────────────────────────────────────────────────────────────
+
+/// Apply Month-state bad-input/range/step rules.
+///
+/// Month values are represented as whole months from January 1970, which makes
+/// ordering and step checks exact and avoids any dependence on month length.
+fn apply_month_validity(element: &ElementData, validity: &mut Validity) {
+    let raw = element.control_value();
+    if raw.is_empty() {
+        return;
+    }
+
+    let value = parse_month_index(&raw);
+    validity.bad_input = value.is_none();
+    let Some(value) = value else {
+        validity.range_underflow = false;
+        validity.range_overflow = false;
+        validity.step_mismatch = false;
+        return;
+    };
+
+    let min = element.get_attr("min").and_then(parse_month_index);
+    let max = element.get_attr("max").and_then(parse_month_index);
+    validity.range_underflow = min.is_some_and(|minimum| value < minimum);
+    validity.range_overflow = max.is_some_and(|maximum| value > maximum);
+
+    let step_base = min
+        .or_else(|| element.get_attr("value").and_then(parse_month_index))
+        .unwrap_or(0);
+    validity.step_mismatch = discrete_step_mismatch(element, value, step_base, 1.0);
+}
+
+/// Parse an HTML valid month string (`YYYY-MM`) to months from 1970-01.
+fn parse_month_index(text: &str) -> Option<i64> {
+    if text.trim() != text || !text.is_ascii() {
+        return None;
+    }
+    let mut parts = text.split('-');
+    let year_text = parts.next()?;
+    let month_text = parts.next()?;
+    if parts.next().is_some()
+        || year_text.len() < 4
+        || month_text.len() != 2
+        || !year_text.bytes().all(|byte| byte.is_ascii_digit())
+        || !month_text.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let year = year_text.parse::<i64>().ok()?;
+    let month = month_text.parse::<i64>().ok()?;
+    if year == 0 || !(1..=12).contains(&month) {
+        return None;
+    }
+    Some((year - 1970).checked_mul(12)? + (month - 1))
+}
+
+/// Shared step checker for input states whose normalized values are discrete
+/// integer units (days for date, months for month).
+fn discrete_step_mismatch(element: &ElementData, value: i64, base: i64, default_step: f64) -> bool {
     let step_attribute = element.get_attr("step").map(str::trim);
     if step_attribute.is_some_and(|step| step.eq_ignore_ascii_case("any")) {
         return false;
@@ -152,7 +211,7 @@ fn date_step_mismatch(element: &ElementData, value: i64, base: i64) -> bool {
     let step = step_attribute
         .and_then(|step| step.parse::<f64>().ok())
         .filter(|step| step.is_finite() && *step > 0.0)
-        .unwrap_or(1.0);
+        .unwrap_or(default_step);
     let steps = (value - base) as f64 / step;
     let tolerance = 1e-9 * steps.abs().max(1.0);
     (steps - steps.round()).abs() > tolerance
@@ -215,6 +274,46 @@ mod tests {
         assert!(!flags.step_mismatch);
 
         let flags = validity(r#"<input type="date" value="2026-08-27" step="any">"#);
+        assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn month_parser_normalizes_to_months_from_epoch() {
+        assert_eq!(parse_month_index("1970-01"), Some(0));
+        assert_eq!(parse_month_index("1970-12"), Some(11));
+        assert_eq!(parse_month_index("1971-01"), Some(12));
+        assert_eq!(parse_month_index("1969-12"), Some(-1));
+        assert!(parse_month_index("2026-13").is_none());
+        assert!(parse_month_index("2026-1").is_none());
+        assert!(parse_month_index("0000-01").is_none());
+    }
+
+    #[test]
+    fn month_min_max_and_step_are_calendar_month_based() {
+        let flags = validity(
+            r#"<input type="month" value="2026-08" min="2026-09" max="2026-12">"#,
+        );
+        assert!(flags.range_underflow);
+        assert!(!flags.range_overflow);
+
+        let flags = validity(
+            r#"<input type="month" value="2026-05" min="2026-01" step="3">"#,
+        );
+        assert!(flags.step_mismatch);
+
+        let flags = validity(
+            r#"<input type="month" value="2026-07" min="2026-01" step="3">"#,
+        );
+        assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn malformed_nonempty_month_sets_bad_input_and_step_any_bypasses_step() {
+        let flags = validity(r#"<input type="month" value="2026-00">"#);
+        assert!(flags.bad_input);
+        assert!(!flags.valid());
+
+        let flags = validity(r#"<input type="month" value="2026-08" step="any">"#);
         assert!(!flags.step_mismatch);
     }
 }
