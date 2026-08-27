@@ -239,6 +239,90 @@ fn associated_submitter<'a>(
     is_submit_button(element).then_some(path)
 }
 
+// ── Select controls ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectOption {
+    selected: bool,
+    disabled: bool,
+    value: String,
+}
+
+/// Values contributed by a `<select>` in submission order.
+///
+/// The engine does not yet expose live option-selectedness through the UI, so
+/// this models the parsed/default state. A single-select with no explicit
+/// `selected` option defaults to the first enabled option. If several options
+/// are marked selected, the last one wins, matching the reset/default state of
+/// a normal single-select. `multiple` keeps every selected enabled option.
+pub fn select_values(dom: &Node, select_path: &[usize]) -> Vec<String> {
+    let Some(select_node) = dom_api::node_at(dom, select_path) else {
+        return Vec::new();
+    };
+    let Some(select) = select_node.as_element() else {
+        return Vec::new();
+    };
+    if select.tag_name != "select" {
+        return Vec::new();
+    }
+
+    let mut options = Vec::new();
+    collect_select_options(select_node, false, &mut options);
+    if select.get_attr("multiple").is_some() {
+        return options
+            .into_iter()
+            .filter(|option| option.selected && !option.disabled)
+            .map(|option| option.value)
+            .collect();
+    }
+
+    if let Some(option) = options.iter().rev().find(|option| option.selected) {
+        return (!option.disabled)
+            .then(|| option.value.clone())
+            .into_iter()
+            .collect();
+    }
+
+    options
+        .into_iter()
+        .find(|option| !option.disabled)
+        .map(|option| option.value)
+        .into_iter()
+        .collect()
+}
+
+fn collect_select_options(node: &Node, disabled_group: bool, out: &mut Vec<SelectOption>) {
+    let mut descendants_disabled = disabled_group;
+    if let Some(element) = node.as_element() {
+        if element.tag_name == "optgroup" && element.get_attr("disabled").is_some() {
+            descendants_disabled = true;
+        }
+        if element.tag_name == "option" {
+            out.push(SelectOption {
+                selected: element.get_attr("selected").is_some(),
+                disabled: descendants_disabled || element.get_attr("disabled").is_some(),
+                value: option_submission_value(node, element),
+            });
+            return;
+        }
+    }
+    for child in &node.children {
+        collect_select_options(child, descendants_disabled, out);
+    }
+}
+
+fn option_submission_value(node: &Node, element: &ElementData) -> String {
+    element
+        .get_attr("value")
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            dom_api::text_content(node)
+                .split_ascii_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+}
+
 // ── Submission ────────────────────────────────────────────────────────────────
 
 /// One `name=value` pair from a successful control.
@@ -299,6 +383,14 @@ pub fn form_data_with_submitter(
         let Some(name) = element.get_attr("name").filter(|n| !n.is_empty()) else {
             continue;
         };
+        if element.tag_name == "select" {
+            entries.extend(
+                select_values(dom, &path)
+                    .into_iter()
+                    .map(|value| (name.to_string(), value)),
+            );
+            continue;
+        }
         if element.tag_name == "input" {
             match element.input_type().as_str() {
                 // Unchecked boxes and radios are not successful.
@@ -569,6 +661,51 @@ mod tests {
                 ("c".to_string(), "on".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn single_select_uses_last_selected_and_first_option_fallback() {
+        let (dom, form) = form_of(
+            r#"<form>
+                 <select name="chosen">
+                   <option value="a" selected>A</option>
+                   <option value="b" selected>B</option>
+                   <option value="c">C</option>
+                 </select>
+                 <select name="fallback">
+                   <option disabled value="x">X</option>
+                   <option value="y">Y</option>
+                 </select>
+               </form>"#,
+        );
+        assert_eq!(
+            form_data(&dom, &form),
+            vec![("chosen".into(), "b".into()), ("fallback".into(), "y".into())]
+        );
+    }
+
+    #[test]
+    fn multiple_select_submits_selected_enabled_options_in_order() {
+        let (dom, form) = form_of(
+            r#"<form><select name="tag" multiple>
+                 <option selected value="rust">Rust</option>
+                 <option selected disabled value="hidden">Hidden</option>
+                 <optgroup disabled><option selected value="grouped">Grouped</option></optgroup>
+                 <option selected>  Toy   Browser  </option>
+               </select></form>"#,
+        );
+        assert_eq!(
+            form_data(&dom, &form),
+            vec![("tag".into(), "rust".into()), ("tag".into(), "Toy Browser".into())]
+        );
+    }
+
+    #[test]
+    fn selected_disabled_option_does_not_fall_back_in_single_select() {
+        let (dom, form) = form_of(
+            r#"<form><select name="pick"><option selected disabled value="x">X</option><option value="y">Y</option></select></form>"#,
+        );
+        assert!(form_data(&dom, &form).is_empty());
     }
 
     #[test]

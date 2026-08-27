@@ -75,6 +75,13 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         !element.is_checked()
     } else if element.tag_name == "input" && input_type == "radio" {
         !radio_group_checked(dom, path, element)
+    } else if element.tag_name == "select" {
+        let values = forms::select_values(dom, path);
+        if element.get_attr("multiple").is_some() {
+            values.is_empty()
+        } else {
+            values.first().is_none_or(|value| value.is_empty())
+        }
     } else {
         value.is_empty()
     };
@@ -529,6 +536,45 @@ mod tests {
         assert!(control_validity(&dom, &path(&dom, "box")).value_missing);
         assert!(control_validity(&dom, &path(&dom, "r1")).valid());
         assert_eq!(invalid_controls(&dom, &form(&dom)).len(), 2);
+    }
+
+    #[test]
+    fn required_select_uses_selected_option_state() {
+        let dom = parse_html(
+            r#"<form>
+                 <select id="placeholder" required>
+                   <option value="" selected>Choose one</option>
+                   <option value="a">A</option>
+                 </select>
+                 <select id="chosen" required>
+                   <option value="">Choose one</option>
+                   <option value="a" selected>A</option>
+                 </select>
+                 <select id="fallback" required>
+                   <option disabled value="">Unavailable</option>
+                   <option value="b">B</option>
+                 </select>
+                 <select id="multi-empty" required multiple>
+                   <option value="a">A</option>
+                 </select>
+                 <select id="multi-chosen" required multiple>
+                   <option value="a" selected>A</option>
+                 </select>
+               </form>"#,
+        );
+        assert!(control_validity(&dom, &path(&dom, "placeholder")).value_missing);
+        assert!(control_validity(&dom, &path(&dom, "chosen")).valid());
+        assert!(control_validity(&dom, &path(&dom, "fallback")).valid());
+        assert!(control_validity(&dom, &path(&dom, "multi-empty")).value_missing);
+        assert!(control_validity(&dom, &path(&dom, "multi-chosen")).valid());
+    }
+
+    #[test]
+    fn disabled_selected_option_does_not_satisfy_required_select() {
+        let dom = parse_html(
+            r#"<form><select id="pick" required><option selected disabled value="x">X</option><option value="y">Y</option></select></form>"#,
+        );
+        assert!(control_validity(&dom, &path(&dom, "pick")).value_missing);
     }
 
     #[test]
