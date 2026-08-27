@@ -5,7 +5,7 @@
 // The core validity algorithms remain in validation.rs. This facade adds DOM
 // relationships and input states that cannot be answered from ElementData
 // alone: inherited fieldset disabledness, radio-button group-wide requiredness,
-// and calendar-aware date/month constraints.
+// and calendar-aware date/month/week constraints.
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
@@ -43,6 +43,7 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
         match element.input_type().as_str() {
             "date" => apply_date_validity(element, &mut validity),
             "month" => apply_month_validity(element, &mut validity),
+            "week" => apply_week_validity(element, &mut validity),
             _ => {}
         }
     }
@@ -201,8 +202,84 @@ fn parse_month_index(text: &str) -> Option<i64> {
     Some((year - 1970).checked_mul(12)? + (month - 1))
 }
 
+// ── type=week ────────────────────────────────────────────────────────────────
+
+/// Apply Week-state bad-input/range/step rules.
+///
+/// Week values are normalized to whole ISO weeks from `1970-W01`. That week
+/// starts on Monday 1969-12-29, which is HTML's special default step base for
+/// Week-state inputs. Expressing values on this axis turns that base into zero.
+fn apply_week_validity(element: &ElementData, validity: &mut Validity) {
+    let raw = element.control_value();
+    if raw.is_empty() {
+        return;
+    }
+
+    let value = parse_week_index(&raw);
+    validity.bad_input = value.is_none();
+    let Some(value) = value else {
+        validity.range_underflow = false;
+        validity.range_overflow = false;
+        validity.step_mismatch = false;
+        return;
+    };
+
+    let min = element.get_attr("min").and_then(parse_week_index);
+    let max = element.get_attr("max").and_then(parse_week_index);
+    validity.range_underflow = min.is_some_and(|minimum| value < minimum);
+    validity.range_overflow = max.is_some_and(|maximum| value > maximum);
+
+    let step_base = min
+        .or_else(|| element.get_attr("value").and_then(parse_week_index))
+        .unwrap_or(0);
+    validity.step_mismatch = discrete_step_mismatch(element, value, step_base, 1.0);
+}
+
+/// Parse an HTML valid week string (`YYYY-Www`) into ISO weeks from 1970-W01.
+fn parse_week_index(text: &str) -> Option<i64> {
+    if text.trim() != text || !text.is_ascii() {
+        return None;
+    }
+    let (year_text, week_text) = text.split_once("-W")?;
+    if year_text.len() < 4
+        || week_text.len() != 2
+        || !year_text.bytes().all(|byte| byte.is_ascii_digit())
+        || !week_text.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let year = year_text.parse::<i64>().ok()?;
+    let week = week_text.parse::<i64>().ok()?;
+    if year == 0 || week == 0 || week > iso_weeks_in_year(year)? {
+        return None;
+    }
+
+    let monday = iso_week1_monday(year)?.checked_add((week - 1).checked_mul(7)?)?;
+    // 1970-W01 began three days before the Unix epoch. Every valid week
+    // Monday is therefore exactly divisible on this shifted day axis.
+    Some(monday.checked_add(3)?.div_euclid(7))
+}
+
+/// Days since 1970-01-01 for the Monday beginning ISO week 1 of `year`.
+fn iso_week1_monday(year: i64) -> Option<i64> {
+    if year <= 0 {
+        return None;
+    }
+    let jan4 = days_from_civil(year, 1, 4);
+    // 1970-01-01 was Thursday. With Monday=0, Thursday has index 3.
+    let weekday = (jan4 + 3).rem_euclid(7);
+    jan4.checked_sub(weekday)
+}
+
+fn iso_weeks_in_year(year: i64) -> Option<i64> {
+    let this = iso_week1_monday(year)?;
+    let next = iso_week1_monday(year.checked_add(1)?)?;
+    Some((next - this) / 7)
+}
+
 /// Shared step checker for input states whose normalized values are discrete
-/// integer units (days for date, months for month).
+/// integer units (days for date, months for month, weeks for week).
 fn discrete_step_mismatch(element: &ElementData, value: i64, base: i64, default_step: f64) -> bool {
     let step_attribute = element.get_attr("step").map(str::trim);
     if step_attribute.is_some_and(|step| step.eq_ignore_ascii_case("any")) {
@@ -314,6 +391,49 @@ mod tests {
         assert!(!flags.valid());
 
         let flags = validity(r#"<input type="month" value="2026-08" step="any">"#);
+        assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn week_parser_uses_iso_week_year_boundaries() {
+        assert_eq!(parse_week_index("1970-W01"), Some(0));
+        assert_eq!(parse_week_index("1969-W52"), Some(-1));
+        assert_eq!(parse_week_index("1970-W02"), Some(1));
+        assert!(parse_week_index("2015-W53").is_some());
+        assert!(parse_week_index("2020-W53").is_some());
+        assert!(parse_week_index("2014-W53").is_none());
+        assert!(parse_week_index("2021-W53").is_none());
+        assert!(parse_week_index("2026-W00").is_none());
+        assert!(parse_week_index("2026-W1").is_none());
+        assert!(parse_week_index("0000-W01").is_none());
+    }
+
+    #[test]
+    fn week_min_max_and_step_work_across_year_boundaries() {
+        let flags = validity(
+            r#"<input type="week" value="2025-W51" min="2025-W52" max="2026-W10">"#,
+        );
+        assert!(flags.range_underflow);
+        assert!(!flags.range_overflow);
+
+        let flags = validity(
+            r#"<input type="week" value="2026-W01" min="2025-W52" step="2">"#,
+        );
+        assert!(flags.step_mismatch);
+
+        let flags = validity(
+            r#"<input type="week" value="2026-W02" min="2025-W52" step="2">"#,
+        );
+        assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn malformed_nonempty_week_sets_bad_input_and_step_any_bypasses_step() {
+        let flags = validity(r#"<input type="week" value="2021-W53">"#);
+        assert!(flags.bad_input);
+        assert!(!flags.valid());
+
+        let flags = validity(r#"<input type="week" value="2026-W35" step="any">"#);
         assert!(!flags.step_mismatch);
     }
 }
