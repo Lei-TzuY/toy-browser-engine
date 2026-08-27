@@ -9,11 +9,12 @@
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
-use crate::script::dom_api::{self, NodePath};
+use crate::script::dom_api;
 
 #[derive(Debug, Clone)]
 struct OptionState {
     value: String,
+    direct_child: bool,
 }
 
 /// Current `HTMLSelectElement.value`.
@@ -44,6 +45,38 @@ pub fn selected_index(dom: &Node, select_path: &[usize]) -> Option<isize> {
             .map(|index| index as isize)
             .unwrap_or(-1),
     )
+}
+
+/// Whether a required `<select>` is suffering from `valueMissing`.
+///
+/// Required-select validity is defined in terms of option *selectedness*, not
+/// successful form data and not the select's string value. In particular, a
+/// disabled selected option can satisfy `required`, and an empty-valued option
+/// only counts as missing when it is the select's special placeholder label
+/// option: the first option in the list, directly parented by the select, while
+/// the select's display size is exactly one.
+pub fn required_value_missing(dom: &Node, select_path: &[usize]) -> Option<bool> {
+    let select_node = dom_api::node_at(dom, select_path)?;
+    let select = select_node.as_element()?;
+    if select.tag_name != "select" {
+        return None;
+    }
+
+    let options = select_snapshot(dom, select_path)?;
+    let selected = forms::select_selected_indices(dom, select_path)?;
+    if selected.is_empty() {
+        return Some(true);
+    }
+
+    let placeholder = if select_display_size(select) == 1 {
+        options
+            .first()
+            .filter(|option| option.direct_child && option.value.is_empty())
+            .map(|_| 0usize)
+    } else {
+        None
+    };
+    Some(selected.len() == 1 && placeholder == selected.first().copied())
 }
 
 /// Assign `HTMLSelectElement.value`.
@@ -80,11 +113,11 @@ fn select_snapshot(dom: &Node, select_path: &[usize]) -> Option<Vec<OptionState>
         return None;
     }
     let mut options = Vec::new();
-    collect_options(select_node, true, &mut options);
+    collect_options(select_node, true, false, &mut options);
     Some(options)
 }
 
-fn collect_options(node: &Node, is_root: bool, out: &mut Vec<OptionState>) {
+fn collect_options(node: &Node, is_root: bool, direct_child: bool, out: &mut Vec<OptionState>) {
     if let Some(element) = node.as_element() {
         if !is_root && element.tag_name == "select" {
             return;
@@ -92,12 +125,27 @@ fn collect_options(node: &Node, is_root: bool, out: &mut Vec<OptionState>) {
         if element.tag_name == "option" {
             out.push(OptionState {
                 value: option_value(node, element),
+                direct_child,
             });
             return;
         }
     }
     for child in &node.children {
-        collect_options(child, false, out);
+        collect_options(child, false, is_root, out);
+    }
+}
+
+fn select_display_size(select: &ElementData) -> u32 {
+    if let Some(size) = select
+        .get_attr("size")
+        .and_then(|text| text.trim().parse::<u32>().ok())
+    {
+        return size;
+    }
+    if select.get_attr("multiple").is_some() {
+        4
+    } else {
+        1
     }
 }
 
@@ -117,8 +165,9 @@ fn option_value(node: &Node, element: &ElementData) -> String {
 mod tests {
     use super::*;
     use crate::html::parse_html;
+    use crate::script::dom_api::NodePath;
 
-    fn select(dom: &Node) -> NodePath {
+    fn select_path(dom: &Node) -> NodePath {
         dom_api::query_selector(dom, &[], "select").expect("select")
     }
 
@@ -127,7 +176,7 @@ mod tests {
         let dom = parse_html(
             r#"<select><option disabled value="x">X</option><option value="a">A</option></select>"#,
         );
-        let select = select(&dom);
+        let select = select_path(&dom);
         assert_eq!(value(&dom, &select).as_deref(), Some("a"));
         assert_eq!(selected_index(&dom, &select), Some(1));
     }
@@ -137,7 +186,7 @@ mod tests {
         let dom = parse_html(
             r#"<select><option selected value="a">A</option><option selected value="b">B</option></select>"#,
         );
-        let select = select(&dom);
+        let select = select_path(&dom);
         assert_eq!(value(&dom, &select).as_deref(), Some("b"));
         assert_eq!(selected_index(&dom, &select), Some(1));
     }
@@ -147,10 +196,68 @@ mod tests {
         let dom = parse_html(
             r#"<form><select name="pick"><option selected disabled value="x">X</option><option value="a">A</option></select></form>"#,
         );
-        let select = select(&dom);
+        let select = select_path(&dom);
         let form = dom_api::query_selector(&dom, &[], "form").unwrap();
         assert_eq!(value(&dom, &select).as_deref(), Some("x"));
         assert!(forms::form_data(&dom, &form).is_empty());
+    }
+
+    #[test]
+    fn required_single_select_only_rejects_its_real_placeholder_option() {
+        let dom = parse_html(
+            r#"<select required><option value="">Choose</option><option value="x">X</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(true));
+
+        let dom = parse_html(
+            r#"<select required><option value="x">X</option><option value="" selected>Empty but real</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(false));
+    }
+
+    #[test]
+    fn empty_first_option_inside_optgroup_is_not_a_placeholder_label_option() {
+        let dom = parse_html(
+            r#"<select required><optgroup label="g"><option value="" selected>Empty</option></optgroup><option value="x">X</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(false));
+    }
+
+    #[test]
+    fn display_size_other_than_one_disables_placeholder_semantics() {
+        let dom = parse_html(
+            r#"<select required size="2"><option value="" selected>Empty</option><option value="x">X</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(false));
+
+        let dom = parse_html(
+            r#"<select required multiple><option value="" selected>Empty</option><option value="x">X</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(false));
+    }
+
+    #[test]
+    fn selected_disabled_non_placeholder_option_satisfies_required() {
+        let dom = parse_html(
+            r#"<select required><option value="">Choose</option><option value="x" selected disabled>X</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert_eq!(required_value_missing(&dom, &select), Some(false));
+    }
+
+    #[test]
+    fn explicitly_cleared_required_selection_is_missing() {
+        let mut dom = parse_html(
+            r#"<select required><option value="a">A</option><option value="b">B</option></select>"#,
+        );
+        let select = select_path(&dom);
+        assert!(set_selected_index(&mut dom, &select, -1));
+        assert_eq!(required_value_missing(&dom, &select), Some(true));
     }
 
     #[test]
@@ -158,7 +265,7 @@ mod tests {
         let mut dom = parse_html(
             r#"<select multiple><option selected value="a">A</option><option selected value="b">B</option><option value="b">B2</option></select>"#,
         );
-        let select = select(&dom);
+        let select = select_path(&dom);
         assert!(set_value(&mut dom, &select, "b"));
         assert_eq!(value(&dom, &select).as_deref(), Some("b"));
         assert_eq!(selected_index(&dom, &select), Some(1));
@@ -170,7 +277,7 @@ mod tests {
         let mut dom = parse_html(
             r#"<select><option value="a">A</option><option value="b">B</option></select>"#,
         );
-        let select = select(&dom);
+        let select = select_path(&dom);
         assert_eq!(value(&dom, &select).as_deref(), Some("a"));
         assert!(set_value(&mut dom, &select, "missing"));
         assert_eq!(value(&dom, &select).as_deref(), Some(""));
@@ -183,7 +290,7 @@ mod tests {
         let mut dom = parse_html(
             r#"<select><option value="a">A</option><option disabled value="b">B</option><option value="c">C</option></select>"#,
         );
-        let select = select(&dom);
+        let select = select_path(&dom);
         assert!(set_selected_index(&mut dom, &select, 1));
         assert_eq!(value(&dom, &select).as_deref(), Some("b"));
         assert_eq!(selected_index(&dom, &select), Some(1));
@@ -196,7 +303,7 @@ mod tests {
         let mut dom = parse_html(
             r#"<select id="pick"><option value="a" selected>A</option><option value="b">B</option></select>"#,
         );
-        let select_path = select(&dom);
+        let select_path = select_path(&dom);
         assert!(set_value(&mut dom, &select_path, "b"));
         assert_eq!(value(&dom, &select_path).as_deref(), Some("b"));
 
