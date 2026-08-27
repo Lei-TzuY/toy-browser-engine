@@ -4,7 +4,7 @@
 //
 // Keep the existing image vocabulary and JPEG decoder, normalize PNG sample
 // layouts before converting them to the painter's straight RGBA8 form, and
-// harden the tiny in-tree PPM decoder against hostile dimensions.
+// decode PPM with checked dimensions and the full P6 sample-depth range.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -96,7 +96,14 @@ fn decode_ppm_checked(bytes: &[u8]) -> Result<RasterImage, ImageError> {
             "PPM header must end with whitespace before pixel data".to_string(),
         ));
     }
-    cursor += 1;
+    // Netpbm files commonly use CRLF line endings. Treat that pair as the one
+    // raster separator without consuming arbitrary additional whitespace,
+    // because a pixel sample is allowed to have a whitespace byte value.
+    if bytes[cursor] == b'\r' && bytes.get(cursor + 1) == Some(&b'\n') {
+        cursor += 2;
+    } else {
+        cursor += 1;
+    }
 
     let (width, height, max) = (fields[0], fields[1], fields[2]);
     if width == 0 || height == 0 {
@@ -104,15 +111,19 @@ fn decode_ppm_checked(bytes: &[u8]) -> Result<RasterImage, ImageError> {
             "PPM width and height must be non-zero".to_string(),
         ));
     }
-    if max != 255 {
+    if !(1..=65_535).contains(&max) {
         return Err(ImageError::Decode(format!(
-            "unsupported PPM max value {max}"
+            "PPM max value must be in 1..=65535, got {max}"
         )));
     }
 
-    let expected = (width as usize)
+    let sample_bytes = if max < 256 { 1usize } else { 2usize };
+    let sample_count = (width as usize)
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| ImageError::Decode("PPM dimensions overflow sample count".to_string()))?;
+    let expected = sample_count
+        .checked_mul(sample_bytes)
         .ok_or_else(|| ImageError::Decode("PPM dimensions overflow pixel buffer".to_string()))?;
     let end = cursor
         .checked_add(expected)
@@ -121,10 +132,45 @@ fn decode_ppm_checked(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         return Err(ImageError::Decode("truncated PPM pixel data".to_string()));
     }
 
-    let pixels = expand(&bytes[cursor..end], 3, |pixel| {
-        [pixel[0], pixel[1], pixel[2], 255]
-    });
+    let pixel_count = sample_count / 3;
+    let capacity = pixel_count
+        .checked_mul(4)
+        .ok_or_else(|| ImageError::Decode("PPM dimensions overflow RGBA buffer".to_string()))?;
+    let mut pixels = Vec::with_capacity(capacity);
+    let raster = &bytes[cursor..end];
+
+    if sample_bytes == 1 {
+        for rgb in raster.chunks_exact(3) {
+            let r = scale_ppm_sample(rgb[0] as u32, max)?;
+            let g = scale_ppm_sample(rgb[1] as u32, max)?;
+            let b = scale_ppm_sample(rgb[2] as u32, max)?;
+            pixels.extend_from_slice(&[r, g, b, 255]);
+        }
+    } else {
+        for rgb in raster.chunks_exact(6) {
+            let r = u16::from_be_bytes([rgb[0], rgb[1]]) as u32;
+            let g = u16::from_be_bytes([rgb[2], rgb[3]]) as u32;
+            let b = u16::from_be_bytes([rgb[4], rgb[5]]) as u32;
+            pixels.extend_from_slice(&[
+                scale_ppm_sample(r, max)?,
+                scale_ppm_sample(g, max)?,
+                scale_ppm_sample(b, max)?,
+                255,
+            ]);
+        }
+    }
+
     Ok(RasterImage::new(width, height, pixels))
+}
+
+fn scale_ppm_sample(sample: u32, max: u32) -> Result<u8, ImageError> {
+    if sample > max {
+        return Err(ImageError::Decode(format!(
+            "PPM sample {sample} exceeds max value {max}"
+        )));
+    }
+    // Round to the nearest RGBA8 value rather than truncating darker.
+    Ok(((sample * 255 + max / 2) / max) as u8)
 }
 
 fn expand(samples: &[u8], stride: usize, to_rgba: impl Fn(&[u8]) -> [u8; 4]) -> Vec<u8> {
@@ -267,6 +313,47 @@ mod tests {
         let image = decode(PPM_1X1).expect("decoded PPM");
         assert_eq!((image.width, image.height), (1, 1));
         assert_eq!(image.pixel(0, 0), [0x12, 0x34, 0x56, 255]);
+    }
+
+    #[test]
+    fn ppm_scales_low_maxval_samples_to_rgba8() {
+        let image = decode(b"P6\n1 1\n100\n\x00\x32\x64").expect("low-max PPM");
+        assert_eq!(image.pixel(0, 0), [0, 128, 255, 255]);
+    }
+
+    #[test]
+    fn ppm_decodes_16_bit_big_endian_samples() {
+        let image = decode(
+            b"P6\n1 1\n65535\n\x00\x00\x80\x00\xff\xff",
+        )
+        .expect("16-bit PPM");
+        assert_eq!(image.pixel(0, 0), [0, 128, 255, 255]);
+    }
+
+    #[test]
+    fn ppm_accepts_crlf_raster_separator_without_consuming_pixels() {
+        let image = decode(b"P6\r\n1 1\r\n255\r\n\x0a\x20\xff").expect("CRLF PPM");
+        assert_eq!(image.pixel(0, 0), [10, 32, 255, 255]);
+    }
+
+    #[test]
+    fn ppm_rejects_sample_above_declared_maxval() {
+        assert!(matches!(
+            decode(b"P6\n1 1\n100\n\x65\x00\x00"),
+            Err(ImageError::Decode(message)) if message.contains("exceeds max value")
+        ));
+    }
+
+    #[test]
+    fn ppm_rejects_invalid_maxval_range() {
+        assert!(matches!(
+            decode(b"P6\n1 1\n0\n"),
+            Err(ImageError::Decode(message)) if message.contains("1..=65535")
+        ));
+        assert!(matches!(
+            decode(b"P6\n1 1\n65536\n"),
+            Err(ImageError::Decode(message)) if message.contains("1..=65535")
+        ));
     }
 
     #[test]
