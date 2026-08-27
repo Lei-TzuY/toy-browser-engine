@@ -38,8 +38,12 @@ struct DetachedThreadedBackend {
     sender: Sender<FetchCompletion>,
     receiver: Receiver<FetchCompletion>,
     ready: RefCell<Vec<FetchCompletion>>,
+    /// The only wire ids still eligible to produce a public completion.
+    ///
+    /// Wire ids never repeat, so removing an id here on cancellation is enough
+    /// to make every later answer for it stale. A separate cancellation
+    /// tombstone would only retain memory if a detached worker never returns.
     outstanding: RefCell<HashSet<FetchId>>,
-    cancelled: RefCell<HashSet<FetchId>>,
 }
 
 impl DetachedThreadedBackend {
@@ -51,7 +55,6 @@ impl DetachedThreadedBackend {
             receiver,
             ready: RefCell::new(Vec::new()),
             outstanding: RefCell::new(HashSet::new()),
-            cancelled: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -82,24 +85,22 @@ impl NetworkBackend for DetachedThreadedBackend {
         let mut arrived = std::mem::take(&mut *self.ready.borrow_mut());
         arrived.extend(self.receiver.try_iter());
 
+        // Membership in `outstanding` is both the liveness check and the
+        // one-shot claim. Cancelled, duplicate, and otherwise stale wire ids
+        // have already been removed and therefore disappear here without any
+        // permanent tombstone set.
         let mut outstanding = self.outstanding.borrow_mut();
-        let mut cancelled = self.cancelled.borrow_mut();
         arrived
             .into_iter()
-            .filter(|completion| {
-                let active = outstanding.remove(&completion.id);
-                let was_cancelled = cancelled.remove(&completion.id);
-                active && !was_cancelled
-            })
+            .filter(|completion| outstanding.remove(&completion.id))
             .collect()
     }
 
     fn cancel(&self, id: FetchId) {
-        if self.outstanding.borrow_mut().remove(&id) {
-            // The detached worker may already be inside the loader. Its answer
-            // is allowed to arrive, but this marker makes that answer invisible.
-            self.cancelled.borrow_mut().insert(id);
-        }
+        // The worker may already be inside the loader and cannot be forcibly
+        // stopped, but wire ids never repeat. Removing eligibility now is all
+        // that is required to make any eventual completion stale.
+        self.outstanding.borrow_mut().remove(&id);
         self.ready
             .borrow_mut()
             .retain(|completion| completion.id != id);
@@ -630,6 +631,24 @@ mod tests {
         assert!(network.poll().is_empty());
         assert!(network.inner.cancelled.borrow().is_empty());
         assert!(!network.is_busy());
+    }
+
+    #[test]
+    fn cancelled_wire_id_needs_no_tombstone_to_drop_late_completion() {
+        let backend = DetachedThreadedBackend::new(Arc::new(MemoryLoader::new()));
+        // Model a started wire generation without racing a real worker: tests
+        // live in this module specifically so they can assert the backend's
+        // bookkeeping invariant directly.
+        backend.outstanding.borrow_mut().insert(41);
+        assert!(backend.is_busy());
+
+        backend.cancel(41);
+        assert!(backend.outstanding.borrow().is_empty());
+        assert!(!backend.is_busy());
+
+        backend.ready.borrow_mut().push(text_completion(41, "late"));
+        assert!(backend.poll().is_empty());
+        assert!(!backend.is_busy());
     }
 
     #[test]
