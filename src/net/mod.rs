@@ -12,19 +12,158 @@ pub mod fetch;
 pub mod http;
 pub mod url;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub use fetch::{
-    DefaultNetwork, FetchCompletion, FetchError, FetchId, FetchRegistry, FetchRequest,
-    FetchResponse, HeaderMap, LocalNetwork, ManualNetwork, Method, NetworkBackend, OfflineNetwork,
-    Origin, ThreadedNetwork,
+    FetchCompletion, FetchError, FetchId, FetchRegistry, FetchRequest, FetchResponse, HeaderMap,
+    LocalNetwork, ManualNetwork, Method, NetworkBackend, OfflineNetwork, Origin,
 };
 pub use http::HttpConfig;
 pub use url::{Url, UrlError};
+
+/// Adds a small ready queue around a network backend so an already-produced
+/// completion cannot disappear into the race between `poll()` and `is_busy()`.
+///
+/// A threaded backend can finish in this order:
+///
+/// 1. a caller polls just before the worker sends its answer;
+/// 2. the worker sends the completion and exits;
+/// 3. `is_busy()` observes no live worker.
+///
+/// The raw backend's completion is valid at step 3, but it can still be sitting
+/// in its channel rather than its `ready` vector. `CompletionAware::is_busy`
+/// therefore polls once before asking the inner backend, and once more after an
+/// observed idle state. Worker exit happens after its send, so that final poll
+/// closes the race without sleeps, timeouts, or spinning on guessed delays.
+struct CompletionAware<N> {
+    inner: N,
+    ready: RefCell<Vec<FetchCompletion>>,
+}
+
+impl<N: NetworkBackend> CompletionAware<N> {
+    fn new(inner: N) -> Self {
+        Self {
+            inner,
+            ready: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        let mut ready = std::mem::take(&mut *self.ready.borrow_mut());
+        ready.extend(self.inner.poll());
+        ready
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.ready
+            .borrow_mut()
+            .retain(|completion| completion.id != id);
+        self.inner.cancel(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.ready.borrow_mut().extend(self.inner.poll());
+        if !self.ready.borrow().is_empty() {
+            return true;
+        }
+        if self.inner.is_busy() {
+            return true;
+        }
+
+        // If the worker transitioned from running to finished after the first
+        // poll, its send happened before that exit. Drain once more after the
+        // observed idle state so the queued answer remains visible as work.
+        self.ready.borrow_mut().extend(self.inner.poll());
+        !self.ready.borrow().is_empty()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        if !self.ready.borrow().is_empty() {
+            true
+        } else {
+            self.inner.wait(timeout)
+        }
+    }
+}
+
+/// Public threaded backend with race-free ready/busy observation.
+pub struct ThreadedNetwork {
+    backend: CompletionAware<fetch::ThreadedNetwork>,
+}
+
+impl ThreadedNetwork {
+    pub fn new(loader: Arc<dyn ResourceLoader>) -> Self {
+        Self {
+            backend: CompletionAware::new(fetch::ThreadedNetwork::new(loader)),
+        }
+    }
+}
+
+impl NetworkBackend for ThreadedNetwork {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        self.backend.inner.start(id, request);
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        self.backend.poll()
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.backend.cancel(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.backend.is_busy()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        self.backend.wait(timeout)
+    }
+}
+
+/// Public routing backend with the same completion visibility guarantee.
+///
+/// `fetch::DefaultNetwork` owns the real local/threaded routing. This wrapper
+/// only strengthens the readiness contract at the boundary used by Browser.
+pub struct DefaultNetwork {
+    backend: CompletionAware<fetch::DefaultNetwork>,
+}
+
+impl DefaultNetwork {
+    pub fn new(loader: Arc<dyn ResourceLoader>) -> Self {
+        Self {
+            backend: CompletionAware::new(fetch::DefaultNetwork::new(loader)),
+        }
+    }
+}
+
+impl NetworkBackend for DefaultNetwork {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        self.backend.inner.start(id, request);
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        self.backend.poll()
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.backend.cancel(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.backend.is_busy()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        self.backend.wait(timeout)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
@@ -400,6 +539,46 @@ pub fn url_from_argument(arg: &str) -> Url {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    struct CompletionAfterIdle {
+        polls: std::cell::Cell<u8>,
+    }
+
+    impl NetworkBackend for CompletionAfterIdle {
+        fn start(&self, _id: FetchId, _request: FetchRequest) {}
+
+        fn poll(&self) -> Vec<FetchCompletion> {
+            let poll = self.polls.get();
+            self.polls.set(poll + 1);
+            if poll == 1 {
+                vec![FetchCompletion {
+                    id: 7,
+                    result: Err(FetchError::Aborted),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+
+        fn is_busy(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn completion_aware_backend_rechecks_after_observed_idle() {
+        let network = CompletionAware::new(CompletionAfterIdle {
+            polls: std::cell::Cell::new(0),
+        });
+
+        assert!(
+            network.is_busy(),
+            "a completion that appears after the first poll must remain visible"
+        );
+        let ready = network.poll();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, 7);
+    }
 
     #[test]
     fn file_loader_reads_a_file_and_guesses_its_type() {
