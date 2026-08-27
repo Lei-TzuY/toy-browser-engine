@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[path = "fetch_final.rs"]
 pub mod fetch;
@@ -137,15 +137,40 @@ impl<N: NetworkBackend> CompletionTracked<N> {
         if !self.ready.borrow().is_empty() {
             return true;
         }
-        if self.public_to_wire.borrow().is_empty() {
+        if self.public_to_wire.borrow().is_empty() || timeout.is_zero() {
             return false;
         }
 
-        let _ = self.inner.wait(timeout);
-        self.harvest();
-        // A stale cancelled generation may wake the raw backend but is not a
-        // deliverable completion at this public boundary.
-        !self.ready.borrow().is_empty()
+        // A raw backend wake-up only means that some wire completion arrived.
+        // It may belong to a cancelled/superseded generation and disappear in
+        // `harvest()`. Keep waiting for the remaining budget while public work
+        // is still outstanding instead of leaking that stale wake-up through
+        // the public readiness contract.
+        let started = Instant::now();
+        let mut remaining = timeout;
+        loop {
+            if !self.inner.wait(remaining) {
+                self.harvest();
+                return !self.ready.borrow().is_empty();
+            }
+
+            self.harvest();
+            if !self.ready.borrow().is_empty() {
+                return true;
+            }
+            if self.public_to_wire.borrow().is_empty() {
+                return false;
+            }
+
+            let elapsed = started.elapsed();
+            let Some(next_remaining) = timeout.checked_sub(elapsed) else {
+                return false;
+            };
+            if next_remaining.is_zero() {
+                return false;
+            }
+            remaining = next_remaining;
+        }
     }
 }
 
@@ -229,11 +254,13 @@ mod tests {
         started: RefCell<Vec<FetchId>>,
         cancelled: RefCell<Vec<FetchId>>,
         ready: RefCell<Vec<FetchCompletion>>,
+        wait_ready: RefCell<Vec<Vec<FetchCompletion>>>,
+        wait_calls: Cell<usize>,
     }
 
     impl DelayedNetwork {
-        fn complete_text(&self, wire_id: FetchId, text: &str) {
-            self.ready.borrow_mut().push(FetchCompletion {
+        fn text_completion(wire_id: FetchId, text: &str) -> FetchCompletion {
+            FetchCompletion {
                 id: wire_id,
                 result: Ok(FetchResponse::synthetic(
                     Url::parse("demo:///resource").unwrap(),
@@ -241,7 +268,19 @@ mod tests {
                     Some("text/plain"),
                     text.as_bytes().to_vec(),
                 )),
-            });
+            }
+        }
+
+        fn complete_text(&self, wire_id: FetchId, text: &str) {
+            self.ready
+                .borrow_mut()
+                .push(Self::text_completion(wire_id, text));
+        }
+
+        fn wake_with_text(&self, wire_id: FetchId, text: &str) {
+            self.wait_ready
+                .borrow_mut()
+                .push(vec![Self::text_completion(wire_id, text)]);
         }
     }
 
@@ -262,6 +301,16 @@ mod tests {
         // is the authority on whether public work is still outstanding.
         fn is_busy(&self) -> bool {
             false
+        }
+
+        fn wait(&self, _timeout: Duration) -> bool {
+            self.wait_calls.set(self.wait_calls.get() + 1);
+            if self.wait_ready.borrow().is_empty() {
+                return false;
+            }
+            let batch = self.wait_ready.borrow_mut().remove(0);
+            self.ready.borrow_mut().extend(batch);
+            true
         }
     }
 
@@ -309,7 +358,6 @@ mod tests {
         let new_wire = network.public_to_wire.borrow()[&7];
         assert_ne!(old_wire, new_wire);
 
-        // The old worker answers after the public id has already been reused.
         network.inner.complete_text(old_wire, "old");
         assert!(network.poll().is_empty());
         assert!(network.is_busy(), "the new generation is still outstanding");
@@ -339,6 +387,43 @@ mod tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].id, 9);
         assert_eq!(completions[0].result.as_ref().unwrap().body, b"new");
+    }
+
+    #[test]
+    fn wait_ignores_stale_generation_wakeup_and_keeps_waiting_for_active_one() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
+        network.start(7, request());
+        let old_wire = network.public_to_wire.borrow()[&7];
+        network.cancel(7);
+        network.start(7, request());
+        let new_wire = network.public_to_wire.borrow()[&7];
+
+        network.inner.wake_with_text(old_wire, "stale");
+        network.inner.wake_with_text(new_wire, "fresh");
+
+        assert!(network.wait(Duration::from_secs(1)));
+        assert_eq!(network.inner.wait_calls.get(), 2);
+
+        let completions = network.poll();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].id, 7);
+        assert_eq!(completions[0].result.as_ref().unwrap().body, b"fresh");
+        assert!(!network.is_busy());
+    }
+
+    #[test]
+    fn wait_returns_false_after_stale_wakeup_when_active_generation_has_no_answer() {
+        let network = CompletionTracked::new(DelayedNetwork::default());
+        network.start(7, request());
+        let old_wire = network.public_to_wire.borrow()[&7];
+        network.cancel(7);
+        network.start(7, request());
+
+        network.inner.wake_with_text(old_wire, "stale");
+
+        assert!(!network.wait(Duration::from_secs(1)));
+        assert_eq!(network.inner.wait_calls.get(), 2);
+        assert!(network.is_busy());
     }
 
     #[test]
