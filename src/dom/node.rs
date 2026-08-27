@@ -53,13 +53,16 @@ impl ElementId {
 ///
 /// The DOM keeps current state separate from the corresponding content
 /// attribute: `None` means the state still mirrors its HTML default. Inputs
-/// use `value`/`checked`; `<option>` uses `selected` so scripts can change the
-/// current selection without rewriting the `selected` attribute.
+/// use `value`/`checked`; `<option>` keeps its local selected bit, while a
+/// `<select>` owns the canonical live selection as option-list indexes. Keeping
+/// the selection override on the select lets the existing form-reset path drop
+/// back to parsed/default selectedness without walking option descendants.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ControlState {
     value: Option<String>,
     checked: Option<bool>,
     selected: Option<bool>,
+    selected_indices: Option<Vec<usize>>,
     /// Caret position, counted in characters from the start of the value.
     caret: usize,
 }
@@ -197,11 +200,16 @@ impl ElementData {
         control.caret = control.caret.min(caret);
     }
 
-    /// Drop the live value so the `value` attribute shows through again
-    /// (what `form.reset()` does).
+    /// Drop live control state back to its content-attribute/default state.
+    ///
+    /// For a `<select>` this also discards its canonical selected-index
+    /// override, so the next read once again derives selection from the option
+    /// `selected` attributes. This is what lets the generic form-reset loop
+    /// restore select defaults without treating `<option>` as form controls.
     pub fn reset_control_value(&mut self) {
         if let Some(control) = self.control.as_mut() {
             control.value = None;
+            control.selected_indices = None;
             control.caret = 0;
         }
     }
@@ -224,7 +232,7 @@ impl ElementData {
         }
     }
 
-    /// Current option selectedness: live state if changed, otherwise the
+    /// Current option-local selectedness: live state if changed, otherwise the
     /// boolean `selected` content attribute.
     pub fn is_selected(&self) -> bool {
         match self.control.as_ref().and_then(|c| c.selected) {
@@ -233,7 +241,7 @@ impl ElementData {
         }
     }
 
-    /// True while option selectedness still mirrors the HTML attribute.
+    /// True while option-local selectedness still mirrors the HTML attribute.
     pub fn selected_is_default(&self) -> bool {
         self.control.as_ref().is_none_or(|c| c.selected.is_none())
     }
@@ -245,6 +253,27 @@ impl ElementData {
     pub fn reset_selected(&mut self) {
         if let Some(control) = self.control.as_mut() {
             control.selected = None;
+        }
+    }
+
+    /// Canonical live selected option indexes for a `<select>`.
+    ///
+    /// `None` means the selection is pristine and must be derived from option
+    /// content attributes (including the single-select first-option fallback).
+    /// `Some([])` deliberately represents an explicit all-deselected state.
+    pub fn selected_indices(&self) -> Option<&[usize]> {
+        self.control
+            .as_ref()
+            .and_then(|control| control.selected_indices.as_deref())
+    }
+
+    pub fn set_selected_indices(&mut self, indices: Vec<usize>) {
+        self.control_mut().selected_indices = Some(indices);
+    }
+
+    pub fn reset_selected_indices(&mut self) {
+        if let Some(control) = self.control.as_mut() {
+            control.selected_indices = None;
         }
     }
 
@@ -427,6 +456,16 @@ mod tests {
         option.reset_selected();
         assert!(option.is_selected());
         assert!(option.selected_is_default());
+    }
+
+    #[test]
+    fn select_selection_override_is_cleared_by_control_reset() {
+        let mut select = ElementData::new("select", Vec::new());
+        assert_eq!(select.selected_indices(), None);
+        select.set_selected_indices(vec![2, 4]);
+        assert_eq!(select.selected_indices(), Some(&[2, 4][..]));
+        select.reset_control_value();
+        assert_eq!(select.selected_indices(), None);
     }
 
     #[test]

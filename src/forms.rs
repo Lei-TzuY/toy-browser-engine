@@ -243,8 +243,7 @@ fn associated_submitter<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectOption {
-    selected: bool,
-    selected_is_default: bool,
+    default_selected: bool,
     disabled: bool,
     value: String,
 }
@@ -262,13 +261,53 @@ pub fn owning_select(dom: &Node, option_path: &[usize]) -> Option<NodePath> {
     })
 }
 
-/// Values contributed by a `<select>` in submission order.
+/// Effective selected option indexes for a select.
 ///
-/// A pristine single-select with no selected option falls back to its first
-/// enabled option. Once option selectedness has been changed programmatically,
-/// an explicit all-deselected state stays empty instead of re-applying that
-/// parser/default fallback. A single-select uses the last selected option;
-/// `multiple` keeps every selected enabled option in DOM order.
+/// A live override on the `<select>` wins. Otherwise selection is derived from
+/// option `selected` content attributes; a pristine single-select with no such
+/// attribute falls back to the first enabled option.
+pub fn select_selected_indices(dom: &Node, select_path: &[usize]) -> Option<Vec<usize>> {
+    let select_node = dom_api::node_at(dom, select_path)?;
+    let select = select_node.as_element()?;
+    if select.tag_name != "select" {
+        return None;
+    }
+    if let Some(indices) = select.selected_indices() {
+        return Some(indices.to_vec());
+    }
+
+    let mut options = Vec::new();
+    collect_select_options(select_node, false, &mut options);
+    if select.get_attr("multiple").is_some() {
+        return Some(
+            options
+                .iter()
+                .enumerate()
+                .filter_map(|(index, option)| option.default_selected.then_some(index))
+                .collect(),
+        );
+    }
+    if let Some(index) = options.iter().rposition(|option| option.default_selected) {
+        return Some(vec![index]);
+    }
+    Some(
+        options
+            .iter()
+            .position(|option| !option.disabled)
+            .into_iter()
+            .collect(),
+    )
+}
+
+/// Whether an option is effectively selected in its owning select.
+pub fn option_selected(dom: &Node, option_path: &[usize]) -> Option<bool> {
+    let select_path = owning_select(dom, option_path)?;
+    let option_paths = select_option_paths(dom, &select_path);
+    let index = option_paths.iter().position(|path| path == option_path)?;
+    Some(select_selected_indices(dom, &select_path)?.contains(&index))
+}
+
+/// Values contributed by a `<select>` in submission order.
 pub fn select_values(dom: &Node, select_path: &[usize]) -> Vec<String> {
     let Some(select_node) = dom_api::node_at(dom, select_path) else {
         return Vec::new();
@@ -282,73 +321,108 @@ pub fn select_values(dom: &Node, select_path: &[usize]) -> Vec<String> {
 
     let mut options = Vec::new();
     collect_select_options(select_node, false, &mut options);
+    let selected = select_selected_indices(dom, select_path).unwrap_or_default();
     if select.get_attr("multiple").is_some() {
         return options
             .into_iter()
-            .filter(|option| option.selected && !option.disabled)
-            .map(|option| option.value)
+            .enumerate()
+            .filter(|(index, option)| selected.contains(index) && !option.disabled)
+            .map(|(_, option)| option.value)
             .collect();
     }
 
-    if let Some(option) = options.iter().rev().find(|option| option.selected) {
-        return (!option.disabled)
-            .then(|| option.value.clone())
-            .into_iter()
-            .collect();
-    }
-
-    // The automatic first-option selection is an initial/default-state rule.
-    // Once any option has live selectedness, an empty selection is deliberate.
-    if options.iter().any(|option| !option.selected_is_default) {
+    let Some(index) = selected.last().copied() else {
         return Vec::new();
-    }
-
+    };
     options
-        .into_iter()
-        .find(|option| !option.disabled)
-        .map(|option| option.value)
+        .get(index)
+        .filter(|option| !option.disabled)
+        .map(|option| option.value.clone())
         .into_iter()
         .collect()
+}
+
+/// Replace a select's canonical live selected option indexes.
+///
+/// Invalid indexes are dropped. A non-multiple select keeps only the last
+/// supplied valid index. Option-local selected bits are mirrored for the future
+/// `option.selected` binding, while the select-level override remains the
+/// canonical state consumed by submission, validation and reset.
+pub fn set_select_selected_indices(
+    dom: &mut Node,
+    select_path: &[usize],
+    indices: Vec<usize>,
+) -> bool {
+    let Some(select) = dom_api::node_at(dom, select_path).and_then(|node| node.as_element()) else {
+        return false;
+    };
+    if select.tag_name != "select" {
+        return false;
+    }
+    let multiple = select.get_attr("multiple").is_some();
+    let option_paths = select_option_paths(dom, select_path);
+    let mut normalized = Vec::new();
+    for index in indices {
+        if index < option_paths.len() && !normalized.contains(&index) {
+            normalized.push(index);
+        }
+    }
+    if !multiple && normalized.len() > 1 {
+        let last = *normalized.last().unwrap();
+        normalized.clear();
+        normalized.push(last);
+    }
+
+    for (index, path) in option_paths.iter().enumerate() {
+        if let Some(NodeType::Element(option)) =
+            dom_api::node_at_mut(dom, path).map(|node| &mut node.node_type)
+        {
+            option.set_selected(normalized.contains(&index));
+        }
+    }
+    let Some(NodeType::Element(select)) =
+        dom_api::node_at_mut(dom, select_path).map(|node| &mut node.node_type)
+    else {
+        return false;
+    };
+    select.set_selected_indices(normalized);
+    true
 }
 
 /// Change one option's current selectedness.
 ///
 /// Selecting an option in a non-`multiple` select clears every other option in
 /// that same select. Deselecting is allowed to leave a single-select with no
-/// selected option; this explicit live state is preserved by [`select_values`].
-/// Disabled options can still be selected programmatically, just as in the DOM.
+/// selected option. Disabled options can still be selected programmatically.
 pub fn set_option_selected(dom: &mut Node, option_path: &[usize], selected: bool) -> bool {
     let Some(select_path) = owning_select(dom, option_path) else {
+        return false;
+    };
+    let option_paths = select_option_paths(dom, &select_path);
+    let Some(index) = option_paths.iter().position(|path| path == option_path) else {
         return false;
     };
     let multiple = dom_api::node_at(dom, &select_path)
         .and_then(|node| node.as_element())
         .is_some_and(|select| select.get_attr("multiple").is_some());
-    let option_paths = select_option_paths(dom, &select_path);
-
-    if selected && !multiple {
-        for path in &option_paths {
-            if let Some(NodeType::Element(option)) =
-                dom_api::node_at_mut(dom, path).map(|node| &mut node.node_type)
-            {
-                option.set_selected(false);
+    let mut indices = select_selected_indices(dom, &select_path).unwrap_or_default();
+    if selected {
+        if multiple {
+            if !indices.contains(&index) {
+                indices.push(index);
+                indices.sort_unstable();
             }
+        } else {
+            indices.clear();
+            indices.push(index);
         }
+    } else {
+        indices.retain(|candidate| *candidate != index);
     }
-
-    let Some(NodeType::Element(option)) =
-        dom_api::node_at_mut(dom, option_path).map(|node| &mut node.node_type)
-    else {
-        return false;
-    };
-    if option.tag_name != "option" {
-        return false;
-    }
-    option.set_selected(selected);
-    true
+    set_select_selected_indices(dom, &select_path, indices)
 }
 
-/// Restore every option in a select to its `selected` content-attribute state.
+/// Restore a select to its content-attribute/default selection state.
 pub fn reset_select_selectedness(dom: &mut Node, select_path: &[usize]) -> bool {
     let is_select = dom_api::node_at(dom, select_path)
         .and_then(|node| node.as_element())
@@ -362,6 +436,11 @@ pub fn reset_select_selectedness(dom: &mut Node, select_path: &[usize]) -> bool 
         {
             option.reset_selected();
         }
+    }
+    if let Some(NodeType::Element(select)) =
+        dom_api::node_at_mut(dom, select_path).map(|node| &mut node.node_type)
+    {
+        select.reset_selected_indices();
     }
     true
 }
@@ -400,8 +479,7 @@ fn collect_select_options(node: &Node, disabled_group: bool, out: &mut Vec<Selec
         }
         if element.tag_name == "option" {
             out.push(SelectOption {
-                selected: element.is_selected(),
-                selected_is_default: element.selected_is_default(),
+                default_selected: element.get_attr("selected").is_some(),
                 disabled: descendants_disabled || element.get_attr("disabled").is_some(),
                 value: option_submission_value(node, element),
             });

@@ -4,18 +4,15 @@
 //
 //  This module is the DOM-state layer that JavaScript bindings can delegate to.
 //  It deliberately owns no event dispatch: changing `value` or `selectedIndex`
-//  updates option selectedness, while higher layers decide whether a user action
+//  updates selectedness, while higher layers decide whether a user action
 //  should fire `input`/`change`.
 
-use crate::dom::{ElementData, Node, NodeType};
+use crate::dom::{ElementData, Node};
+use crate::forms;
 use crate::script::dom_api::{self, NodePath};
 
 #[derive(Debug, Clone)]
 struct OptionState {
-    path: NodePath,
-    selected: bool,
-    selected_is_default: bool,
-    disabled: bool,
     value: String,
 }
 
@@ -26,17 +23,24 @@ struct OptionState {
 /// A disabled option that is explicitly/live selected still supplies the DOM
 /// value even though it will later be excluded from successful form data.
 pub fn value(dom: &Node, select_path: &[usize]) -> Option<String> {
-    let (multiple, options) = select_snapshot(dom, select_path)?;
-    effective_selected_index(multiple, &options)
-        .map(|index| options[index].value.clone())
-        .or_else(|| Some(String::new()))
+    let options = select_snapshot(dom, select_path)?;
+    let selected = forms::select_selected_indices(dom, select_path)?;
+    Some(
+        selected
+            .first()
+            .and_then(|index| options.get(*index))
+            .map(|option| option.value.clone())
+            .unwrap_or_default(),
+    )
 }
 
 /// Current `HTMLSelectElement.selectedIndex`, or `-1` when nothing is selected.
 pub fn selected_index(dom: &Node, select_path: &[usize]) -> Option<isize> {
-    let (multiple, options) = select_snapshot(dom, select_path)?;
+    let _ = select_snapshot(dom, select_path)?;
     Some(
-        effective_selected_index(multiple, &options)
+        forms::select_selected_indices(dom, select_path)?
+            .first()
+            .copied()
             .map(|index| index as isize)
             .unwrap_or(-1),
     )
@@ -48,12 +52,11 @@ pub fn selected_index(dom: &Node, select_path: &[usize]) -> Option<isize> {
 /// only selected option. If none matches, every option becomes unselected.
 /// This applies to `multiple` selects too, matching the DOM property setter.
 pub fn set_value(dom: &mut Node, select_path: &[usize], wanted: &str) -> bool {
-    let Some((_, options)) = select_snapshot(dom, select_path) else {
+    let Some(options) = select_snapshot(dom, select_path) else {
         return false;
     };
     let selected = options.iter().position(|option| option.value == wanted);
-    apply_single_selection(dom, &options, selected);
-    true
+    forms::set_select_selected_indices(dom, select_path, selected.into_iter().collect())
 }
 
 /// Assign `HTMLSelectElement.selectedIndex`.
@@ -61,89 +64,40 @@ pub fn set_value(dom: &mut Node, select_path: &[usize], wanted: &str) -> bool {
 /// Negative and out-of-range indexes clear the selection; otherwise exactly
 /// the option at that list index becomes selected.
 pub fn set_selected_index(dom: &mut Node, select_path: &[usize], index: isize) -> bool {
-    let Some((_, options)) = select_snapshot(dom, select_path) else {
+    let Some(options) = select_snapshot(dom, select_path) else {
         return false;
     };
     let selected = usize::try_from(index)
         .ok()
         .filter(|index| *index < options.len());
-    apply_single_selection(dom, &options, selected);
-    true
+    forms::set_select_selected_indices(dom, select_path, selected.into_iter().collect())
 }
 
-fn apply_single_selection(dom: &mut Node, options: &[OptionState], selected: Option<usize>) {
-    for (index, option) in options.iter().enumerate() {
-        let Some(node) = dom_api::node_at_mut(dom, &option.path) else {
-            continue;
-        };
-        let NodeType::Element(element) = &mut node.node_type else {
-            continue;
-        };
-        element.set_selected(selected == Some(index));
-    }
-}
-
-fn effective_selected_index(multiple: bool, options: &[OptionState]) -> Option<usize> {
-    if multiple {
-        return options.iter().position(|option| option.selected);
-    }
-    if let Some(index) = options.iter().rposition(|option| option.selected) {
-        return Some(index);
-    }
-    if options.iter().any(|option| !option.selected_is_default) {
-        return None;
-    }
-    options.iter().position(|option| !option.disabled)
-}
-
-fn select_snapshot(dom: &Node, select_path: &[usize]) -> Option<(bool, Vec<OptionState>)> {
+fn select_snapshot(dom: &Node, select_path: &[usize]) -> Option<Vec<OptionState>> {
     let select_node = dom_api::node_at(dom, select_path)?;
     let select = select_node.as_element()?;
     if select.tag_name != "select" {
         return None;
     }
-    let multiple = select.get_attr("multiple").is_some();
     let mut options = Vec::new();
-    collect_options(
-        select_node,
-        &mut select_path.to_vec(),
-        false,
-        true,
-        &mut options,
-    );
-    Some((multiple, options))
+    collect_options(select_node, true, &mut options);
+    Some(options)
 }
 
-fn collect_options(
-    node: &Node,
-    path: &mut NodePath,
-    disabled_group: bool,
-    is_root: bool,
-    out: &mut Vec<OptionState>,
-) {
-    let mut descendants_disabled = disabled_group;
+fn collect_options(node: &Node, is_root: bool, out: &mut Vec<OptionState>) {
     if let Some(element) = node.as_element() {
         if !is_root && element.tag_name == "select" {
             return;
         }
-        if element.tag_name == "optgroup" && element.get_attr("disabled").is_some() {
-            descendants_disabled = true;
-        }
         if element.tag_name == "option" {
             out.push(OptionState {
-                path: path.clone(),
-                selected: element.is_selected(),
-                selected_is_default: element.selected_is_default(),
-                disabled: descendants_disabled || element.get_attr("disabled").is_some(),
                 value: option_value(node, element),
             });
             return;
         }
     }
-    for (index, child) in node.children.iter().enumerate() {
-        path.push(index);
-        collect_options(child, path, descendants_disabled, false, out);
-        path.pop();
+    for child in &node.children {
+        collect_options(child, false, out);
     }
 }
 
@@ -162,7 +116,6 @@ fn option_value(node: &Node, element: &ElementData) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forms;
     use crate::html::parse_html;
 
     fn select(dom: &Node) -> NodePath {
@@ -236,5 +189,26 @@ mod tests {
         assert_eq!(selected_index(&dom, &select), Some(1));
         assert!(set_selected_index(&mut dom, &select, 99));
         assert_eq!(selected_index(&dom, &select), Some(-1));
+    }
+
+    #[test]
+    fn generic_control_reset_restores_select_defaults() {
+        let mut dom = parse_html(
+            r#"<select id="pick"><option value="a" selected>A</option><option value="b">B</option></select>"#,
+        );
+        let select_path = select(&dom);
+        assert!(set_value(&mut dom, &select_path, "b"));
+        assert_eq!(value(&dom, &select_path).as_deref(), Some("b"));
+
+        let select_element = dom_api::node_at_mut(&mut dom, &select_path)
+            .and_then(|node| match &mut node.node_type {
+                crate::dom::NodeType::Element(element) => Some(element),
+                _ => None,
+            })
+            .unwrap();
+        select_element.reset_control_value();
+
+        assert_eq!(value(&dom, &select_path).as_deref(), Some("a"));
+        assert_eq!(forms::select_values(&dom, &select_path), vec!["a"]);
     }
 }

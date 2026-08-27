@@ -13,6 +13,7 @@ pub mod document;
 pub mod dom;
 pub mod editing;
 pub mod eventloop;
+pub mod form_state;
 pub mod forms;
 pub mod html;
 pub mod image;
