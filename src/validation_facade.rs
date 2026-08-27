@@ -294,13 +294,11 @@ mod tests {
         control_validity(&dom, &path)
     }
 
-    fn input_element(html: &str) -> ElementData {
+    fn input_will_validate(html: &str) -> bool {
         let dom = parse_html(html);
-        dom_api::query_selector(&dom, &[], "input")
-            .and_then(|path| dom_api::node_at(&dom, &path))
-            .and_then(|node| node.as_element())
-            .expect("input")
-            .clone()
+        let path = dom_api::query_selector(&dom, &[], "input").unwrap();
+        let element = dom_api::node_at(&dom, &path).unwrap().as_element().unwrap();
+        will_validate(element)
     }
 
     fn number_validity(value: &str) -> Validity {
@@ -323,13 +321,17 @@ mod tests {
             "datetime-local",
             "number",
         ] {
-            let element = input_element(&format!(r#"<input type="{input_type}" readonly>"#));
-            assert!(!will_validate(&element), "{input_type} should be readonly-barred");
+            assert!(
+                !input_will_validate(&format!(r#"<input type="{input_type}" readonly>"#)),
+                "{input_type} should be readonly-barred"
+            );
         }
 
         for input_type in ["checkbox", "radio", "file", "range", "color"] {
-            let element = input_element(&format!(r#"<input type="{input_type}" readonly>"#));
-            assert!(will_validate(&element), "readonly must not bar {input_type}");
+            assert!(
+                input_will_validate(&format!(r#"<input type="{input_type}" readonly>"#)),
+                "readonly must not bar {input_type}"
+            );
         }
     }
 
