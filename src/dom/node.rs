@@ -49,16 +49,17 @@ impl ElementId {
     }
 }
 
-/// Live state of a form control.
+/// Live state of a form control or option.
 ///
-/// The DOM keeps a control's *current* value separate from its `value`
-/// attribute: the attribute is the default, and typing (or assigning to
-/// `.value`) makes the control "dirty" so the attribute no longer shows
-/// through. `None` here means "still mirroring the attribute".
+/// The DOM keeps current state separate from the corresponding content
+/// attribute: `None` means the state still mirrors its HTML default. Inputs
+/// use `value`/`checked`; `<option>` uses `selected` so scripts can change the
+/// current selection without rewriting the `selected` attribute.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ControlState {
     value: Option<String>,
     checked: Option<bool>,
+    selected: Option<bool>,
     /// Caret position, counted in characters from the start of the value.
     caret: usize,
 }
@@ -72,7 +73,7 @@ pub struct ElementData {
     pub attributes: Vec<(String, String)>,
     /// Stable identity, minted per element.
     id: ElementId,
-    /// Present once this element has behaved as a form control.
+    /// Present once this element has live form/option state.
     control: Option<Box<ControlState>>,
 }
 
@@ -220,6 +221,30 @@ impl ElementData {
     pub fn reset_checked(&mut self) {
         if let Some(control) = self.control.as_mut() {
             control.checked = None;
+        }
+    }
+
+    /// Current option selectedness: live state if changed, otherwise the
+    /// boolean `selected` content attribute.
+    pub fn is_selected(&self) -> bool {
+        match self.control.as_ref().and_then(|c| c.selected) {
+            Some(live) => live,
+            None => self.get_attr("selected").is_some(),
+        }
+    }
+
+    /// True while option selectedness still mirrors the HTML attribute.
+    pub fn selected_is_default(&self) -> bool {
+        self.control.as_ref().is_none_or(|c| c.selected.is_none())
+    }
+
+    pub fn set_selected(&mut self, selected: bool) {
+        self.control_mut().selected = Some(selected);
+    }
+
+    pub fn reset_selected(&mut self) {
+        if let Some(control) = self.control.as_mut() {
+            control.selected = None;
         }
     }
 
@@ -386,6 +411,22 @@ mod tests {
         assert_eq!(e.get_attr("href"), Some("https://example.com"));
         assert_eq!(e.get_attr("HREF"), Some("https://example.com"));
         assert_eq!(e.get_attr("class"), None);
+    }
+
+    #[test]
+    fn option_selectedness_is_live_and_resettable() {
+        let mut option = ElementData::new("option", vec![("selected".into(), String::new())]);
+        assert!(option.is_selected());
+        assert!(option.selected_is_default());
+
+        option.set_selected(false);
+        assert!(!option.is_selected());
+        assert!(!option.selected_is_default());
+        assert!(option.get_attr("selected").is_some());
+
+        option.reset_selected();
+        assert!(option.is_selected());
+        assert!(option.selected_is_default());
     }
 
     #[test]

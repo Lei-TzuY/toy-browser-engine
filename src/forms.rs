@@ -244,17 +244,31 @@ fn associated_submitter<'a>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectOption {
     selected: bool,
+    selected_is_default: bool,
     disabled: bool,
     value: String,
 }
 
+/// The nearest ancestor `<select>` of an option path.
+pub fn owning_select(dom: &Node, option_path: &[usize]) -> Option<NodePath> {
+    let option = dom_api::node_at(dom, option_path)?.as_element()?;
+    if option.tag_name != "option" {
+        return None;
+    }
+    dom_api::ancestor_paths(option_path).into_iter().find(|candidate| {
+        dom_api::node_at(dom, candidate)
+            .and_then(|node| node.as_element())
+            .is_some_and(|element| element.tag_name == "select")
+    })
+}
+
 /// Values contributed by a `<select>` in submission order.
 ///
-/// The engine does not yet expose live option-selectedness through the UI, so
-/// this models the parsed/default state. A single-select with no explicit
-/// `selected` option defaults to the first enabled option. If several options
-/// are marked selected, the last one wins, matching the reset/default state of
-/// a normal single-select. `multiple` keeps every selected enabled option.
+/// A pristine single-select with no selected option falls back to its first
+/// enabled option. Once option selectedness has been changed programmatically,
+/// an explicit all-deselected state stays empty instead of re-applying that
+/// parser/default fallback. A single-select uses the last selected option;
+/// `multiple` keeps every selected enabled option in DOM order.
 pub fn select_values(dom: &Node, select_path: &[usize]) -> Vec<String> {
     let Some(select_node) = dom_api::node_at(dom, select_path) else {
         return Vec::new();
@@ -283,12 +297,99 @@ pub fn select_values(dom: &Node, select_path: &[usize]) -> Vec<String> {
             .collect();
     }
 
+    // The automatic first-option selection is an initial/default-state rule.
+    // Once any option has live selectedness, an empty selection is deliberate.
+    if options.iter().any(|option| !option.selected_is_default) {
+        return Vec::new();
+    }
+
     options
         .into_iter()
         .find(|option| !option.disabled)
         .map(|option| option.value)
         .into_iter()
         .collect()
+}
+
+/// Change one option's current selectedness.
+///
+/// Selecting an option in a non-`multiple` select clears every other option in
+/// that same select. Deselecting is allowed to leave a single-select with no
+/// selected option; this explicit live state is preserved by [`select_values`].
+/// Disabled options can still be selected programmatically, just as in the DOM.
+pub fn set_option_selected(dom: &mut Node, option_path: &[usize], selected: bool) -> bool {
+    let Some(select_path) = owning_select(dom, option_path) else {
+        return false;
+    };
+    let multiple = dom_api::node_at(dom, &select_path)
+        .and_then(|node| node.as_element())
+        .is_some_and(|select| select.get_attr("multiple").is_some());
+    let option_paths = select_option_paths(dom, &select_path);
+
+    if selected && !multiple {
+        for path in &option_paths {
+            if let Some(NodeType::Element(option)) =
+                dom_api::node_at_mut(dom, path).map(|node| &mut node.node_type)
+            {
+                option.set_selected(false);
+            }
+        }
+    }
+
+    let Some(NodeType::Element(option)) =
+        dom_api::node_at_mut(dom, option_path).map(|node| &mut node.node_type)
+    else {
+        return false;
+    };
+    if option.tag_name != "option" {
+        return false;
+    }
+    option.set_selected(selected);
+    true
+}
+
+/// Restore every option in a select to its `selected` content-attribute state.
+pub fn reset_select_selectedness(dom: &mut Node, select_path: &[usize]) -> bool {
+    let is_select = dom_api::node_at(dom, select_path)
+        .and_then(|node| node.as_element())
+        .is_some_and(|element| element.tag_name == "select");
+    if !is_select {
+        return false;
+    }
+    for path in select_option_paths(dom, select_path) {
+        if let Some(NodeType::Element(option)) =
+            dom_api::node_at_mut(dom, &path).map(|node| &mut node.node_type)
+        {
+            option.reset_selected();
+        }
+    }
+    true
+}
+
+fn select_option_paths(dom: &Node, select_path: &[usize]) -> Vec<NodePath> {
+    let mut out = Vec::new();
+    let Some(select) = dom_api::node_at(dom, select_path) else {
+        return out;
+    };
+    walk(select, &mut select_path.to_vec(), &mut out, true);
+    return out;
+
+    fn walk(node: &Node, path: &mut NodePath, out: &mut Vec<NodePath>, is_root: bool) {
+        if let Some(element) = node.as_element() {
+            if !is_root && element.tag_name == "select" {
+                return;
+            }
+            if element.tag_name == "option" {
+                out.push(path.clone());
+                return;
+            }
+        }
+        for (index, child) in node.children.iter().enumerate() {
+            path.push(index);
+            walk(child, path, out, false);
+            path.pop();
+        }
+    }
 }
 
 fn collect_select_options(node: &Node, disabled_group: bool, out: &mut Vec<SelectOption>) {
@@ -299,7 +400,8 @@ fn collect_select_options(node: &Node, disabled_group: bool, out: &mut Vec<Selec
         }
         if element.tag_name == "option" {
             out.push(SelectOption {
-                selected: element.get_attr("selected").is_some(),
+                selected: element.is_selected(),
+                selected_is_default: element.selected_is_default(),
                 disabled: descendants_disabled || element.get_attr("disabled").is_some(),
                 value: option_submission_value(node, element),
             });
@@ -706,6 +808,63 @@ mod tests {
             r#"<form><select name="pick"><option selected disabled value="x">X</option><option value="y">Y</option></select></form>"#,
         );
         assert!(form_data(&dom, &form).is_empty());
+    }
+
+    #[test]
+    fn live_single_select_selection_is_exclusive_and_serialized() {
+        let (mut dom, form) = form_of(
+            r#"<form><select id="pick" name="pick"><option id="a" value="a" selected>A</option><option id="b" value="b">B</option></select></form>"#,
+        );
+        let select = dom_api::get_element_by_id(&dom, "pick").unwrap();
+        let a = dom_api::get_element_by_id(&dom, "a").unwrap();
+        let b = dom_api::get_element_by_id(&dom, "b").unwrap();
+
+        assert!(set_option_selected(&mut dom, &b, true));
+        assert_eq!(select_values(&dom, &select), vec!["b"]);
+        assert!(!element(&dom, &a).is_selected());
+        assert!(element(&dom, &b).is_selected());
+        assert_eq!(form_data(&dom, &form), vec![("pick".into(), "b".into())]);
+    }
+
+    #[test]
+    fn live_multiple_select_keeps_several_selected_options() {
+        let (mut dom, form) = form_of(
+            r#"<form><select id="tags" name="tag" multiple><option id="a" value="a">A</option><option id="b" value="b">B</option></select></form>"#,
+        );
+        let a = dom_api::get_element_by_id(&dom, "a").unwrap();
+        let b = dom_api::get_element_by_id(&dom, "b").unwrap();
+        assert!(set_option_selected(&mut dom, &a, true));
+        assert!(set_option_selected(&mut dom, &b, true));
+        assert_eq!(
+            form_data(&dom, &form),
+            vec![("tag".into(), "a".into()), ("tag".into(), "b".into())]
+        );
+    }
+
+    #[test]
+    fn explicit_live_deselection_suppresses_single_select_fallback() {
+        let (mut dom, form) = form_of(
+            r#"<form><select id="pick" name="pick"><option id="a" value="a">A</option><option value="b">B</option></select></form>"#,
+        );
+        let select = dom_api::get_element_by_id(&dom, "pick").unwrap();
+        let a = dom_api::get_element_by_id(&dom, "a").unwrap();
+        assert_eq!(select_values(&dom, &select), vec!["a"]);
+        assert!(set_option_selected(&mut dom, &a, false));
+        assert!(select_values(&dom, &select).is_empty());
+        assert!(form_data(&dom, &form).is_empty());
+    }
+
+    #[test]
+    fn resetting_select_selectedness_restores_attribute_defaults() {
+        let (mut dom, _) = form_of(
+            r#"<form><select id="pick"><option id="a" value="a" selected>A</option><option id="b" value="b">B</option></select></form>"#,
+        );
+        let select = dom_api::get_element_by_id(&dom, "pick").unwrap();
+        let b = dom_api::get_element_by_id(&dom, "b").unwrap();
+        assert!(set_option_selected(&mut dom, &b, true));
+        assert_eq!(select_values(&dom, &select), vec!["b"]);
+        assert!(reset_select_selectedness(&mut dom, &select));
+        assert_eq!(select_values(&dom, &select), vec!["a"]);
     }
 
     #[test]

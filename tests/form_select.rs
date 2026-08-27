@@ -1,4 +1,5 @@
 use browser_engine::browser::ClickOutcome;
+use browser_engine::forms;
 use browser_engine::net::Url;
 use browser_engine::script::dom_api;
 use browser_engine::{Browser, MemoryLoader};
@@ -85,4 +86,50 @@ fn required_select_placeholder_blocks_submission_until_a_real_value_is_selected(
 
     assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
     assert_eq!(browser.url().to_string(), "demo:///next?pick=a");
+}
+
+#[test]
+fn live_option_selection_changes_the_browser_submission_payload() {
+    let html = r#"<form action="next">
+        <select name="pick">
+            <option id="a" value="a" selected>A</option>
+            <option id="b" value="b">B</option>
+        </select>
+        <button id="go">Go</button>
+    </form>"#;
+    let mut browser = browser_for(html);
+    let b = dom_api::get_element_by_id(&browser.document().dom, "b").unwrap();
+    let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
+
+    assert!(forms::set_option_selected(
+        &mut browser.document_mut().dom,
+        &b,
+        true
+    ));
+    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert_eq!(browser.url().to_string(), "demo:///next?pick=b");
+}
+
+#[test]
+fn explicit_live_deselection_makes_required_select_invalid() {
+    let html = r#"<form action="next">
+        <select id="pick" name="pick" required>
+            <option id="a" value="a" selected>A</option>
+            <option value="b">B</option>
+        </select>
+        <button id="go">Go</button>
+    </form>"#;
+    let mut browser = browser_for(html);
+    let pick = dom_api::get_element_by_id(&browser.document().dom, "pick").unwrap();
+    let a = dom_api::get_element_by_id(&browser.document().dom, "a").unwrap();
+    let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
+
+    assert!(forms::set_option_selected(
+        &mut browser.document_mut().dom,
+        &a,
+        false
+    ));
+    assert_eq!(browser.click_node(&go), ClickOutcome::Script);
+    assert_eq!(browser.url().to_string(), "demo:///form.html");
+    assert_eq!(browser.document().focused_path().as_ref(), Some(&pick));
 }
