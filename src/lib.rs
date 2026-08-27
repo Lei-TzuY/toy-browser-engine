@@ -4,7 +4,7 @@
 //!  HTML string
 //!   → `html::parse_html`      → DOM tree  (`dom::Node`)
 //!   → `style::style_tree`     → Styled tree (`style::StyledNode`)
-//!   → `layout::layout_tree`   → Layout tree  (`layout::LayoutBox`)
+//!   → `layout::layout_tree`   → Layout tree (`layout::LayoutBox`)
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
 pub mod browser;
@@ -19,7 +19,10 @@ pub mod html;
 #[allow(dead_code)]
 #[path = "image.rs"]
 mod image_base;
+#[allow(dead_code)]
 #[path = "image_final.rs"]
+mod image_prev;
+#[path = "image_ascii_final.rs"]
 pub mod image;
 pub mod input;
 pub mod layout;
