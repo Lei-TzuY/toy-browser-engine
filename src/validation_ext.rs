@@ -5,7 +5,7 @@
 // The core validity algorithms remain in validation.rs. This facade adds DOM
 // relationships and input states that cannot be answered from ElementData
 // alone: inherited fieldset disabledness, radio-button group-wide requiredness,
-// and calendar-aware date/month/week constraints.
+// and calendar/time-aware date/month/week/time constraints.
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
@@ -44,6 +44,7 @@ pub fn control_validity(dom: &Node, path: &[usize]) -> Validity {
             "date" => apply_date_validity(element, &mut validity),
             "month" => apply_month_validity(element, &mut validity),
             "week" => apply_week_validity(element, &mut validity),
+            "time" => apply_time_validity(element, &mut validity),
             _ => {}
         }
     }
@@ -278,6 +279,134 @@ fn iso_weeks_in_year(year: i64) -> Option<i64> {
     Some((next - this) / 7)
 }
 
+// ── type=time ────────────────────────────────────────────────────────────────
+
+/// Apply Time-state bad-input/range/step rules.
+///
+/// The normalized value is milliseconds since midnight. Time is the only input
+/// state here with a periodic domain: when both valid bounds exist and
+/// `min > max`, the allowed range wraps across midnight. Values in the gap are
+/// simultaneously below the minimum and above the maximum per HTML.
+fn apply_time_validity(element: &ElementData, validity: &mut Validity) {
+    let raw = element.control_value();
+    if raw.is_empty() {
+        return;
+    }
+
+    let value = parse_time_millis(&raw);
+    validity.bad_input = value.is_none();
+    let Some(value) = value else {
+        validity.range_underflow = false;
+        validity.range_overflow = false;
+        validity.step_mismatch = false;
+        return;
+    };
+
+    let min = element.get_attr("min").and_then(parse_time_millis);
+    let max = element.get_attr("max").and_then(parse_time_millis);
+    if let (Some(minimum), Some(maximum)) = (min, max) {
+        if maximum < minimum {
+            let gap = value > maximum && value < minimum;
+            validity.range_underflow = gap;
+            validity.range_overflow = gap;
+        } else {
+            validity.range_underflow = value < minimum;
+            validity.range_overflow = value > maximum;
+        }
+    } else {
+        validity.range_underflow = min.is_some_and(|minimum| value < minimum);
+        validity.range_overflow = max.is_some_and(|maximum| value > maximum);
+    }
+
+    let step_base = min
+        .or_else(|| element.get_attr("value").and_then(parse_time_millis))
+        .unwrap_or(0);
+    validity.step_mismatch = time_step_mismatch(element, value, step_base);
+}
+
+/// Parse an HTML valid time string to milliseconds since midnight.
+///
+/// Accepted forms are `HH:MM`, optionally `:SS`, and optionally a one- to
+/// three-digit fractional second after seconds. Leap seconds are not allowed.
+fn parse_time_millis(text: &str) -> Option<i64> {
+    if text.trim() != text || !text.is_ascii() {
+        return None;
+    }
+    let mut parts = text.split(':');
+    let hour_text = parts.next()?;
+    let minute_text = parts.next()?;
+    let second_field = parts.next();
+    if parts.next().is_some()
+        || hour_text.len() != 2
+        || minute_text.len() != 2
+        || !hour_text.bytes().all(|byte| byte.is_ascii_digit())
+        || !minute_text.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let hour = hour_text.parse::<i64>().ok()?;
+    let minute = minute_text.parse::<i64>().ok()?;
+    if !(0..=23).contains(&hour) || !(0..=59).contains(&minute) {
+        return None;
+    }
+
+    let (second, millis) = match second_field {
+        None => (0, 0),
+        Some(field) => {
+            let (second_text, fraction) = match field.split_once('.') {
+                Some((second, fraction)) => (second, Some(fraction)),
+                None => (field, None),
+            };
+            if second_text.len() != 2
+                || !second_text.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            let second = second_text.parse::<i64>().ok()?;
+            if !(0..=59).contains(&second) {
+                return None;
+            }
+            let millis = match fraction {
+                None => 0,
+                Some(fraction) => {
+                    if fraction.is_empty()
+                        || fraction.len() > 3
+                        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+                    {
+                        return None;
+                    }
+                    let raw = fraction.parse::<i64>().ok()?;
+                    match fraction.len() {
+                        1 => raw * 100,
+                        2 => raw * 10,
+                        3 => raw,
+                        _ => unreachable!(),
+                    }
+                }
+            };
+            (second, millis)
+        }
+    };
+
+    Some((((hour * 60 + minute) * 60 + second) * 1000) + millis)
+}
+
+fn time_step_mismatch(element: &ElementData, value: i64, base: i64) -> bool {
+    let step_attribute = element.get_attr("step").map(str::trim);
+    if step_attribute.is_some_and(|step| step.eq_ignore_ascii_case("any")) {
+        return false;
+    }
+    let step_seconds = step_attribute
+        .and_then(|step| step.parse::<f64>().ok())
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .unwrap_or(60.0);
+    let allowed_millis = step_seconds * 1000.0;
+    let steps = (value - base) as f64 / allowed_millis;
+    let tolerance = 1e-9 * steps.abs().max(1.0);
+    (steps - steps.round()).abs() > tolerance
+}
+
 /// Shared step checker for input states whose normalized values are discrete
 /// integer units (days for date, months for month, weeks for week).
 fn discrete_step_mismatch(element: &ElementData, value: i64, base: i64, default_step: f64) -> bool {
@@ -435,5 +564,66 @@ mod tests {
 
         let flags = validity(r#"<input type="week" value="2026-W35" step="any">"#);
         assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn time_parser_supports_optional_seconds_and_millisecond_fraction() {
+        assert_eq!(parse_time_millis("00:00"), Some(0));
+        assert_eq!(parse_time_millis("23:59"), Some(86_340_000));
+        assert_eq!(parse_time_millis("12:34:56"), Some(45_296_000));
+        assert_eq!(parse_time_millis("12:34:56.5"), Some(45_296_500));
+        assert_eq!(parse_time_millis("12:34:56.05"), Some(45_296_050));
+        assert_eq!(parse_time_millis("12:34:56.005"), Some(45_296_005));
+        assert!(parse_time_millis("24:00").is_none());
+        assert!(parse_time_millis("12:60").is_none());
+        assert!(parse_time_millis("12:34:60").is_none());
+        assert!(parse_time_millis("1:34").is_none());
+        assert!(parse_time_millis("12:34:.5").is_none());
+        assert!(parse_time_millis("12:34:56.1234").is_none());
+    }
+
+    #[test]
+    fn reversed_time_range_wraps_midnight_and_gap_has_both_range_flags() {
+        for value in ["21:00", "23:30", "00:00", "06:00"] {
+            let flags = validity(&format!(
+                r#"<input type="time" value="{value}" min="21:00" max="06:00">"#
+            ));
+            assert!(!flags.range_underflow, "{value}");
+            assert!(!flags.range_overflow, "{value}");
+        }
+
+        let flags = validity(r#"<input type="time" value="12:00" min="21:00" max="06:00">"#);
+        assert!(flags.range_underflow);
+        assert!(flags.range_overflow);
+    }
+
+    #[test]
+    fn time_step_is_seconds_scaled_to_milliseconds() {
+        let flags = validity(r#"<input type="time" value="00:00:30" min="00:00">"#);
+        assert!(flags.step_mismatch, "default step is 60 seconds from midnight");
+
+        let flags = validity(r#"<input type="time" value="00:00:30" step="1">"#);
+        assert!(!flags.step_mismatch);
+
+        let flags = validity(r#"<input type="time" value="00:00:00.500" step="0.5">"#);
+        assert!(!flags.step_mismatch);
+
+        let flags = validity(r#"<input type="time" value="12:34:56.789" step="any">"#);
+        assert!(!flags.step_mismatch);
+    }
+
+    #[test]
+    fn malformed_nonempty_time_sets_bad_input_and_normal_ranges_are_linear() {
+        let flags = validity(r#"<input type="time" value="25:00">"#);
+        assert!(flags.bad_input);
+        assert!(!flags.valid());
+
+        let flags = validity(r#"<input type="time" value="08:59" min="09:00" max="17:00">"#);
+        assert!(flags.range_underflow);
+        assert!(!flags.range_overflow);
+
+        let flags = validity(r#"<input type="time" value="17:01" min="09:00" max="17:00">"#);
+        assert!(!flags.range_underflow);
+        assert!(flags.range_overflow);
     }
 }
