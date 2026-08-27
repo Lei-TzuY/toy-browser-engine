@@ -48,7 +48,7 @@ pub fn tab_order(dom: &Node) -> Vec<NodePath> {
         let Some(element) = dom_api::node_at(dom, &path).and_then(|n| n.as_element()) else {
             continue;
         };
-        if !is_tabbable(element) {
+        if is_effectively_disabled(dom, &path) || !is_tabbable(element) {
             continue;
         }
         match tab_index(element) {
@@ -153,6 +153,53 @@ pub fn form_controls(dom: &Node, form_path: &[usize]) -> Vec<NodePath> {
     }
 }
 
+/// Whether a control is disabled either directly or by an ancestor disabled
+/// `<fieldset>`.
+///
+/// HTML carves out one important exception: descendants of the *first* legend
+/// element child of a disabled fieldset are not disabled by that fieldset. The
+/// check is structural and is recomputed from the live DOM, so toggling a
+/// fieldset's `disabled` attribute immediately changes submission, validation
+/// and tab-order behaviour without copying state onto every descendant.
+pub fn is_effectively_disabled(dom: &Node, path: &[usize]) -> bool {
+    let Some(element) = dom_api::node_at(dom, path).and_then(|node| node.as_element()) else {
+        return false;
+    };
+    if element.is_disabled() {
+        return true;
+    }
+
+    for fieldset_path in dom_api::ancestor_paths(path) {
+        let Some(fieldset_node) = dom_api::node_at(dom, &fieldset_path) else {
+            continue;
+        };
+        let Some(fieldset) = fieldset_node.as_element() else {
+            continue;
+        };
+        if fieldset.tag_name != "fieldset" || fieldset.get_attr("disabled").is_none() {
+            continue;
+        }
+        if inside_first_legend(fieldset_node, &fieldset_path, path) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn inside_first_legend(fieldset: &Node, fieldset_path: &[usize], path: &[usize]) -> bool {
+    let Some(index) = fieldset.children.iter().position(|child| {
+        child
+            .as_element()
+            .is_some_and(|element| element.tag_name == "legend")
+    }) else {
+        return false;
+    };
+    let mut legend_path = fieldset_path.to_vec();
+    legend_path.push(index);
+    path.starts_with(&legend_path)
+}
+
 /// True when an element is structurally a submit button.
 ///
 /// This deliberately ignores `disabled`: `requestSubmit(submitter)` is allowed
@@ -226,19 +273,24 @@ pub fn request_submitter<'a>(
 /// The first enabled submit button used by implicit Enter submission.
 pub fn implicit_submitter(dom: &Node, form_path: &[usize]) -> Option<NodePath> {
     form_controls(dom, form_path).into_iter().find(|path| {
-        dom_api::node_at(dom, path)
-            .and_then(|node| node.as_element())
-            .is_some_and(is_submit_control)
+        !is_effectively_disabled(dom, path)
+            && dom_api::node_at(dom, path)
+                .and_then(|node| node.as_element())
+                .is_some_and(is_submit_control)
     })
 }
 
 /// The control a bare Enter press should submit through, if the form has a
 /// single-line text field (HTML's "implicit submission").
 pub fn allows_implicit_submission(dom: &Node, form_path: &[usize]) -> bool {
-    form_controls(dom, form_path)
-        .iter()
-        .filter_map(|path| dom_api::node_at(dom, path)?.as_element())
-        .any(|element| element.tag_name == "input" && element.is_text_entry())
+    form_controls(dom, form_path).iter().any(|path| {
+        if is_effectively_disabled(dom, path) {
+            return false;
+        }
+        dom_api::node_at(dom, path)
+            .and_then(|node| node.as_element())
+            .is_some_and(|element| element.tag_name == "input" && element.is_text_entry())
+    })
 }
 
 /// Whether interactive constraint validation is skipped for this submission.
@@ -562,7 +614,7 @@ pub fn form_data_with_submitter(
         let Some(element) = dom_api::node_at(dom, &path).and_then(|n| n.as_element()) else {
             continue;
         };
-        if element.is_disabled() {
+        if is_effectively_disabled(dom, &path) {
             continue;
         }
 
