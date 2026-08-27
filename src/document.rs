@@ -180,6 +180,8 @@ pub struct Document {
     /// attaches a real one, a page is offline and every request fails with a
     /// clear message instead of silently doing nothing.
     network: Rc<dyn NetworkBackend>,
+    /// Active CSS transitions for elements in the document.
+    pub transitions: std::cell::RefCell<crate::transition::TransitionManager>,
 }
 
 impl Document {
@@ -215,6 +217,7 @@ impl Document {
             focus: None,
             deferred_submission: None,
             network: Rc::new(OfflineNetwork::new()),
+            transitions: std::cell::RefCell::new(crate::transition::TransitionManager::new()),
         };
         // Scripts have finished: run the microtasks they queued, so a
         // `Promise.resolve().then(…)` at load time lands before the first
@@ -280,7 +283,9 @@ impl Document {
                 .or_else(|| self.focused_path())
                 .and_then(|p| dom_api::node_at(&self.dom, &p)),
         };
-        style_tree_full(&self.dom, &self.stylesheet, viewport_width, &interaction)
+        let mut styled = style_tree_full(&self.dom, &self.stylesheet, viewport_width, &interaction);
+        self.transitions.borrow_mut().update_and_apply(&mut styled, self.runtime.now_ms);
+        styled
     }
 
     /// Lay the document out. The styled tree must outlive the returned boxes,
@@ -631,18 +636,30 @@ impl Document {
         {
             return Some(0.0);
         }
-        self.runtime.scheduler.next_deadline_ms()
+        let js_deadline = self.runtime.scheduler.next_deadline_ms();
+        if self.transitions.borrow().has_active() {
+            let next_frame = self.runtime.now_ms + 16.0;
+            Some(match js_deadline {
+                Some(d) => d.min(next_frame),
+                None => next_frame,
+            })
+        } else {
+            js_deadline
+        }
     }
 
     /// True while any timer, frame callback or request is still outstanding.
     pub fn has_pending_tasks(&self) -> bool {
-        self.runtime.scheduler.has_pending_work() || self.has_pending_network()
+        self.runtime.scheduler.has_pending_work()
+            || self.has_pending_network()
+            || self.transitions.borrow().has_active()
     }
 
     /// Drop every pending task. Navigating away from a page does this, so a
     /// departed page's intervals cannot keep running and its requests cannot
     /// settle anything: the promises go with the registry.
     pub fn cancel_all_tasks(&mut self) {
+        self.transitions.borrow_mut().clear();
         self.runtime.scheduler.clear_all();
         self.runtime.microtasks.clear();
         let network = self.network.clone();

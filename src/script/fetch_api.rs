@@ -27,7 +27,7 @@ use crate::net::Url;
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, RequestData, ResponseData,
 };
-use super::interp::{to_string, Builtin, JsRuntime, JsValue};
+use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
 use super::promise::{self, PromiseRef};
 
@@ -381,6 +381,34 @@ impl JsRuntime {
                 "aborted" => JsValue::Bool(state.aborted()),
                 _ => JsValue::Undefined,
             },
+            HostObject::CanvasRenderingContext2D(ctx) => {
+                let ctx = ctx.borrow();
+                match prop {
+                    "fillStyle" => JsValue::Str(format!(
+                        "rgba({}, {}, {}, {})",
+                        ctx.fill_style.r,
+                        ctx.fill_style.g,
+                        ctx.fill_style.b,
+                        ctx.fill_style.a as f32 / 255.0
+                    )),
+                    "strokeStyle" => JsValue::Str(format!(
+                        "rgba({}, {}, {}, {})",
+                        ctx.stroke_style.r,
+                        ctx.stroke_style.g,
+                        ctx.stroke_style.b,
+                        ctx.stroke_style.a as f32 / 255.0
+                    )),
+                    "lineWidth" => JsValue::Number(ctx.line_width),
+                    "font" => JsValue::Str(format!("{}px sans-serif", ctx.font_size)),
+                    "textAlign" => JsValue::Str(match ctx.text_align {
+                        crate::layout::TextAlign::Left => "left".to_string(),
+                        crate::layout::TextAlign::Center => "center".to_string(),
+                        crate::layout::TextAlign::Right => "right".to_string(),
+                    }),
+                    "globalAlpha" => JsValue::Number(ctx.global_alpha),
+                    _ => JsValue::Undefined,
+                }
+            }
         }
     }
 
@@ -416,6 +444,157 @@ impl JsRuntime {
                 _ => JsValue::Undefined,
             },
             HostObject::AbortSignal(_) => JsValue::Undefined,
+            HostObject::CanvasRenderingContext2D(ctx) => {
+                self.canvas_context_method(ctx, prop, args)
+            }
+        }
+    }
+
+    fn canvas_context_method(
+        &mut self,
+        ctx: &Rc<std::cell::RefCell<crate::canvas::CanvasContext2D>>,
+        prop: &str,
+        args: Vec<JsValue>,
+    ) -> JsValue {
+        let mut c = ctx.borrow_mut();
+        match prop {
+            "clearRect" => {
+                let x = args.first().map(to_number).unwrap_or(0.0);
+                let y = args.get(1).map(to_number).unwrap_or(0.0);
+                let w = args.get(2).map(to_number).unwrap_or(0.0);
+                let h = args.get(3).map(to_number).unwrap_or(0.0);
+                c.clear_rect(x, y, w, h);
+                JsValue::Undefined
+            }
+            "fillRect" => {
+                let x = args.first().map(to_number).unwrap_or(0.0);
+                let y = args.get(1).map(to_number).unwrap_or(0.0);
+                let w = args.get(2).map(to_number).unwrap_or(0.0);
+                let h = args.get(3).map(to_number).unwrap_or(0.0);
+                c.fill_rect(x, y, w, h);
+                JsValue::Undefined
+            }
+            "strokeRect" => {
+                let x = args.first().map(to_number).unwrap_or(0.0);
+                let y = args.get(1).map(to_number).unwrap_or(0.0);
+                let w = args.get(2).map(to_number).unwrap_or(0.0);
+                let h = args.get(3).map(to_number).unwrap_or(0.0);
+                c.stroke_rect(x, y, w, h);
+                JsValue::Undefined
+            }
+            "beginPath" => {
+                c.begin_path();
+                JsValue::Undefined
+            }
+            "closePath" => {
+                c.close_path();
+                JsValue::Undefined
+            }
+            "moveTo" => {
+                let x = args.first().map(to_number).unwrap_or(0.0);
+                let y = args.get(1).map(to_number).unwrap_or(0.0);
+                c.move_to(x, y);
+                JsValue::Undefined
+            }
+            "lineTo" => {
+                let x = args.first().map(to_number).unwrap_or(0.0);
+                let y = args.get(1).map(to_number).unwrap_or(0.0);
+                c.line_to(x, y);
+                JsValue::Undefined
+            }
+            "rect" => {
+                let x = args.first().map(to_number).unwrap_or(0.0);
+                let y = args.get(1).map(to_number).unwrap_or(0.0);
+                let w = args.get(2).map(to_number).unwrap_or(0.0);
+                let h = args.get(3).map(to_number).unwrap_or(0.0);
+                c.rect(x, y, w, h);
+                JsValue::Undefined
+            }
+            "arc" => {
+                let cx = args.first().map(to_number).unwrap_or(0.0);
+                let cy = args.get(1).map(to_number).unwrap_or(0.0);
+                let radius = args.get(2).map(to_number).unwrap_or(0.0);
+                let start_angle = args.get(3).map(to_number).unwrap_or(0.0);
+                let end_angle = args.get(4).map(to_number).unwrap_or(0.0);
+                let counterclockwise = args.get(5).map(truthy).unwrap_or(false);
+                c.arc(cx, cy, radius, start_angle, end_angle, counterclockwise);
+                JsValue::Undefined
+            }
+            "fill" => {
+                c.fill();
+                JsValue::Undefined
+            }
+            "stroke" => {
+                c.stroke();
+                JsValue::Undefined
+            }
+            "fillText" => {
+                let text = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                let x = args.get(1).map(to_number).unwrap_or(0.0);
+                let y = args.get(2).map(to_number).unwrap_or(0.0);
+                c.fill_text(&text, x, y);
+                JsValue::Undefined
+            }
+            "save" => {
+                c.save();
+                JsValue::Undefined
+            }
+            "restore" => {
+                c.restore();
+                JsValue::Undefined
+            }
+            "getImageData" => {
+                let sx = args.first().map(to_number).unwrap_or(0.0) as i32;
+                let sy = args.get(1).map(to_number).unwrap_or(0.0) as i32;
+                let sw = (args.get(2).map(to_number).unwrap_or(0.0).max(0.0)) as u32;
+                let sh = (args.get(3).map(to_number).unwrap_or(0.0).max(0.0)) as u32;
+                let data = c.get_image_data(sx, sy, sw, sh);
+                let data_items: Vec<JsValue> = data
+                    .into_iter()
+                    .map(|b| JsValue::Number(b as f32))
+                    .collect();
+                let obj = vec![
+                    ("width".to_string(), JsValue::Number(sw as f32)),
+                    ("height".to_string(), JsValue::Number(sh as f32)),
+                    (
+                        "data".to_string(),
+                        JsValue::Array(Rc::new(std::cell::RefCell::new(data_items))),
+                    ),
+                ];
+                JsValue::Object(Rc::new(std::cell::RefCell::new(obj)))
+            }
+            "putImageData" => {
+                if let Some(JsValue::Object(img_obj)) = args.first() {
+                    let sw = object_get(img_obj, "width")
+                        .map(|v| to_number(&v) as u32)
+                        .unwrap_or(0);
+                    let sh = object_get(img_obj, "height")
+                        .map(|v| to_number(&v) as u32)
+                        .unwrap_or(0);
+                    let data = object_get(img_obj, "data")
+                        .and_then(|v| match v {
+                            JsValue::Array(arr) => Some(
+                                arr.borrow()
+                                    .iter()
+                                    .map(|x| to_number(x) as u8)
+                                    .collect::<Vec<u8>>(),
+                            ),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let dx = args.get(1).map(to_number).unwrap_or(0.0) as i32;
+                    let dy = args.get(2).map(to_number).unwrap_or(0.0) as i32;
+                    c.put_image_data(&data, dx, dy, sw, sh);
+                }
+                JsValue::Undefined
+            }
+            "measureText" => {
+                let text = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                let width = crate::text::measure_text(&text, c.font_size);
+                let obj = vec![("width".to_string(), JsValue::Number(width))];
+                JsValue::Object(Rc::new(std::cell::RefCell::new(obj)))
+            }
+            _ => JsValue::Undefined,
         }
     }
 

@@ -9,12 +9,14 @@
 //
 //  Supported grammar:
 //    statements   let/const/var, function, if/else, while, for,
-//                 for…of, return, break, continue, blocks, expressions
-//    expressions  assignment (= += -= *= /=), ternary, || &&,
+//                 for…of, for…in, return, break, continue, blocks,
+//                 expressions, destructuring declarations
+//    expressions  assignment (= += -= *= /=), ternary, ?? || &&,
 //                 equality, relational, additive, multiplicative,
 //                 unary (! - typeof), prefix/postfix ++/--,
 //                 calls, member access, indexing, array & object
-//                 literals, function expressions, arrow functions
+//                 literals, function expressions, arrow functions,
+//                 template literals, spread, optional chaining
 
 use super::ast::*;
 use super::lexer::{Lexer, Tok};
@@ -94,6 +96,7 @@ impl Parser {
             Tok::Finally => "finally",
             Tok::New => "new",
             Tok::Typeof => "typeof",
+            Tok::In => "in",
             Tok::True => "true",
             Tok::False => "false",
             Tok::Null => "null",
@@ -260,6 +263,21 @@ impl Parser {
 
     fn parse_var_decl(&mut self) -> Option<Stmt> {
         self.bump(); // let / const / var
+        // Destructuring: `let { a, b } = …` or `let [x, y] = …`
+        if *self.peek() == Tok::LBrace {
+            let pattern = self.parse_destruct_object_pattern()?;
+            self.eat(Tok::Assign);
+            let init = self.parse_expr()?;
+            self.eat(Tok::Semi);
+            return Some(Stmt::DestructDecl { pattern, init });
+        }
+        if *self.peek() == Tok::LBracket {
+            let pattern = self.parse_destruct_array_pattern()?;
+            self.eat(Tok::Assign);
+            let init = self.parse_expr()?;
+            self.eat(Tok::Semi);
+            return Some(Stmt::DestructDecl { pattern, init });
+        }
         let first = self.parse_one_declarator()?;
         while self.eat(Tok::Comma) {
             match self.parse_one_declarator() {
@@ -269,6 +287,45 @@ impl Parser {
         }
         self.eat(Tok::Semi);
         Some(first)
+    }
+
+    fn parse_destruct_object_pattern(&mut self) -> Option<DestructPat> {
+        self.bump(); // {
+        let mut fields = Vec::new();
+        while !self.at_end() && *self.peek() != Tok::RBrace {
+            let key = Self::ident_name(&self.bump())?;
+            let binding = if self.eat(Tok::Colon) {
+                Self::ident_name(&self.bump())?
+            } else {
+                key.clone()
+            };
+            fields.push((key, binding));
+            self.eat(Tok::Comma);
+        }
+        self.eat(Tok::RBrace);
+        Some(DestructPat::Object(fields))
+    }
+
+    fn parse_destruct_array_pattern(&mut self) -> Option<DestructPat> {
+        self.bump(); // [
+        let mut items = Vec::new();
+        let mut rest = None;
+        while !self.at_end() && *self.peek() != Tok::RBracket {
+            if *self.peek() == Tok::DotDotDot {
+                self.bump();
+                rest = Self::ident_name(&self.bump());
+                self.eat(Tok::Comma);
+                break;
+            }
+            if *self.peek() == Tok::Comma {
+                items.push(None);
+            } else {
+                items.push(Self::ident_name(&self.bump()));
+            }
+            self.eat(Tok::Comma);
+        }
+        self.eat(Tok::RBracket);
+        Some(DestructPat::Array { items, rest })
     }
 
     fn parse_one_declarator(&mut self) -> Option<Stmt> {
@@ -303,11 +360,16 @@ impl Parser {
         self.bump(); // for
         self.eat(Tok::LParen);
 
-        // `for (let x of items)` — look ahead past the binding for `of`.
+        // `for (let x of items)` or `for (let x in obj)` — look ahead.
         let is_for_of = {
             let decl_offset = usize::from(matches!(self.peek(), Tok::Let | Tok::Const | Tok::Var));
             matches!(self.peek_at(decl_offset), Tok::Ident(_))
                 && *self.peek_at(decl_offset + 1) == Tok::Of
+        };
+        let is_for_in = {
+            let decl_offset = usize::from(matches!(self.peek(), Tok::Let | Tok::Const | Tok::Var));
+            matches!(self.peek_at(decl_offset), Tok::Ident(_))
+                && *self.peek_at(decl_offset + 1) == Tok::In
         };
         if is_for_of {
             if matches!(self.peek(), Tok::Let | Tok::Const | Tok::Var) {
@@ -320,6 +382,20 @@ impl Parser {
             return Some(Stmt::ForOf {
                 name,
                 iterable,
+                body: self.parse_body(),
+            });
+        }
+        if is_for_in {
+            if matches!(self.peek(), Tok::Let | Tok::Const | Tok::Var) {
+                self.bump();
+            }
+            let name = Self::ident_name(&self.bump())?;
+            self.bump(); // in
+            let target = self.parse_expr()?;
+            self.eat(Tok::RParen);
+            return Some(Stmt::ForIn {
+                name,
+                target,
                 body: self.parse_body(),
             });
         }
@@ -359,6 +435,15 @@ impl Parser {
         self.eat(Tok::LParen);
         let mut params = Vec::new();
         while !self.at_end() && *self.peek() != Tok::RParen {
+            // Rest parameter: `...args`
+            if *self.peek() == Tok::DotDotDot {
+                self.bump();
+                if let Some(p) = Self::ident_name(&self.bump()) {
+                    params.push(format!("...{p}"));
+                }
+                self.eat(Tok::Comma);
+                continue;
+            }
             if let Some(p) = Self::ident_name(&self.bump()) {
                 params.push(p);
             }
@@ -395,7 +480,7 @@ impl Parser {
     }
 
     fn parse_conditional(&mut self) -> Option<Expr> {
-        let test = self.parse_logical_or()?;
+        let test = self.parse_nullish_coalescing()?;
         if !self.eat(Tok::Question) {
             return Some(test);
         }
@@ -407,6 +492,20 @@ impl Parser {
             cons: Box::new(cons),
             alt: Box::new(alt),
         })
+    }
+
+    /// `??` sits between `||` and `?:` in precedence.
+    fn parse_nullish_coalescing(&mut self) -> Option<Expr> {
+        let mut lhs = self.parse_logical_or()?;
+        while self.eat(Tok::QuestionQuestion) {
+            let rhs = self.parse_logical_or()?;
+            lhs = Expr::Logical {
+                op: LogicalOp::NullishCoalescing,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+        Some(lhs)
     }
 
     fn parse_logical_or(&mut self) -> Option<Expr> {
@@ -598,7 +697,8 @@ impl Parser {
         self.parse_member_chain(expr)
     }
 
-    /// Continue a `.prop`, `[index]` and `(args)` chain from `expr`.
+    /// Continue a `.prop`, `[index]`, `(args)`, `?.prop`, `?.[index]` and
+    /// `?.(args)` chain from `expr`.
     fn parse_member_chain(&mut self, expr: Expr) -> Option<Expr> {
         let mut expr = expr;
         loop {
@@ -610,6 +710,31 @@ impl Parser {
                         obj: Box::new(expr),
                         prop,
                     };
+                }
+                Tok::QuestionDot => {
+                    self.bump();
+                    if *self.peek() == Tok::LBracket {
+                        self.bump();
+                        let index = self.parse_expr()?;
+                        self.eat(Tok::RBracket);
+                        expr = Expr::OptionalIndex {
+                            obj: Box::new(expr),
+                            index: Box::new(index),
+                        };
+                    } else if *self.peek() == Tok::LParen {
+                        self.bump();
+                        let args = self.parse_args();
+                        expr = Expr::OptionalCall {
+                            callee: Box::new(expr),
+                            args,
+                        };
+                    } else {
+                        let prop = Self::ident_name(&self.bump())?;
+                        expr = Expr::OptionalMember {
+                            obj: Box::new(expr),
+                            prop,
+                        };
+                    }
                 }
                 Tok::LBracket => {
                     self.bump();
@@ -637,11 +762,24 @@ impl Parser {
         let mut args = Vec::new();
         while !self.at_end() && *self.peek() != Tok::RParen {
             let before = self.pos;
-            match self.parse_assignment() {
-                Some(a) => args.push(a),
-                None => {
-                    if self.pos == before {
-                        self.bump();
+            // Spread in calls: `fn(...arr)`
+            if *self.peek() == Tok::DotDotDot {
+                self.bump();
+                match self.parse_assignment() {
+                    Some(inner) => args.push(Expr::Spread(Box::new(inner))),
+                    None => {
+                        if self.pos == before + 1 {
+                            self.bump();
+                        }
+                    }
+                }
+            } else {
+                match self.parse_assignment() {
+                    Some(a) => args.push(a),
+                    None => {
+                        if self.pos == before {
+                            self.bump();
+                        }
                     }
                 }
             }
@@ -705,7 +843,12 @@ impl Parser {
                     self.bump(); // (
                     let mut params = Vec::new();
                     while !self.at_end() && *self.peek() != Tok::RParen {
-                        if let Some(p) = Self::ident_name(&self.bump()) {
+                        if *self.peek() == Tok::DotDotDot {
+                            self.bump();
+                            if let Some(p) = Self::ident_name(&self.bump()) {
+                                params.push(format!("...{p}"));
+                            }
+                        } else if let Some(p) = Self::ident_name(&self.bump()) {
                             params.push(p);
                         }
                         self.eat(Tok::Comma);
@@ -725,11 +868,23 @@ impl Parser {
                 let mut items = Vec::new();
                 while !self.at_end() && *self.peek() != Tok::RBracket {
                     let before = self.pos;
-                    match self.parse_assignment() {
-                        Some(e) => items.push(e),
-                        None => {
-                            if self.pos == before {
-                                self.bump();
+                    if *self.peek() == Tok::DotDotDot {
+                        self.bump();
+                        match self.parse_assignment() {
+                            Some(inner) => items.push(Expr::Spread(Box::new(inner))),
+                            None => {
+                                if self.pos == before + 1 {
+                                    self.bump();
+                                }
+                            }
+                        }
+                    } else {
+                        match self.parse_assignment() {
+                            Some(e) => items.push(e),
+                            None => {
+                                if self.pos == before {
+                                    self.bump();
+                                }
                             }
                         }
                     }
@@ -742,18 +897,42 @@ impl Parser {
                 self.bump();
                 let mut props = Vec::new();
                 while !self.at_end() && *self.peek() != Tok::RBrace {
+                    // Spread in objects: `{ ...other }`
+                    if *self.peek() == Tok::DotDotDot {
+                        self.bump();
+                        if let Some(inner) = self.parse_assignment() {
+                            props.push(("__spread__".to_string(), Expr::Spread(Box::new(inner))));
+                        }
+                        self.eat(Tok::Comma);
+                        continue;
+                    }
                     let key = match self.bump() {
                         Tok::Str(s) => s,
                         other => Self::ident_name(&other)?,
                     };
-                    self.eat(Tok::Colon);
-                    if let Some(v) = self.parse_assignment() {
-                        props.push((key, v));
+                    // Shorthand properties: `{ a, b }` === `{ a: a, b: b }`
+                    if matches!(self.peek(), Tok::Comma | Tok::RBrace) {
+                        props.push((key.clone(), Expr::Ident(key)));
+                    } else {
+                        self.eat(Tok::Colon);
+                        if let Some(v) = self.parse_assignment() {
+                            props.push((key, v));
+                        }
                     }
                     self.eat(Tok::Comma);
                 }
                 self.eat(Tok::RBrace);
                 Some(Expr::Object(props))
+            }
+            // Template literals
+            Tok::TemplatePart(first_part) => {
+                self.bump();
+                self.parse_template_literal(first_part)
+            }
+            Tok::TemplateEnd(s) => {
+                self.bump();
+                // No interpolation — just a plain string.
+                Some(Expr::Str(s))
             }
             _ => None,
         }
@@ -791,6 +970,38 @@ impl Parser {
             }
             i += 1;
         }
+    }
+
+    /// Parse a template literal after the first `TemplatePart` has been consumed.
+    fn parse_template_literal(&mut self, first_part: String) -> Option<Expr> {
+        let mut parts = vec![first_part];
+        let mut exprs = Vec::new();
+        loop {
+            // Parse the interpolated expression.
+            if let Some(e) = self.parse_expr() {
+                exprs.push(e);
+            } else {
+                exprs.push(Expr::Undefined);
+            }
+            // The lexer has already emitted either TemplatePart or TemplateEnd next.
+            match self.peek().clone() {
+                Tok::TemplatePart(s) => {
+                    self.bump();
+                    parts.push(s);
+                }
+                Tok::TemplateEnd(s) => {
+                    self.bump();
+                    parts.push(s);
+                    break;
+                }
+                _ => {
+                    // Malformed: bail.
+                    parts.push(String::new());
+                    break;
+                }
+            }
+        }
+        Some(Expr::TemplateLiteral { parts, exprs })
     }
 }
 

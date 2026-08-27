@@ -801,12 +801,28 @@ impl JsRuntime {
                     return JsValue::Undefined;
                 }
                 let scope = Scope::new(Some(func.scope.clone()));
-                for (i, param) in func.params.iter().enumerate() {
-                    scope_declare(
-                        &scope,
-                        param,
-                        args.get(i).cloned().unwrap_or(JsValue::Undefined),
-                    );
+                let mut arg_idx = 0;
+                for param in &func.params {
+                    if let Some(rest_name) = param.strip_prefix("...") {
+                        let rest_items = if arg_idx < args.len() {
+                            args[arg_idx..].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        scope_declare(
+                            &scope,
+                            rest_name,
+                            JsValue::Array(Rc::new(RefCell::new(rest_items))),
+                        );
+                        break;
+                    } else {
+                        scope_declare(
+                            &scope,
+                            param,
+                            args.get(arg_idx).cloned().unwrap_or(JsValue::Undefined),
+                        );
+                        arg_idx += 1;
+                    }
                 }
                 self.depth += 1;
                 let flow = self.exec_block(dom, &func.body, &scope);
@@ -1091,6 +1107,49 @@ impl JsRuntime {
                 scope_declare(scope, name, value);
                 Flow::Normal
             }
+            Stmt::DestructDecl { pattern, init } => {
+                let val = self.eval(dom, init, scope);
+                match pattern {
+                    DestructPat::Object(fields) => {
+                        for (key, binding_name) in fields {
+                            let member_val = if matches!(val, JsValue::Null | JsValue::Undefined) {
+                                JsValue::Undefined
+                            } else {
+                                self.get_member(dom, &val, key)
+                            };
+                            scope_declare(scope, binding_name, member_val);
+                        }
+                    }
+                    DestructPat::Array { items, rest } => {
+                        let arr_items = match &val {
+                            JsValue::Array(arr) => arr.borrow().clone(),
+                            JsValue::Str(s) => {
+                                s.chars().map(|c| JsValue::Str(c.to_string())).collect()
+                            }
+                            _ => Vec::new(),
+                        };
+                        for (i, item) in items.iter().enumerate() {
+                            if let Some(name) = item {
+                                let v = arr_items.get(i).cloned().unwrap_or(JsValue::Undefined);
+                                scope_declare(scope, name, v);
+                            }
+                        }
+                        if let Some(rest_name) = rest {
+                            let rest_slice = if items.len() < arr_items.len() {
+                                arr_items[items.len()..].to_vec()
+                            } else {
+                                Vec::new()
+                            };
+                            scope_declare(
+                                scope,
+                                rest_name,
+                                JsValue::Array(Rc::new(RefCell::new(rest_slice))),
+                            );
+                        }
+                    }
+                }
+                Flow::Normal
+            }
             Stmt::FnDecl { .. } => Flow::Normal, // handled by hoisting
             Stmt::Expr(e) => {
                 self.eval(dom, e, scope);
@@ -1191,6 +1250,30 @@ impl JsRuntime {
                 }
                 Flow::Normal
             }
+            Stmt::ForIn { name, target, body } => {
+                let val = self.eval(dom, target, scope);
+                let keys: Vec<String> = match val {
+                    JsValue::Object(props) => {
+                        props.borrow().iter().map(|(k, _)| k.clone()).collect()
+                    }
+                    JsValue::Array(items) => {
+                        (0..items.borrow().len()).map(|i| i.to_string()).collect()
+                    }
+                    JsValue::Str(s) => (0..s.chars().count()).map(|i| i.to_string()).collect(),
+                    _ => Vec::new(),
+                };
+                for key in keys {
+                    let inner = Scope::new(Some(scope.clone()));
+                    scope_declare(&inner, name, JsValue::Str(key));
+                    match self.exec_block(dom, body, &inner) {
+                        Flow::Break => break,
+                        Flow::Return(v) => return Flow::Return(v),
+                        Flow::Throw => return Flow::Throw,
+                        _ => {}
+                    }
+                }
+                Flow::Normal
+            }
             Stmt::Return(value) => {
                 let v = match value {
                     Some(e) => self.eval(dom, e, scope),
@@ -1278,9 +1361,27 @@ impl JsRuntime {
     fn eval_args(&mut self, dom: &mut Node, args: &[Expr], scope: &ScopeRef) -> Vec<JsValue> {
         let mut values = Vec::with_capacity(args.len());
         for argument in args {
-            values.push(self.eval(dom, argument, scope));
-            if self.has_exception() {
-                break;
+            if let Expr::Spread(inner) = argument {
+                let spread_val = self.eval(dom, inner, scope);
+                if self.has_exception() {
+                    break;
+                }
+                match spread_val {
+                    JsValue::Array(items) => {
+                        values.extend(items.borrow().clone());
+                    }
+                    JsValue::Str(s) => {
+                        for c in s.chars() {
+                            values.push(JsValue::Str(c.to_string()));
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                values.push(self.eval(dom, argument, scope));
+                if self.has_exception() {
+                    break;
+                }
             }
         }
         values
@@ -1298,16 +1399,86 @@ impl JsRuntime {
                 .or_else(|| global_builtin(name))
                 .unwrap_or(JsValue::Undefined),
 
+            Expr::TemplateLiteral { parts, exprs } => {
+                let mut out = String::new();
+                for (i, part) in parts.iter().enumerate() {
+                    out.push_str(part);
+                    if let Some(expr) = exprs.get(i) {
+                        let val = self.eval(dom, expr, scope);
+                        if self.has_exception() {
+                            return JsValue::Undefined;
+                        }
+                        out.push_str(&to_string(&val));
+                    }
+                }
+                JsValue::Str(out)
+            }
+
+            Expr::Spread(inner) => self.eval(dom, inner, scope),
+
             Expr::Array(items) => {
-                let values: Vec<JsValue> = items.iter().map(|e| self.eval(dom, e, scope)).collect();
+                let mut values = Vec::new();
+                for item in items {
+                    if let Expr::Spread(inner) = item {
+                        let spread_val = self.eval(dom, inner, scope);
+                        if self.has_exception() {
+                            return JsValue::Undefined;
+                        }
+                        match spread_val {
+                            JsValue::Array(arr) => {
+                                values.extend(arr.borrow().clone());
+                            }
+                            JsValue::Str(s) => {
+                                for c in s.chars() {
+                                    values.push(JsValue::Str(c.to_string()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        values.push(self.eval(dom, item, scope));
+                        if self.has_exception() {
+                            return JsValue::Undefined;
+                        }
+                    }
+                }
                 JsValue::Array(Rc::new(RefCell::new(values)))
             }
 
             Expr::Object(props) => {
-                let values: Vec<(String, JsValue)> = props
-                    .iter()
-                    .map(|(k, e)| (k.clone(), self.eval(dom, e, scope)))
-                    .collect();
+                let mut values = Vec::new();
+                for (k, e) in props {
+                    if k == "__spread__" {
+                        if let Expr::Spread(inner) = e {
+                            let spread_val = self.eval(dom, inner, scope);
+                            if self.has_exception() {
+                                return JsValue::Undefined;
+                            }
+                            if let JsValue::Object(obj) = spread_val {
+                                for (sub_k, sub_v) in obj.borrow().iter() {
+                                    if let Some(pos) = values
+                                        .iter()
+                                        .position(|(existing_k, _)| existing_k == sub_k)
+                                    {
+                                        values[pos] = (sub_k.clone(), sub_v.clone());
+                                    } else {
+                                        values.push((sub_k.clone(), sub_v.clone()));
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    let val = self.eval(dom, e, scope);
+                    if self.has_exception() {
+                        return JsValue::Undefined;
+                    }
+                    if let Some(pos) = values.iter().position(|(existing_k, _)| existing_k == k) {
+                        values[pos] = (k.clone(), val);
+                    } else {
+                        values.push((k.clone(), val));
+                    }
+                }
                 JsValue::Object(Rc::new(RefCell::new(values)))
             }
 
@@ -1322,10 +1493,33 @@ impl JsRuntime {
                 self.get_member(dom, &target, prop)
             }
 
+            Expr::OptionalMember { obj, prop } => {
+                let target = self.eval(dom, obj, scope);
+                if self.has_exception() || matches!(target, JsValue::Null | JsValue::Undefined) {
+                    JsValue::Undefined
+                } else {
+                    self.get_member(dom, &target, prop)
+                }
+            }
+
             Expr::Index { obj, index } => {
                 let target = self.eval(dom, obj, scope);
                 let key = self.eval(dom, index, scope);
                 self.get_index(dom, &target, &key)
+            }
+
+            Expr::OptionalIndex { obj, index } => {
+                let target = self.eval(dom, obj, scope);
+                if self.has_exception() || matches!(target, JsValue::Null | JsValue::Undefined) {
+                    JsValue::Undefined
+                } else {
+                    let key = self.eval(dom, index, scope);
+                    if self.has_exception() {
+                        JsValue::Undefined
+                    } else {
+                        self.get_index(dom, &target, &key)
+                    }
+                }
             }
 
             Expr::Call { callee, args } => {
@@ -1351,6 +1545,56 @@ impl JsRuntime {
                     }
                 }
             }
+
+            Expr::OptionalCall { callee, args } => match &**callee {
+                Expr::Member { obj, prop } | Expr::OptionalMember { obj, prop } => {
+                    let target = self.eval(dom, obj, scope);
+                    if self.has_exception() || matches!(target, JsValue::Null | JsValue::Undefined)
+                    {
+                        return JsValue::Undefined;
+                    }
+                    let f = self.get_member(dom, &target, prop);
+                    if self.has_exception() || matches!(f, JsValue::Null | JsValue::Undefined) {
+                        return JsValue::Undefined;
+                    }
+                    let argv = self.eval_args(dom, args, scope);
+                    if self.has_exception() {
+                        return JsValue::Undefined;
+                    }
+                    self.call_method(dom, &target, prop, argv)
+                }
+                Expr::Index { obj, index } | Expr::OptionalIndex { obj, index } => {
+                    let target = self.eval(dom, obj, scope);
+                    if self.has_exception() || matches!(target, JsValue::Null | JsValue::Undefined)
+                    {
+                        return JsValue::Undefined;
+                    }
+                    let key = self.eval(dom, index, scope);
+                    if self.has_exception() {
+                        return JsValue::Undefined;
+                    }
+                    let f = self.get_index(dom, &target, &key);
+                    if self.has_exception() || matches!(f, JsValue::Null | JsValue::Undefined) {
+                        return JsValue::Undefined;
+                    }
+                    let argv = self.eval_args(dom, args, scope);
+                    if self.has_exception() {
+                        return JsValue::Undefined;
+                    }
+                    self.call_value(dom, &f, argv)
+                }
+                other => {
+                    let f = self.eval(dom, other, scope);
+                    if self.has_exception() || matches!(f, JsValue::Null | JsValue::Undefined) {
+                        return JsValue::Undefined;
+                    }
+                    let argv = self.eval_args(dom, args, scope);
+                    if self.has_exception() {
+                        return JsValue::Undefined;
+                    }
+                    self.call_value(dom, &f, argv)
+                }
+            },
 
             Expr::Unary { op, expr } => {
                 let v = self.eval(dom, expr, scope);
@@ -1388,6 +1632,13 @@ impl JsRuntime {
                             l
                         } else {
                             self.eval(dom, rhs, scope)
+                        }
+                    }
+                    LogicalOp::NullishCoalescing => {
+                        if matches!(l, JsValue::Null | JsValue::Undefined) {
+                            self.eval(dom, rhs, scope)
+                        } else {
+                            l
                         }
                     }
                 }
@@ -1656,6 +1907,28 @@ impl JsRuntime {
                         .filter(|c| c.as_element().is_some())
                         .count() as f32,
                 )),
+                "width" => element.map(|e| {
+                    if e.tag_name == "canvas" {
+                        let w = e
+                            .get_attr("width")
+                            .and_then(|s| s.trim().trim_end_matches("px").parse::<f32>().ok())
+                            .unwrap_or(300.0);
+                        JsValue::Number(w)
+                    } else {
+                        JsValue::Number(0.0)
+                    }
+                }),
+                "height" => element.map(|e| {
+                    if e.tag_name == "canvas" {
+                        let h = e
+                            .get_attr("height")
+                            .and_then(|s| s.trim().trim_end_matches("px").parse::<f32>().ok())
+                            .unwrap_or(150.0);
+                        JsValue::Number(h)
+                    } else {
+                        JsValue::Number(0.0)
+                    }
+                }),
                 _ => None,
             }
         });
@@ -1709,11 +1982,72 @@ impl JsRuntime {
                     "placeholder" | "name" | "type" => {
                         self.with_element_mut(dom, r, |e| e.set_attr(prop, &text));
                     }
+                    "width" | "height" => {
+                        self.with_element_mut(dom, r, |e| {
+                            e.set_attr(prop, &text);
+                            if e.tag_name == "canvas" {
+                                if let Some(ctx) = &e.canvas {
+                                    let num = text.trim().trim_end_matches("px").parse::<u32>().unwrap_or(0);
+                                    if num > 0 {
+                                        let mut c = ctx.borrow_mut();
+                                        if prop == "width" {
+                                            c.width = num;
+                                        } else {
+                                            c.height = num;
+                                        }
+                                        c.pixels = vec![0u8; (c.width * c.height * 4) as usize];
+                                    }
+                                }
+                            }
+                        });
+                    }
                     "id" | "className" => {
                         let attr = if prop == "className" { "class" } else { prop };
                         self.with_element_mut(dom, r, |e| e.set_attr(attr, &text));
                     }
                     _ => {}
+                }
+            }
+            JsValue::Host(host) => {
+                if let HostObject::CanvasRenderingContext2D(ctx) = host.as_ref() {
+                    let mut ctx = ctx.borrow_mut();
+                    match prop {
+                        "fillStyle" => {
+                            if let Some(color) = crate::css::parser::parse_color(&to_string(&value)) {
+                                ctx.fill_style = color;
+                            }
+                        }
+                        "strokeStyle" => {
+                            if let Some(color) = crate::css::parser::parse_color(&to_string(&value)) {
+                                ctx.stroke_style = color;
+                            }
+                        }
+                        "lineWidth" => {
+                            ctx.line_width = to_number(&value);
+                        }
+                        "font" => {
+                            let s = to_string(&value);
+                            if let Some(pos) = s.find("px") {
+                                if let Ok(size) = s[..pos].trim().parse::<f32>() {
+                                    ctx.font_size = size;
+                                }
+                            } else {
+                                let num = to_number(&value);
+                                if num > 0.0 {
+                                    ctx.font_size = num;
+                                }
+                            }
+                        }
+                        "textAlign" => match to_string(&value).as_str() {
+                            "center" => ctx.text_align = crate::layout::TextAlign::Center,
+                            "right" => ctx.text_align = crate::layout::TextAlign::Right,
+                            _ => ctx.text_align = crate::layout::TextAlign::Left,
+                        },
+                        "globalAlpha" => {
+                            ctx.global_alpha = to_number(&value).clamp(0.0, 1.0);
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -1843,6 +2177,38 @@ impl JsRuntime {
                     }
                     _ => JsValue::Array(Rc::new(RefCell::new(vec![]))),
                 },
+                "entries" => match args.first() {
+                    Some(JsValue::Object(props)) => {
+                        let entries: Vec<JsValue> = props
+                            .borrow()
+                            .iter()
+                            .map(|(k, v)| {
+                                JsValue::Array(Rc::new(RefCell::new(vec![
+                                    JsValue::Str(k.clone()),
+                                    v.clone(),
+                                ])))
+                            })
+                            .collect();
+                        JsValue::Array(Rc::new(RefCell::new(entries)))
+                    }
+                    _ => JsValue::Array(Rc::new(RefCell::new(vec![]))),
+                },
+                "assign" => {
+                    if let Some(target) = args.first() {
+                        if let JsValue::Object(target_props) = target {
+                            for source in args.iter().skip(1) {
+                                if let JsValue::Object(source_props) = source {
+                                    for (k, v) in source_props.borrow().iter() {
+                                        object_set(target_props, k, v.clone());
+                                    }
+                                }
+                            }
+                        }
+                        target.clone()
+                    } else {
+                        JsValue::Undefined
+                    }
+                }
                 _ => JsValue::Undefined,
             },
             JsValue::Builtin(Builtin::Location) => match prop {
@@ -1982,6 +2348,21 @@ impl JsRuntime {
     ) -> JsValue {
         let arg0 = to_string(args.first().unwrap_or(&JsValue::Undefined));
         match prop {
+            "getContext" => {
+                if arg0 == "2d" {
+                    let ctx = self.with_element_mut(dom, r, |e| {
+                        if e.tag_name == "canvas" {
+                            Some(e.canvas_context())
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(Some(ctx)) = ctx {
+                        return JsValue::Host(Rc::new(HostObject::CanvasRenderingContext2D(ctx)));
+                    }
+                }
+                JsValue::Null
+            }
             "getAttribute" => self
                 .with_element(dom, r, |e| e.get_attr(&arg0).map(|v| v.to_string()))
                 .flatten()
@@ -2530,7 +2911,7 @@ fn remove_node_at(root: &mut Node, path: &[usize]) -> Option<Node> {
 
 // ── Object helpers ────────────────────────────────────────────────────────────
 
-fn object_get(props: &Rc<RefCell<Vec<(String, JsValue)>>>, key: &str) -> Option<JsValue> {
+pub(crate) fn object_get(props: &Rc<RefCell<Vec<(String, JsValue)>>>, key: &str) -> Option<JsValue> {
     props
         .borrow()
         .iter()

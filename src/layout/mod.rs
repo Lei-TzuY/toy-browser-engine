@@ -1345,6 +1345,7 @@ impl<'a> LayoutBox<'a> {
     fn replaced_element(&self) -> Option<&'a ElementData> {
         let element = self.style()?.node.as_element()?;
         let replaced = element.tag_name == "img"
+            || element.tag_name == "canvas"
             || element.tag_name == "textarea"
             || (element.tag_name == "input" && element.input_type() != "hidden");
         replaced.then_some(element)
@@ -1362,6 +1363,17 @@ impl<'a> LayoutBox<'a> {
         let padding = 8.0;
 
         match element.tag_name.as_str() {
+            "canvas" => {
+                let w = element
+                    .get_attr("width")
+                    .and_then(|s| s.trim().trim_end_matches("px").parse::<f32>().ok())
+                    .unwrap_or(300.0);
+                let h = element
+                    .get_attr("height")
+                    .and_then(|s| s.trim().trim_end_matches("px").parse::<f32>().ok())
+                    .unwrap_or(150.0);
+                Some((w, h))
+            }
             "input" => match element.input_type().as_str() {
                 "checkbox" | "radio" => {
                     let box_size = (font_size * 0.85).round().max(10.0);
@@ -2054,6 +2066,8 @@ fn build_layout_tree_inner<'a>(
     if let Some(element) = node.node.as_element() {
         if element.tag_name == "img" {
             root.image = images.image_for(element);
+        } else if element.tag_name == "canvas" {
+            root.image = element.canvas_image();
         }
         root.focused = focused == Some(element.element_id());
     }
@@ -2068,7 +2082,7 @@ fn build_layout_tree_inner<'a>(
     let replaced_content = node
         .node
         .as_element()
-        .is_some_and(|e| matches!(e.tag_name.as_str(), "img" | "input" | "textarea"));
+        .is_some_and(|e| matches!(e.tag_name.as_str(), "img" | "canvas" | "input" | "textarea"));
 
     for child in &node.children {
         if replaced_content {
@@ -2588,6 +2602,7 @@ fn number_value(value: &Value) -> f32 {
         Value::LinearGradient(_) => 0.0,
         Value::BoxShadow(_) => 0.0,
         Value::Transform(_) => 0.0,
+        Value::Transition(_) => 0.0,
         Value::Var { .. } => 0.0,
         Value::Calc(expr) => eval_calc(expr, 0.0, 16.0),
     }

@@ -235,6 +235,61 @@ pub struct Transform {
     pub scale: f32,
 }
 
+/// CSS Transition Timing Function
+#[derive(Debug, Clone, PartialEq)]
+pub enum TimingFunction {
+    Linear,
+    Ease,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    CubicBezier(f32, f32, f32, f32),
+}
+
+impl TimingFunction {
+    pub fn evaluate(&self, progress: f32) -> f32 {
+        let p = progress.clamp(0.0, 1.0);
+        match self {
+            TimingFunction::Linear => p,
+            TimingFunction::Ease => cubic_bezier_solve(0.25, 0.1, 0.25, 1.0, p),
+            TimingFunction::EaseIn => cubic_bezier_solve(0.42, 0.0, 1.0, 1.0, p),
+            TimingFunction::EaseOut => cubic_bezier_solve(0.0, 0.0, 0.58, 1.0, p),
+            TimingFunction::EaseInOut => cubic_bezier_solve(0.42, 0.0, 0.58, 1.0, p),
+            TimingFunction::CubicBezier(x1, y1, x2, y2) => cubic_bezier_solve(*x1, *y1, *x2, *y2, p),
+        }
+    }
+}
+
+pub fn cubic_bezier_solve(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
+    let mut low = 0.0f32;
+    let mut high = 1.0f32;
+    let mut t = x.clamp(0.0, 1.0);
+
+    for _ in 0..16 {
+        let sample = 3.0 * (1.0 - t).powi(2) * t * x1 + 3.0 * (1.0 - t) * t.powi(2) * x2 + t.powi(3);
+        if (sample - x).abs() < 1e-4 {
+            break;
+        }
+        if sample < x {
+            low = t;
+        } else {
+            high = t;
+        }
+        t = (low + high) * 0.5;
+    }
+
+    3.0 * (1.0 - t).powi(2) * t * y1 + 3.0 * (1.0 - t) * t.powi(2) * y2 + t.powi(3)
+}
+
+/// A parsed single transition specification
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionSpec {
+    pub property: String,
+    pub duration_ms: f32,
+    pub timing_function: TimingFunction,
+    pub delay_ms: f32,
+}
+
 // ── Value ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +302,7 @@ pub enum Value {
     LinearGradient(LinearGradient),
     BoxShadow(BoxShadow),
     Transform(Transform),
+    Transition(Vec<TransitionSpec>),
     /// `var(--name)` or `var(--name, fallback)`.
     Var {
         name: String,
@@ -1208,6 +1264,28 @@ impl Parser {
                     }),
                 )]
             }
+            "transition" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, Unit::Px) => format!("{}px", n),
+                    Value::Number(n) => format!("{}", n),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                raw.push(' ');
+                raw.push_str(&rest);
+                let specs = parse_transition_value(&raw);
+                vec![Declaration::new(name, Value::Transition(specs))]
+            }
+            "transition-duration" | "transition-delay" => {
+                let raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, _) | Value::Number(n) => format!("{}ms", n),
+                    _ => String::new(),
+                };
+                let time_ms = parse_time_to_ms(&raw).unwrap_or(0.0);
+                vec![Declaration::new(name, Value::Number(time_ms))]
+            }
             _ => vec![Declaration::new(name, first_value)],
         };
 
@@ -1668,6 +1746,141 @@ fn named_color(name: &str) -> Option<Color> {
     })
 }
 
+pub fn parse_time_to_ms(s: &str) -> Option<f32> {
+    let s = s.trim().to_ascii_lowercase();
+    if let Some(rest) = s.strip_suffix("ms") {
+        rest.trim().parse::<f32>().ok()
+    } else if let Some(rest) = s.strip_suffix('s') {
+        rest.trim().parse::<f32>().ok().map(|secs| secs * 1000.0)
+    } else {
+        s.parse::<f32>().ok()
+    }
+}
+
+pub fn parse_timing_func(s: &str) -> Option<TimingFunction> {
+    let s = s.trim().to_ascii_lowercase();
+    match s.as_str() {
+        "linear" => Some(TimingFunction::Linear),
+        "ease" => Some(TimingFunction::Ease),
+        "ease-in" => Some(TimingFunction::EaseIn),
+        "ease-out" => Some(TimingFunction::EaseOut),
+        "ease-in-out" => Some(TimingFunction::EaseInOut),
+        _ if s.starts_with("cubic-bezier(") && s.ends_with(')') => {
+            let inner = &s[13..s.len() - 1];
+            let parts: Vec<f32> = inner
+                .split(',')
+                .filter_map(|p| p.trim().parse::<f32>().ok())
+                .collect();
+            if parts.len() == 4 {
+                Some(TimingFunction::CubicBezier(parts[0], parts[1], parts[2], parts[3]))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn parse_transition_value(raw: &str) -> Vec<TransitionSpec> {
+    let mut specs = Vec::new();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    for c in raw.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+
+    for part in parts {
+        let mut tokens = Vec::new();
+        let mut cur = String::new();
+        let mut p_depth = 0;
+        for c in part.chars() {
+            if c == '(' {
+                p_depth += 1;
+                cur.push(c);
+            } else if c == ')' {
+                if p_depth > 0 {
+                    p_depth -= 1;
+                }
+                cur.push(c);
+            } else if c.is_whitespace() && p_depth == 0 {
+                if !cur.is_empty() {
+                    tokens.push(cur.clone());
+                    cur.clear();
+                }
+            } else {
+                cur.push(c);
+            }
+        }
+        if !cur.is_empty() {
+            tokens.push(cur);
+        }
+
+        if tokens.is_empty() {
+            continue;
+        }
+        let mut prop = "all".to_string();
+        let mut duration_ms = 0.0f32;
+        let mut delay_ms = 0.0f32;
+        let mut timing_fn = TimingFunction::Ease;
+        let mut found_duration = false;
+
+        for token in &tokens {
+            if let Some(time) = parse_time_to_ms(token) {
+                if token.ends_with('s') || token.ends_with("ms") || token.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                    if !found_duration {
+                        duration_ms = time;
+                        found_duration = true;
+                    } else {
+                        delay_ms = time;
+                    }
+                }
+            } else if let Some(tf) = parse_timing_func(token) {
+                timing_fn = tf;
+            } else if !token.is_empty() {
+                prop = token.to_ascii_lowercase();
+            }
+        }
+
+        specs.push(TransitionSpec {
+            property: prop,
+            duration_ms,
+            timing_function: timing_fn,
+            delay_ms,
+        });
+    }
+
+    if specs.is_empty() {
+        specs.push(TransitionSpec {
+            property: "all".to_string(),
+            duration_ms: 0.0,
+            timing_function: TimingFunction::Ease,
+            delay_ms: 0.0,
+        });
+    }
+
+    specs
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub fn parse_css(input: &str) -> Stylesheet {
@@ -1677,6 +1890,14 @@ pub fn parse_css(input: &str) -> Stylesheet {
 /// Parse a single CSS value expression from a raw string (used for custom property resolution).
 pub fn parse_single_value(s: &str) -> Value {
     Parser::new(s.trim()).parse_value()
+}
+
+/// Parse a CSS color string (#hex, rgb/rgba, hsl/hsla, named color).
+pub fn parse_color(input: &str) -> Option<Color> {
+    match Parser::new(input.trim()).parse_value() {
+        Value::Color(c) => Some(c),
+        _ => None,
+    }
 }
 
 /// Parse a bare declaration block — `"color: red; margin: 0"` — with no

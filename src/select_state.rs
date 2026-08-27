@@ -9,7 +9,7 @@
 
 use crate::dom::{ElementData, Node};
 use crate::forms;
-use crate::script::dom_api::{self, NodePath};
+use crate::script::dom_api;
 
 #[derive(Debug, Clone)]
 struct OptionState {
@@ -117,6 +117,7 @@ fn option_value(node: &Node, element: &ElementData) -> String {
 mod tests {
     use super::*;
     use crate::html::parse_html;
+    use crate::script::dom_api::NodePath;
 
     fn select(dom: &Node) -> NodePath {
         dom_api::query_selector(dom, &[], "select").expect("select")

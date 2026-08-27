@@ -23,6 +23,8 @@ pub enum BinOp {
 pub enum LogicalOp {
     And,
     Or,
+    /// `??` — returns the RHS only if the LHS is `null` or `undefined`.
+    NullishCoalescing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,6 +50,18 @@ pub enum UpdateOp {
     Dec,
 }
 
+/// A destructuring pattern for `let { a, b } = …` and `let [x, y] = …`.
+#[derive(Debug, Clone)]
+pub enum DestructPat {
+    /// `{ a, b: alias, c }` — each entry is `(key, binding_name)`.
+    Object(Vec<(String, String)>),
+    /// `[a, b, ...rest]` — names in order, with an optional rest element.
+    Array {
+        items: Vec<Option<String>>,
+        rest: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub enum Expr {
     Num(f32),
@@ -58,6 +72,15 @@ pub enum Expr {
     Ident(String),
     Array(Vec<Expr>),
     Object(Vec<(String, Expr)>),
+    /// `` `hello ${name}, you are ${age}` ``
+    TemplateLiteral {
+        /// Static string parts (one more than `exprs`).
+        parts: Vec<String>,
+        /// Interpolated expressions.
+        exprs: Vec<Expr>,
+    },
+    /// `...expr` — spread in an array literal, object literal, or call.
+    Spread(Box<Expr>),
     /// `obj.prop`
     Member {
         obj: Box<Expr>,
@@ -67,6 +90,21 @@ pub enum Expr {
     Index {
         obj: Box<Expr>,
         index: Box<Expr>,
+    },
+    /// `obj?.prop`
+    OptionalMember {
+        obj: Box<Expr>,
+        prop: String,
+    },
+    /// `obj?.[index]`
+    OptionalIndex {
+        obj: Box<Expr>,
+        index: Box<Expr>,
+    },
+    /// `obj?.(args)`
+    OptionalCall {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
     },
     Call {
         callee: Box<Expr>,
@@ -81,7 +119,7 @@ pub enum Expr {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
     },
-    /// `&&` / `||` — short-circuiting, so kept separate from `Binary`.
+    /// `&&` / `||` / `??` — short-circuiting, so kept separate from `Binary`.
     Logical {
         op: LogicalOp,
         lhs: Box<Expr>,
@@ -121,6 +159,11 @@ pub enum Stmt {
         name: String,
         init: Option<Expr>,
     },
+    /// `let { a, b } = expr;` or `let [x, y] = expr;`
+    DestructDecl {
+        pattern: DestructPat,
+        init: Expr,
+    },
     FnDecl {
         name: String,
         params: Vec<String>,
@@ -148,6 +191,12 @@ pub enum Stmt {
         iterable: Expr,
         body: Vec<Stmt>,
     },
+    /// `for (const key in obj) { … }`
+    ForIn {
+        name: String,
+        target: Expr,
+        body: Vec<Stmt>,
+    },
     Return(Option<Expr>),
     Break,
     Continue,
@@ -162,3 +211,4 @@ pub enum Stmt {
         finally: Option<Vec<Stmt>>,
     },
 }
+

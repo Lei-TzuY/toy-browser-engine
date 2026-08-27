@@ -185,6 +185,7 @@ pub enum HostObject {
     Response(ResponseData),
     AbortController(Rc<AbortState>),
     AbortSignal(Rc<AbortState>),
+    CanvasRenderingContext2D(Rc<RefCell<crate::canvas::CanvasContext2D>>),
 }
 
 impl HostObject {
@@ -196,6 +197,7 @@ impl HostObject {
             HostObject::Response(_) => "Response",
             HostObject::AbortController(_) => "AbortController",
             HostObject::AbortSignal(_) => "AbortSignal",
+            HostObject::CanvasRenderingContext2D(_) => "CanvasRenderingContext2D",
         }
     }
 

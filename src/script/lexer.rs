@@ -4,8 +4,8 @@
 //
 //  Converts source text into a flat `Vec<Tok>`.  Handles line and
 //  block comments, single/double-quoted strings with escapes,
-//  numeric literals, identifiers/keywords, and the operator set
-//  understood by the parser.
+//  numeric literals, identifiers/keywords, template literals, and
+//  the operator set understood by the parser.
 //
 //  Regular-expression literals are not supported, so `/` is always
 //  division (or the start of a comment) — which keeps the lexer
@@ -29,6 +29,7 @@ pub enum Tok {
     While,
     For,
     Of,
+    In,
     Break,
     Continue,
     Throw,
@@ -44,10 +45,20 @@ pub enum Tok {
 
     // Punctuation
     Dot,
+    DotDotDot,
     Comma,
     Semi,
     Colon,
     Question,
+    QuestionQuestion,
+    QuestionDot,
+
+    // Template literals
+    /// A part of a template literal before a `${` interpolation.
+    TemplatePart(String),
+    /// The final part of a template literal (after the last `}`, or the
+    /// whole string if there are no interpolations).
+    TemplateEnd(String),
     LParen,
     RParen,
     LBrace,
@@ -109,6 +120,42 @@ impl Lexer {
         loop {
             let tok = self.next_token();
             let done = tok == Tok::Eof;
+            // Template literals: a `TemplatePart` means there is a `${…}`
+            // interpolation ahead. Lex the expression tokens normally until
+            // the matching `}`, then continue the template.
+            if let Tok::TemplatePart(_) = &tok {
+                out.push(tok);
+                let mut depth = 1u32;
+                loop {
+                    let inner = self.next_token();
+                    if inner == Tok::Eof {
+                        out.push(Tok::TemplateEnd(String::new()));
+                        out.push(Tok::Eof);
+                        return out;
+                    }
+                    match &inner {
+                        Tok::LBrace => depth += 1,
+                        Tok::RBrace => {
+                            depth -= 1;
+                            if depth == 0 {
+                                // End of interpolation — continue the template.
+                                let cont = self.lex_template_continuation();
+                                let is_end = matches!(&cont, Tok::TemplateEnd(_));
+                                out.push(cont);
+                                if is_end {
+                                    break;
+                                }
+                                // Another TemplatePart → another interpolation follows.
+                                depth = 1;
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+                    out.push(inner);
+                }
+                continue;
+            }
             out.push(tok);
             if done {
                 break;
@@ -179,17 +226,37 @@ impl Lexer {
         if c.is_ascii_digit() || (c == '.' && self.peek_at(1).is_ascii_digit()) {
             return self.lex_number();
         }
-        if c == '"' || c == '\'' || c == '`' {
+        if c == '"' || c == '\'' {
             return self.lex_string();
+        }
+        if c == '`' {
+            return self.lex_template();
         }
 
         self.bump();
         match c {
-            '.' => Tok::Dot,
+            '.' => {
+                if self.peek() == '.' && self.peek_at(1) == '.' {
+                    self.bump();
+                    self.bump();
+                    Tok::DotDotDot
+                } else {
+                    Tok::Dot
+                }
+            }
             ',' => Tok::Comma,
             ';' => Tok::Semi,
             ':' => Tok::Colon,
-            '?' => Tok::Question,
+            '?' => {
+                if self.eat('?') {
+                    Tok::QuestionQuestion
+                } else if self.peek() == '.' && !self.peek_at(1).is_ascii_digit() {
+                    self.bump();
+                    Tok::QuestionDot
+                } else {
+                    Tok::Question
+                }
+            }
             '(' => Tok::LParen,
             ')' => Tok::RParen,
             '{' => Tok::LBrace,
@@ -296,6 +363,7 @@ impl Lexer {
             "while" => Tok::While,
             "for" => Tok::For,
             "of" => Tok::Of,
+            "in" => Tok::In,
             "break" => Tok::Break,
             "continue" => Tok::Continue,
             "throw" => Tok::Throw,
@@ -337,14 +405,7 @@ impl Lexer {
         while self.peek() != '\0' && self.peek() != quote {
             let c = self.bump();
             if c == '\\' {
-                let esc = self.bump();
-                s.push(match esc {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    '0' => '\0',
-                    other => other,
-                });
+                s.push(self.lex_escape());
             } else {
                 s.push(c);
             }
@@ -353,6 +414,60 @@ impl Lexer {
             self.bump();
         }
         Tok::Str(s)
+    }
+
+    /// Lex a template literal starting at the opening backtick.
+    ///
+    /// Returns `TemplatePart(s)` for each `...${` segment and
+    /// `TemplateEnd(s)` for the final segment before the closing backtick.
+    /// When there are no interpolations the whole thing is a single
+    /// `TemplateEnd`.
+    fn lex_template(&mut self) -> Tok {
+        self.bump(); // opening backtick
+        self.lex_template_segment()
+    }
+
+    /// Resume lexing a template literal after `${expr}`.
+    ///
+    /// Called by the public `tokenize` loop whenever it has just emitted the
+    /// tokens for an interpolation and needs the next template segment.
+    fn lex_template_continuation(&mut self) -> Tok {
+        self.lex_template_segment()
+    }
+
+    fn lex_template_segment(&mut self) -> Tok {
+        let mut s = String::new();
+        loop {
+            match self.peek() {
+                '\0' | '`' => {
+                    if self.peek() == '`' {
+                        self.bump();
+                    }
+                    return Tok::TemplateEnd(s);
+                }
+                '$' if self.peek_at(1) == '{' => {
+                    self.bump(); // $
+                    self.bump(); // {
+                    return Tok::TemplatePart(s);
+                }
+                '\\' => {
+                    self.bump();
+                    s.push(self.lex_escape());
+                }
+                _ => s.push(self.bump()),
+            }
+        }
+    }
+
+    fn lex_escape(&mut self) -> char {
+        let esc = self.bump();
+        match esc {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '0' => '\0',
+            other => other,
+        }
     }
 }
 

@@ -127,7 +127,7 @@ fn default_display(node_type: &NodeType) -> Display {
             "table" => Display::Table,
             "tr" => Display::TableRow,
             "td" | "th" => Display::TableCell,
-            "button" | "input" | "select" | "textarea" | "img" => Display::InlineBlock,
+            "button" | "input" | "select" | "textarea" | "img" | "canvas" => Display::InlineBlock,
             "head" | "script" | "style" | "meta" | "link" | "title" => Display::None,
             _ => Display::Inline,
         },

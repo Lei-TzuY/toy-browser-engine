@@ -596,7 +596,7 @@ fn render_image_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f3
     let NodeType::Element(ref element) = styled.node.node_type else {
         return;
     };
-    if element.tag_name != "img" {
+    if element.tag_name != "img" && element.tag_name != "canvas" {
         return;
     }
     let dest = lb.dimensions.content;
@@ -622,6 +622,10 @@ fn render_image_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f3
             source,
             opacity,
         });
+        return;
+    }
+
+    if element.tag_name == "canvas" {
         return;
     }
 

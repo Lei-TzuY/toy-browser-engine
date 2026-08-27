@@ -8,6 +8,7 @@
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
 pub mod browser;
+pub mod canvas;
 pub mod css;
 pub mod document;
 pub mod dom;
@@ -25,9 +26,11 @@ pub mod script;
 pub mod select_state;
 pub mod style;
 pub mod text;
+pub mod transition;
 pub mod validation;
 
 pub use browser::Browser;
 pub use document::{Document, PointerState};
 pub use html::extract_inline_styles;
 pub use net::{MemoryLoader, ResourceLoader, Url};
+pub use transition::TransitionManager;
