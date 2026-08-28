@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{Color, ColorStop, ConicGradient, LinearGradient, RadialGradient, Unit, Value};
+use crate::css::parser::{Color, ColorStop, ConicGradient, FilterFunction, LinearGradient, RadialGradient, Unit, Value};
 use crate::dom::NodeType;
 use crate::image::RasterImage;
 use crate::layout::{BoxType, LayoutBox, ObjectFit, Rect, TextFragment};
@@ -38,6 +38,8 @@ pub enum DisplayCommand {
     RadialGradient(RadialGradient, Rect, f32),
     /// Conic gradient background: (gradient spec, rect, opacity).
     ConicGradient(ConicGradient, Rect, f32),
+    /// Backdrop filter: (filters, rect).
+    BackdropFilter(Vec<FilterFunction>, Rect),
     /// A decoded bitmap: `source` (in image pixels) is scaled onto `dest`.
     Image {
         image: Rc<RasterImage>,
@@ -85,6 +87,10 @@ impl DisplayCommand {
                 rect.y += dy;
             }
             DisplayCommand::ConicGradient(_, rect, _) => {
+                rect.x += dx;
+                rect.y += dy;
+            }
+            DisplayCommand::BackdropFilter(_, rect) => {
                 rect.x += dx;
                 rect.y += dy;
             }
@@ -317,6 +323,7 @@ fn render_list_marker(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
         font_size,
         underline: false,
         strikethrough: false,
+        text_shadow: None,
     };
     list.push(DisplayCommand::Text(frag));
 }
@@ -487,6 +494,7 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
             font_size,
             underline: false,
             strikethrough: false,
+            text_shadow: None,
         }));
     }
 
@@ -657,6 +665,7 @@ fn render_image_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f3
         font_size,
         underline: false,
         strikethrough: false,
+        text_shadow: None,
     }));
 }
 
@@ -735,8 +744,19 @@ fn contain_rect(image: &RasterImage, dest: Rect) -> Rect {
 }
 
 fn render_text_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    let box_shadow = styled_node(lb).and_then(|s| s.text_shadow());
     for line in &lb.line_boxes {
         for fragment in &line.fragments {
+            let shadow = fragment.text_shadow.as_ref().or(box_shadow.as_ref());
+            if let Some(sh) = shadow {
+                let mut sf = fragment.clone();
+                sf.rect.x += sh.offset_x;
+                sf.rect.y += sh.offset_y;
+                sf.baseline += sh.offset_y;
+                sf.color = apply_opacity(sh.color, opacity);
+                sf.text_shadow = None;
+                list.push(DisplayCommand::Text(sf));
+            }
             let mut f = fragment.clone();
             f.color = apply_opacity(f.color, opacity);
             list.push(DisplayCommand::Text(f));
@@ -757,6 +777,11 @@ fn get_border_radius(lb: &LayoutBox) -> f32 {
 }
 
 fn render_background_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    // Backdrop filter (filters pixels behind this element's border-box)
+    if let Some(Value::Filter(filters)) = styled_node(lb).and_then(|s| s.value("backdrop-filter")) {
+        list.push(DisplayCommand::BackdropFilter(filters.clone(), lb.dimensions.border_box()));
+    }
+
     // Box shadow rendered first underneath background
     if let Some(Value::BoxShadow(bs)) = styled_node(lb).and_then(|s| s.value("box-shadow")) {
         list.push(DisplayCommand::BoxShadow {
@@ -974,6 +999,9 @@ impl Canvas {
             }
             DisplayCommand::ConicGradient(grad, rect, opacity) => {
                 self.paint_conic_gradient(grad, *rect, *opacity);
+            }
+            DisplayCommand::BackdropFilter(filters, rect) => {
+                self.apply_backdrop_filter(filters, *rect);
             }
             DisplayCommand::BoxShadow {
                 rect,
@@ -1217,6 +1245,111 @@ impl Canvas {
                     continue;
                 }
                 self.blend_pixel(x, y, Color { a, ..color }, a);
+            }
+        }
+    }
+
+    fn apply_backdrop_filter(&mut self, filters: &[FilterFunction], rect: Rect) {
+        if filters.is_empty() {
+            return;
+        }
+        let x0 = clamp(rect.x as i32, 0, self.width as i32);
+        let y0 = clamp(rect.y as i32, 0, self.height as i32);
+        let x1 = clamp((rect.x + rect.width) as i32, 0, self.width as i32);
+        let y1 = clamp((rect.y + rect.height) as i32, 0, self.height as i32);
+
+        for filter in filters {
+            match filter {
+                FilterFunction::Grayscale(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            let r = self.pixels[idx] as f32;
+                            let g = self.pixels[idx + 1] as f32;
+                            let b = self.pixels[idx + 2] as f32;
+                            let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                            self.pixels[idx] = (r + (lum - r) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = (g + (lum - g) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = (b + (lum - b) * amt).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Brightness(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            self.pixels[idx] = (self.pixels[idx] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = (self.pixels[idx + 1] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = (self.pixels[idx + 2] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Contrast(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            let r = self.pixels[idx] as f32;
+                            let g = self.pixels[idx + 1] as f32;
+                            let b = self.pixels[idx + 2] as f32;
+                            self.pixels[idx] = ((r - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = ((g - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = ((b - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Invert(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            let r = self.pixels[idx] as f32;
+                            let g = self.pixels[idx + 1] as f32;
+                            let b = self.pixels[idx + 2] as f32;
+                            self.pixels[idx] = (r + (255.0 - 2.0 * r) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = (g + (255.0 - 2.0 * g) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = (b + (255.0 - 2.0 * b) * amt).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Blur(px) => {
+                    let radius = (*px).round() as i32;
+                    if radius > 0 {
+                        let w = self.width as i32;
+                        let h = self.height as i32;
+                        let temp = self.pixels.clone();
+                        for y in y0..y1 {
+                            for x in x0..x1 {
+                                let mut r_sum = 0u32;
+                                let mut g_sum = 0u32;
+                                let mut b_sum = 0u32;
+                                let mut count = 0u32;
+                                for dy in -radius..=radius {
+                                    for dx in -radius..=radius {
+                                        let nx = x + dx;
+                                        let ny = y + dy;
+                                        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+                                            let idx = (ny as usize * self.width + nx as usize) * 3;
+                                            r_sum += temp[idx] as u32;
+                                            g_sum += temp[idx + 1] as u32;
+                                            b_sum += temp[idx + 2] as u32;
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                                if count > 0 {
+                                    let out_idx = (y as usize * self.width + x as usize) * 3;
+                                    self.pixels[out_idx] = (r_sum / count) as u8;
+                                    self.pixels[out_idx + 1] = (g_sum / count) as u8;
+                                    self.pixels[out_idx + 2] = (b_sum / count) as u8;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

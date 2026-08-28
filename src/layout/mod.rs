@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{CalcExpr, Color, Unit, Value};
+use crate::css::parser::{CalcExpr, Color, TextShadow, Unit, Value};
 use crate::dom::{ElementData, ElementId, NodeType};
 use crate::image::RasterImage;
 use crate::style::{Display, Position, StyledNode};
@@ -104,6 +104,7 @@ pub struct TextFragment {
     pub font_size: f32,
     pub underline: bool,
     pub strikethrough: bool,
+    pub text_shadow: Option<TextShadow>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +152,7 @@ struct TextStyle {
     underline: bool,
     strikethrough: bool,
     text_transform: TextTransform,
+    text_shadow: Option<TextShadow>,
 }
 
 impl Default for TextStyle {
@@ -163,6 +165,7 @@ impl Default for TextStyle {
             underline: false,
             strikethrough: false,
             text_transform: TextTransform::None,
+            text_shadow: None,
         }
     }
 }
@@ -2615,6 +2618,10 @@ fn text_style_for_node(node: &StyledNode, inherited: TextStyle) -> TextStyle {
         },
         _ => inherited.text_transform,
     };
+    let text_shadow = match node.value("text-shadow") {
+        Some(Value::TextShadow(ts)) => Some(*ts),
+        _ => inherited.text_shadow,
+    };
     TextStyle {
         color,
         font_size,
@@ -2623,6 +2630,7 @@ fn text_style_for_node(node: &StyledNode, inherited: TextStyle) -> TextStyle {
         underline,
         strikethrough,
         text_transform,
+        text_shadow,
     }
 }
 
@@ -2814,6 +2822,7 @@ fn add_fragment(line: &mut OpenLine, text: String, style: TextStyle, x: f32) {
             && previous.color == style.color
             && previous.underline == style.underline
             && previous.strikethrough == style.strikethrough
+            && previous.text_shadow == style.text_shadow
             && gap >= -0.5
             && gap <= space_width + 0.5;
         if continues_run {
@@ -2844,6 +2853,7 @@ fn add_fragment(line: &mut OpenLine, text: String, style: TextStyle, x: f32) {
         font_size: style.font_size,
         underline: style.underline,
         strikethrough: style.strikethrough,
+        text_shadow: style.text_shadow,
     });
     line.width += width;
     line.ascent = line.ascent.max(ascent);
@@ -3007,6 +3017,7 @@ fn number_value(value: &Value) -> f32 {
         Value::RadialGradient(_) => 0.0,
         Value::ConicGradient(_) => 0.0,
         Value::BoxShadow(_) => 0.0,
+        Value::TextShadow(_) => 0.0,
         Value::Transform(_) => 0.0,
         Value::Transition(_) => 0.0,
         Value::Animation(_) => 0.0,

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use crate::css::parser::{
     parse_declaration_block, parse_single_value, Combinator, Declaration, PseudoClass, Selector,
-    SelectorPart, Stylesheet, Unit, Value,
+    SelectorPart, Stylesheet, TextShadow, Unit, Value,
 };
 use crate::dom::{ElementData, Node, NodeType};
 
@@ -43,6 +43,7 @@ const INHERITED: &[&str] = &[
     "white-space",
     "visibility",
     "cursor",
+    "text-shadow",
     "list-style-type",
     "list-style-position",
 ];
@@ -155,6 +156,13 @@ impl<'a> StyledNode<'a> {
                     s.trim().parse::<f32>().ok().filter(|&r| r > 0.0)
                 }
             }
+            _ => None,
+        }
+    }
+
+    pub fn text_shadow(&self) -> Option<TextShadow> {
+        match self.value("text-shadow") {
+            Some(Value::TextShadow(ts)) => Some(ts.clone()),
             _ => None,
         }
     }

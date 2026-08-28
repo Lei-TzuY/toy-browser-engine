@@ -156,6 +156,15 @@ pub struct ConicGradient {
     pub stops: Vec<ColorStop>,
 }
 
+/// A parsed `text-shadow` value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextShadow {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub color: Color,
+}
+
 // ── Pseudo-class types ────────────────────────────────────────────────────────
 
 /// The `An+B` expression used in `:nth-child(An+B)` and related selectors.
@@ -488,6 +497,7 @@ pub enum Value {
     RadialGradient(RadialGradient),
     ConicGradient(ConicGradient),
     BoxShadow(BoxShadow),
+    TextShadow(TextShadow),
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
     Animation(Vec<AnimationSpec>),
@@ -534,6 +544,7 @@ impl Value {
             Value::RadialGradient(_) => "radial-gradient(...)".to_string(),
             Value::ConicGradient(_) => "conic-gradient(...)".to_string(),
             Value::BoxShadow(_) => "box-shadow(...)".to_string(),
+            Value::TextShadow(_) => "text-shadow(...)".to_string(),
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
             Value::Animation(_) => "animation(...)".to_string(),
@@ -1636,6 +1647,30 @@ impl Parser {
                     }),
                 )]
             }
+            "text-shadow" => {
+                let values = self.parse_shorthand_values(first_value);
+                let mut lengths = Vec::new();
+                let mut color = Color::rgba(0, 0, 0, 128);
+                for v in values {
+                    match v {
+                        Value::Length(n, _) | Value::Number(n) => lengths.push(n),
+                        Value::Color(c) => color = c,
+                        _ => {}
+                    }
+                }
+                let offset_x = lengths.first().copied().unwrap_or(0.0);
+                let offset_y = lengths.get(1).copied().unwrap_or(0.0);
+                let blur_radius = lengths.get(2).copied().unwrap_or(0.0);
+                vec![Declaration::new(
+                    name,
+                    Value::TextShadow(TextShadow {
+                        offset_x,
+                        offset_y,
+                        blur_radius,
+                        color,
+                    }),
+                )]
+            }
             "grid-template-columns" | "grid-template-rows" => {
                 let values = self.parse_shorthand_values(first_value);
                 let raw_strs: Vec<String> = values
@@ -1756,7 +1791,7 @@ impl Parser {
                 let time_ms = parse_time_to_ms(&raw).unwrap_or(0.0);
                 vec![Declaration::new(name, Value::Number(time_ms))]
             }
-            "filter" => {
+            "filter" | "backdrop-filter" => {
                 let mut raw = match &first_value {
                     Value::Keyword(s) => s.clone(),
                     Value::Length(n, Unit::Px) => format!("{}px", n),
@@ -2403,11 +2438,11 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "color" | "background" | "background-color" => true,
         "opacity" | "transform" | "transition" | "animation" | "box-shadow" | "filter" => true,
         "grid-template-columns" | "grid-template-rows" | "grid-column" | "grid-row" | "gap" | "row-gap" | "column-gap" => true,
-        "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" => true,
+        "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" | "text-shadow" => true,
         "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
         "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
-        "aspect-ratio" => true,
+        "aspect-ratio" | "backdrop-filter" => true,
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }
