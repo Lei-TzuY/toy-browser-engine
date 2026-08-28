@@ -13,14 +13,16 @@ use crate::net::{FetchCompletion, FetchId, FetchRequest, FetchResponse, NetworkB
 /// Shared cookie storage for one browser session.
 pub type CookieJarRef = Rc<RefCell<CookieJar>>;
 
-/// Adds RFC 6265 cookie send/store behavior around any network backend.
+/// Adds RFC 6265bis cookie send/store behavior around any network backend.
 ///
 /// The wrapped backend remains responsible only for transport. This decorator
 /// owns browser policy at the request/response boundary:
 ///
 /// - outgoing HTTP(S) requests receive a jar-derived `Cookie` header;
 /// - script-provided `Cookie` values are discarded rather than trusted;
-/// - every `Set-Cookie` response line is parsed independently and stored;
+/// - every `Set-Cookie` response line is processed independently with the
+///   response URL retained as storage context;
+/// - insecure responses cannot overlay existing Secure cookies;
 /// - `Set-Cookie` is removed before the response reaches the script layer;
 /// - cancellation, readiness and waiting semantics are delegated unchanged.
 ///
@@ -95,9 +97,10 @@ impl CookieNetwork {
         if !values.is_empty() {
             let mut jar = self.jar.borrow_mut();
             for value in values {
-                if let Some(cookie) = CookieJar::parse_set_cookie(&value, &response.url, now_ms) {
-                    jar.store(cookie, now_ms);
-                }
+                // The response URL is deliberately passed through to storage,
+                // not discarded after parsing: secure-cookie integrity depends
+                // on whether the state arrived over a secure connection.
+                jar.store_set_cookie(&value, &response.url, now_ms);
             }
         }
 
