@@ -21,8 +21,9 @@
 
 use std::rc::Rc;
 
-use crate::net::fetch::{FetchError, FetchResponse, HeaderMap, Method, Origin};
+use crate::net::fetch::{FetchError, FetchResponse, HeaderMap, Method};
 use crate::net::Url;
+use crate::security_origin::SecurityOrigin;
 
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, RequestData, ResponseData,
@@ -33,9 +34,10 @@ use super::promise::{self, PromiseRef};
 
 /// The schemes a page may fetch, on top of its own.
 ///
-/// An allowlist rather than a denylist: `javascript:`, `data:` and anything
-/// else the engine has not thought about are refused by default.
-const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
+/// `data:` is self-contained and does not consult another origin, so it is
+/// explicitly allowed. The allowlist remains closed for `javascript:`,
+/// `about:` and schemes the engine has not deliberately implemented.
+const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file", "data"];
 
 /// What the runtime keeps for one request it is waiting on.
 ///
@@ -134,10 +136,14 @@ impl JsRuntime {
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
             return Err(FetchError::UnsupportedScheme(scheme.to_string()));
         }
-        if !Origin::of(&self.url).can_fetch(&request.url) {
+        // A data URL is a self-contained resource rather than a request to a
+        // different origin. All other supported schemes use the explicit
+        // security-origin model so opaque URLs never acquire local privileges.
+        let origin = SecurityOrigin::of(&self.url);
+        if scheme != "data" && !origin.can_fetch(&request.url) {
             return Err(FetchError::Blocked(format!(
                 "{} may not fetch {}",
-                Origin::of(&self.url).header_value(),
+                origin.header_value(),
                 request.url
             )));
         }
