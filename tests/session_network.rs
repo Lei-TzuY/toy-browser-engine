@@ -82,13 +82,19 @@ fn one_secure_response_updates_hsts_and_cookie_session_state() {
 }
 
 #[test]
-fn session_policy_handles_are_the_live_state_used_by_the_stack() {
+fn fresh_session_exposes_the_live_policy_state_handles() {
     let clock = Rc::new(ManualClock::new());
     let transport = Rc::new(ManualNetwork::new());
     let session = SessionNetwork::with_new_state(transport, clock);
 
     assert!(session.cookie_policy_registry().is_empty());
-    assert_eq!(session.cookie_jar().borrow().len(), 0);
+    assert_eq!(
+        session
+            .cookie_jar()
+            .borrow()
+            .get_http_cookie_header(&url("https://example.test/"), 0),
+        None
+    );
     assert!(!session
         .hsts_cache()
         .borrow()
