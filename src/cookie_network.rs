@@ -4,7 +4,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::fmt;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use crate::cookie::CookieJar;
@@ -58,6 +59,134 @@ impl CookieRequestPolicy {
     }
 }
 
+/// Cloneable handle to browser-owned per-request cookie policy.
+///
+/// The registry is intentionally separate from [`CookieNetwork`]. A document
+/// already receives the session's [`CookieJarRef`] during bootstrap, so it can
+/// discover this handle from that same jar without downcasting its
+/// `Rc<dyn NetworkBackend>` or widening every Browser/Document constructor.
+#[derive(Clone, Default)]
+pub struct CookiePolicyRegistry {
+    policies: Rc<RefCell<HashMap<FetchId, CookieRequestPolicy>>>,
+}
+
+impl fmt::Debug for CookiePolicyRegistry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CookiePolicyRegistry")
+            .field("pending", &self.len())
+            .finish()
+    }
+}
+
+impl CookiePolicyRegistry {
+    pub fn new() -> CookiePolicyRegistry {
+        CookiePolicyRegistry::default()
+    }
+
+    /// Attach browser-owned cookie policy to an id before `NetworkBackend::start`.
+    /// Re-registering an id replaces its previous pending policy.
+    pub fn set(
+        &self,
+        id: FetchId,
+        policy: CookieRequestPolicy,
+    ) -> Option<CookieRequestPolicy> {
+        self.policies.borrow_mut().insert(id, policy)
+    }
+
+    pub fn remove(&self, id: FetchId) -> Option<CookieRequestPolicy> {
+        self.policies.borrow_mut().remove(&id)
+    }
+
+    pub fn get(&self, id: FetchId) -> Option<CookieRequestPolicy> {
+        self.policies.borrow().get(&id).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.policies.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.policies.borrow().is_empty()
+    }
+
+    pub fn clear(&self) {
+        self.policies.borrow_mut().clear();
+    }
+
+    fn downgrade(&self) -> Weak<RefCell<HashMap<FetchId, CookieRequestPolicy>>> {
+        Rc::downgrade(&self.policies)
+    }
+
+    fn ptr_eq(&self, other: &Rc<RefCell<HashMap<FetchId, CookieRequestPolicy>>>) -> bool {
+        Rc::ptr_eq(&self.policies, other)
+    }
+}
+
+/// One browsing thread may host several independent Browser sessions. Rc-based
+/// network/runtime state cannot cross threads, so a thread-local association is
+/// the natural scope and avoids global synchronization solely for discovery.
+///
+/// A vector is kept per jar rather than one slot: tests/embedders may layer two
+/// CookieNetwork decorators over the same jar. The newest live wrapper wins;
+/// dropping it reveals the previous live registry again.
+thread_local! {
+    static POLICY_REGISTRIES_BY_JAR: RefCell<
+        HashMap<usize, Vec<Weak<RefCell<HashMap<FetchId, CookieRequestPolicy>>>>>
+    > = RefCell::new(HashMap::new());
+}
+
+fn jar_identity(jar: &CookieJarRef) -> usize {
+    Rc::as_ptr(jar) as usize
+}
+
+fn publish_policy_registry(jar: &CookieJarRef, registry: &CookiePolicyRegistry) {
+    let key = jar_identity(jar);
+    POLICY_REGISTRIES_BY_JAR.with(|all| {
+        let mut all = all.borrow_mut();
+        let stack = all.entry(key).or_default();
+        stack.retain(|weak| weak.strong_count() > 0);
+        stack.push(registry.downgrade());
+    });
+}
+
+fn unpublish_policy_registry(jar: &CookieJarRef, registry: &CookiePolicyRegistry) {
+    let key = jar_identity(jar);
+    POLICY_REGISTRIES_BY_JAR.with(|all| {
+        let mut all = all.borrow_mut();
+        let remove_key = if let Some(stack) = all.get_mut(&key) {
+            stack.retain(|weak| {
+                let Some(candidate) = weak.upgrade() else {
+                    return false;
+                };
+                !registry.ptr_eq(&candidate)
+            });
+            stack.is_empty()
+        } else {
+            false
+        };
+        if remove_key {
+            all.remove(&key);
+        }
+    });
+}
+
+/// Find the CookieNetwork request-policy registry associated with this session
+/// jar on the current browsing thread.
+///
+/// Standalone Documents with an ordinary CookieJar return `None`, while a
+/// Browser-created Document can discover the exact policy registry used by its
+/// CookieNetwork solely from the jar it already shares with that session.
+pub fn policy_registry_for_jar(jar: &CookieJarRef) -> Option<CookiePolicyRegistry> {
+    let key = jar_identity(jar);
+    POLICY_REGISTRIES_BY_JAR.with(|all| {
+        let mut all = all.borrow_mut();
+        let stack = all.get_mut(&key)?;
+        stack.retain(|weak| weak.strong_count() > 0);
+        let policies = stack.last()?.upgrade()?;
+        Some(CookiePolicyRegistry { policies })
+    })
+}
+
 /// Adds RFC 6265bis cookie send/store behavior around any network backend.
 ///
 /// The wrapped backend remains responsible only for transport. This decorator
@@ -79,7 +208,7 @@ pub struct CookieNetwork {
     inner: Rc<dyn NetworkBackend>,
     jar: CookieJarRef,
     clock: Rc<dyn Clock>,
-    request_policies: RefCell<HashMap<FetchId, CookieRequestPolicy>>,
+    request_policies: CookiePolicyRegistry,
 }
 
 impl CookieNetwork {
@@ -88,11 +217,29 @@ impl CookieNetwork {
         jar: CookieJarRef,
         clock: Rc<dyn Clock>,
     ) -> CookieNetwork {
+        CookieNetwork::with_policy_registry(
+            inner,
+            jar,
+            clock,
+            CookiePolicyRegistry::new(),
+        )
+    }
+
+    /// Build a decorator around an existing registry. This is useful to a
+    /// Browser/session constructor that wants to retain the handle explicitly;
+    /// callers that do not need it can keep using [`CookieNetwork::new`].
+    pub fn with_policy_registry(
+        inner: Rc<dyn NetworkBackend>,
+        jar: CookieJarRef,
+        clock: Rc<dyn Clock>,
+        request_policies: CookiePolicyRegistry,
+    ) -> CookieNetwork {
+        publish_policy_registry(&jar, &request_policies);
         CookieNetwork {
             inner,
             jar,
             clock,
-            request_policies: RefCell::new(HashMap::new()),
+            request_policies,
         }
     }
 
@@ -108,28 +255,29 @@ impl CookieNetwork {
         &self.inner
     }
 
-    /// Attach browser-owned cookie policy to an id before `start` is called.
-    /// Re-registering an id replaces its previous pending policy.
+    pub fn policy_registry(&self) -> CookiePolicyRegistry {
+        self.request_policies.clone()
+    }
+
+    /// Backward-compatible convenience around the shared registry.
     pub fn set_request_policy(
         &self,
         id: FetchId,
         policy: CookieRequestPolicy,
     ) -> Option<CookieRequestPolicy> {
-        self.request_policies.borrow_mut().insert(id, policy)
+        self.request_policies.set(id, policy)
     }
 
-    /// Remove a pending policy without cancelling transport.
     pub fn clear_request_policy(&self, id: FetchId) -> Option<CookieRequestPolicy> {
-        self.request_policies.borrow_mut().remove(&id)
+        self.request_policies.remove(id)
     }
 
-    /// Number of explicitly registered policies waiting for completion/cancel.
     pub fn pending_policy_count(&self) -> usize {
-        self.request_policies.borrow().len()
+        self.request_policies.len()
     }
 
     pub fn request_policy(&self, id: FetchId) -> Option<CookieRequestPolicy> {
-        self.request_policies.borrow().get(&id).copied()
+        self.request_policies.get(id)
     }
 
     fn now_ms(&self) -> u64 {
@@ -138,17 +286,11 @@ impl CookieNetwork {
 
     fn policy_for_start(&self, id: FetchId, method: Method) -> CookieRequestPolicy {
         self.request_policies
-            .borrow()
-            .get(&id)
-            .copied()
+            .get(id)
             .unwrap_or_else(|| CookieRequestPolicy::same_site(method))
     }
 
-    fn prepare_request(
-        &self,
-        id: FetchId,
-        mut request: FetchRequest,
-    ) -> FetchRequest {
+    fn prepare_request(&self, id: FetchId, mut request: FetchRequest) -> FetchRequest {
         if !matches!(request.url.scheme(), "http" | "https") {
             return request;
         }
@@ -202,6 +344,12 @@ impl CookieNetwork {
     }
 }
 
+impl Drop for CookieNetwork {
+    fn drop(&mut self) {
+        unpublish_policy_registry(&self.jar, &self.request_policies);
+    }
+}
+
 impl NetworkBackend for CookieNetwork {
     fn start(&self, id: FetchId, request: FetchRequest) {
         self.inner.start(id, self.prepare_request(id, request));
@@ -210,7 +358,7 @@ impl NetworkBackend for CookieNetwork {
     fn poll(&self) -> Vec<FetchCompletion> {
         let mut completions = self.inner.poll();
         for completion in &mut completions {
-            let policy = self.request_policies.borrow_mut().remove(&completion.id);
+            let policy = self.request_policies.remove(completion.id);
             let credentials = policy
                 .map(|policy| policy.credentials)
                 .unwrap_or(CookieCredentials::Include);
@@ -222,7 +370,7 @@ impl NetworkBackend for CookieNetwork {
     }
 
     fn cancel(&self, id: FetchId) {
-        self.request_policies.borrow_mut().remove(&id);
+        self.request_policies.remove(id);
         self.inner.cancel(id);
     }
 
