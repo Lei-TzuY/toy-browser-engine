@@ -3,6 +3,7 @@
 // ============================================================
 
 use std::fmt;
+use std::net::IpAddr;
 use std::rc::Rc;
 
 use crate::eventloop::Clock;
@@ -57,6 +58,14 @@ impl Cookie {
         if self.host_only {
             return request_host == cookie_domain;
         }
+
+        // IP addresses are hosts, not registrable DNS suffixes. Treat both
+        // IPv4 and IPv6 literals as exact-only even for a Cookie that was
+        // manually constructed rather than parsed through CookieJar.
+        if request_host.parse::<IpAddr>().is_ok() || cookie_domain.parse::<IpAddr>().is_ok() {
+            return request_host == cookie_domain;
+        }
+
         domain_matches(&request_host, &cookie_domain)
     }
 
@@ -168,7 +177,10 @@ impl CookieJar {
     ///
     /// Cookies are only defined for HTTP(S) URLs here. `Domain` attributes are
     /// accepted only when they domain-match the response host, preventing a
-    /// server from planting cookies for an unrelated site.
+    /// server from planting cookies for an unrelated site. Modern secure-cookie
+    /// invariants are enforced here too, before a cookie can enter the jar:
+    /// `Secure` cannot be set over clear-text HTTP, `SameSite=None` requires
+    /// `Secure`, and the `__Secure-` / `__Host-` prefixes keep their guarantees.
     pub fn parse_set_cookie(header: &str, url: &Url, now_ms: u64) -> Option<Cookie> {
         if !matches!(url.scheme(), "http" | "https") {
             return None;
@@ -177,6 +189,8 @@ impl CookieJar {
         if origin_host.is_empty() {
             return None;
         }
+        let secure_origin = url.scheme() == "https";
+        let origin_is_ip = origin_host.parse::<IpAddr>().is_ok();
 
         let mut parts = header.split(';');
         let first = parts.next()?.trim();
@@ -224,11 +238,21 @@ impl CookieJar {
             };
 
             if attr_name.eq_ignore_ascii_case("Domain") && !attr_val.is_empty() {
-                let candidate = attr_val
-                    .trim_start_matches('.')
-                    .trim_end_matches('.')
-                    .to_ascii_lowercase();
+                let raw = attr_val.trim();
+                // A leading dot is legacy syntax and is ignored. A trailing
+                // dot is not equivalent to the canonical host and must not be
+                // normalized into a broader valid Domain attribute.
+                if raw.ends_with('.') {
+                    return None;
+                }
+                let candidate = raw.trim_start_matches('.').to_ascii_lowercase();
                 if candidate.is_empty() || !domain_matches(&origin_host, &candidate) {
+                    return None;
+                }
+                // Never interpret an IP literal as a DNS suffix. An explicit
+                // Domain on an IP is only acceptable when it is exactly the
+                // response host.
+                if origin_is_ip && candidate != origin_host {
                     return None;
                 }
                 domain = candidate;
@@ -244,7 +268,9 @@ impl CookieJar {
                     if secs <= 0 {
                         expires_at_ms = Some(0); // Immediately expired
                     } else {
-                        expires_at_ms = Some(now_ms.saturating_add((secs as u64) * 1000));
+                        expires_at_ms = Some(
+                            now_ms.saturating_add((secs as u64).saturating_mul(1000)),
+                        );
                     }
                 }
             } else if attr_name.eq_ignore_ascii_case("Secure") {
@@ -260,6 +286,24 @@ impl CookieJar {
                     same_site = SameSite::Lax;
                 }
             }
+        }
+
+        // Secure cookies cannot be established over a non-secure channel.
+        if secure && !secure_origin {
+            return None;
+        }
+        // Modern browsers require SameSite=None cookies to be Secure.
+        if same_site == SameSite::None && !secure {
+            return None;
+        }
+        // Cookie name prefixes are case-sensitive by design.
+        if name.starts_with("__Secure-") && (!secure || !secure_origin) {
+            return None;
+        }
+        if name.starts_with("__Host-")
+            && (!secure || !secure_origin || !host_only || path != "/")
+        {
+            return None;
         }
 
         Some(Cookie {
@@ -366,13 +410,15 @@ impl CookieJar {
 
 fn domain_matches(host: &str, domain: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let domain = domain
-        .trim_start_matches('.')
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
+    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
     if host.is_empty() || domain.is_empty() {
         return false;
     }
+
+    if host.parse::<IpAddr>().is_ok() || domain.parse::<IpAddr>().is_ok() {
+        return host == domain;
+    }
+
     host == domain
         || (host.ends_with(&domain)
             && host
