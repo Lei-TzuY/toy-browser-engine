@@ -1,0 +1,224 @@
+// ============================================================
+//  referrer_policy.rs — Referrer-Policy parsing and computation
+// ============================================================
+
+use crate::net::Url;
+
+/// The Referrer Policy values implemented by the browser engine.
+///
+/// `StrictOriginWhenCrossOrigin` is the modern browser default.  The enum is
+/// deliberately network/toolkit neutral so document, Fetch and navigation
+/// code can share one policy implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferrerPolicy {
+    NoReferrer,
+    NoReferrerWhenDowngrade,
+    Origin,
+    OriginWhenCrossOrigin,
+    SameOrigin,
+    StrictOrigin,
+    StrictOriginWhenCrossOrigin,
+    UnsafeUrl,
+}
+
+impl Default for ReferrerPolicy {
+    fn default() -> Self {
+        Self::StrictOriginWhenCrossOrigin
+    }
+}
+
+impl ReferrerPolicy {
+    /// Parse one Referrer-Policy token. Unknown and empty values are ignored.
+    pub fn parse_token(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "no-referrer" => Some(Self::NoReferrer),
+            "no-referrer-when-downgrade" => Some(Self::NoReferrerWhenDowngrade),
+            "origin" => Some(Self::Origin),
+            "origin-when-cross-origin" => Some(Self::OriginWhenCrossOrigin),
+            "same-origin" => Some(Self::SameOrigin),
+            "strict-origin" => Some(Self::StrictOrigin),
+            "strict-origin-when-cross-origin" => Some(Self::StrictOriginWhenCrossOrigin),
+            "unsafe-url" => Some(Self::UnsafeUrl),
+            _ => None,
+        }
+    }
+
+    /// Parse a Referrer-Policy HTTP header value.
+    ///
+    /// The standard allows a comma-separated policy list so newer tokens can
+    /// follow older fallbacks. User agents select the last token they
+    /// understand, therefore unknown entries do not erase an earlier valid
+    /// policy.
+    pub fn from_header(value: &str) -> Option<Self> {
+        value.split(',').filter_map(Self::parse_token).last()
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoReferrer => "no-referrer",
+            Self::NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
+            Self::Origin => "origin",
+            Self::OriginWhenCrossOrigin => "origin-when-cross-origin",
+            Self::SameOrigin => "same-origin",
+            Self::StrictOrigin => "strict-origin",
+            Self::StrictOriginWhenCrossOrigin => "strict-origin-when-cross-origin",
+            Self::UnsafeUrl => "unsafe-url",
+        }
+    }
+
+    /// Compute the value suitable for an outgoing HTTP `Referer` header.
+    ///
+    /// `None` means the header must be omitted. Fragment identifiers are never
+    /// exposed. This engine's URL type already discards URL credentials while
+    /// parsing, so the resulting value is also credential-free.
+    pub fn compute(self, source: &Url, target: &Url) -> Option<String> {
+        if !is_http_family(source) || !is_http_family(target) || source.host().is_empty() {
+            return None;
+        }
+
+        let same = same_origin(source, target);
+        let downgrade = is_downgrade(source, target);
+
+        match self {
+            Self::NoReferrer => None,
+            Self::NoReferrerWhenDowngrade => {
+                if downgrade { None } else { full_referrer(source) }
+            }
+            Self::Origin => origin_referrer(source),
+            Self::OriginWhenCrossOrigin => {
+                if same { full_referrer(source) } else { origin_referrer(source) }
+            }
+            Self::SameOrigin => {
+                if same { full_referrer(source) } else { None }
+            }
+            Self::StrictOrigin => {
+                if downgrade { None } else { origin_referrer(source) }
+            }
+            Self::StrictOriginWhenCrossOrigin => {
+                if same {
+                    full_referrer(source)
+                } else if downgrade {
+                    None
+                } else {
+                    origin_referrer(source)
+                }
+            }
+            Self::UnsafeUrl => full_referrer(source),
+        }
+    }
+}
+
+fn is_http_family(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+}
+
+fn effective_port(url: &Url) -> Option<u16> {
+    url.port().or(match url.scheme() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })
+}
+
+fn same_origin(a: &Url, b: &Url) -> bool {
+    is_http_family(a)
+        && is_http_family(b)
+        && a.scheme() == b.scheme()
+        && a.host().eq_ignore_ascii_case(b.host())
+        && effective_port(a) == effective_port(b)
+}
+
+fn is_downgrade(source: &Url, target: &Url) -> bool {
+    source.scheme() == "https" && target.scheme() == "http"
+}
+
+fn origin_referrer(source: &Url) -> Option<String> {
+    let port = effective_port(source)?;
+    let default = match source.scheme() {
+        "http" => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    let authority = if port == default {
+        source.host().to_string()
+    } else {
+        format!("{}:{port}", source.host())
+    };
+    Some(format!("{}://{authority}/", source.scheme()))
+}
+
+fn full_referrer(source: &Url) -> Option<String> {
+    if !is_http_family(source) || source.host().is_empty() {
+        return None;
+    }
+    Some(source.without_fragment().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn url(text: &str) -> Url {
+        Url::parse(text).unwrap()
+    }
+
+    #[test]
+    fn header_uses_last_recognized_policy() {
+        assert_eq!(
+            ReferrerPolicy::from_header("no-referrer, future-policy, origin"),
+            Some(ReferrerPolicy::Origin)
+        );
+        assert_eq!(ReferrerPolicy::from_header("future-policy"), None);
+    }
+
+    #[test]
+    fn strict_origin_when_cross_origin_is_modern_default() {
+        let source = url("https://example.test/a/page?q=1#secret");
+        assert_eq!(
+            ReferrerPolicy::default().compute(&source, &url("https://example.test/b")),
+            Some("https://example.test/a/page?q=1".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::default().compute(&source, &url("https://cdn.example.test/x")),
+            Some("https://example.test/".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::default().compute(&source, &url("http://example.test/x")),
+            None
+        );
+    }
+
+    #[test]
+    fn default_ports_are_same_origin_but_nondefault_ports_are_not() {
+        let source = url("https://example.test:443/path");
+        assert_eq!(
+            ReferrerPolicy::SameOrigin.compute(&source, &url("https://example.test/next")),
+            Some("https://example.test:443/path".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::SameOrigin.compute(&source, &url("https://example.test:444/next")),
+            None
+        );
+    }
+
+    #[test]
+    fn fragments_never_leave_the_document() {
+        let source = url("https://example.test/path?q=1#token");
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.compute(&source, &url("http://other.test/")),
+            Some("https://example.test/path?q=1".into())
+        );
+    }
+
+    #[test]
+    fn local_and_opaque_sources_do_not_create_http_referrers() {
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.compute(&url("file:///tmp/a.html"), &url("https://example.test/")),
+            None
+        );
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.compute(&url("data:text/plain,hello"), &url("https://example.test/")),
+            None
+        );
+    }
+}
