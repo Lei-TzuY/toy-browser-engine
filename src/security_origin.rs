@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use crate::net::Url;
 
 /// Security-sensitive origin classification for browser policy decisions.
@@ -84,6 +86,50 @@ impl SecurityOrigin {
         }
     }
 
+    /// Whether this origin is "potentially trustworthy" for secure-context
+    /// policy decisions.
+    ///
+    /// This follows the useful subset of the Secure Contexts trust algorithm
+    /// that the engine can represent today:
+    ///
+    /// - every HTTPS tuple origin is trustworthy;
+    /// - HTTP is trustworthy only for loopback IP literals or `localhost`
+    ///   names (including subdomains ending in `.localhost`);
+    /// - the engine's intentional local namespaces (`file:` and `demo:`) are
+    ///   trustworthy;
+    /// - opaque origins are not trustworthy on their own.
+    ///
+    /// Treating loopback development origins as trustworthy matters for a
+    /// browser engine because local test servers should be able to exercise
+    /// secure-only APIs without weakening ordinary clear-text HTTP origins.
+    pub fn is_potentially_trustworthy(&self) -> bool {
+        match self {
+            SecurityOrigin::Tuple { scheme, host, .. } => {
+                if scheme == "https" {
+                    return true;
+                }
+                if scheme != "http" {
+                    return false;
+                }
+
+                let host = host.trim_end_matches('.');
+                if host.eq_ignore_ascii_case("localhost")
+                    || host.to_ascii_lowercase().ends_with(".localhost")
+                {
+                    return true;
+                }
+
+                let ip_literal = host.trim_start_matches('[').trim_end_matches(']');
+                ip_literal
+                    .parse::<IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false)
+            }
+            SecurityOrigin::Local { .. } => true,
+            SecurityOrigin::Opaque => false,
+        }
+    }
+
     /// Serialize the request `Origin` header representation.
     ///
     /// Local and opaque origins serialize as `null`; tuple origins omit their
@@ -151,5 +197,42 @@ mod tests {
         assert!(!origin.can_fetch(&url("demo:///secrets.txt")));
         assert!(!origin.can_fetch(&url("http://example.test/site/api/data.json")));
         assert_eq!(origin.header_value(), "null");
+    }
+
+    #[test]
+    fn secure_context_trust_covers_https_loopback_and_local_origins() {
+        for input in [
+            "https://example.test/",
+            "https://example.test:8443/",
+            "http://localhost/",
+            "http://dev.localhost:8080/",
+            "http://127.0.0.1:3000/",
+            "http://127.99.4.2/",
+            "http://[::1]/",
+            "file:///tmp/index.html",
+            "demo:///index.html",
+        ] {
+            assert!(
+                SecurityOrigin::of(&url(input)).is_potentially_trustworthy(),
+                "{input} should be potentially trustworthy"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_http_and_opaque_origins_are_not_trustworthy() {
+        for input in [
+            "http://example.test/",
+            "http://192.168.1.10/",
+            "http://10.0.0.1/",
+            "about:blank",
+            "data:text/plain,hello",
+            "widget:opaque-value",
+        ] {
+            assert!(
+                !SecurityOrigin::of(&url(input)).is_potentially_trustworthy(),
+                "{input} should not be potentially trustworthy"
+            );
+        }
     }
 }
