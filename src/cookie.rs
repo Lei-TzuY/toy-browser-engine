@@ -9,6 +9,16 @@ use std::rc::Rc;
 use crate::eventloop::Clock;
 use crate::net::Url;
 
+/// Maximum accepted `Set-Cookie` field-value size. Oversize state is rejected
+/// rather than truncated so a server cannot make the browser allocate an
+/// unbounded cookie from one response header.
+pub const MAX_SET_COOKIE_BYTES: usize = 4096;
+/// Per cookie-domain storage bound. When full, the oldest stored cookie in the
+/// same domain is evicted before a new one is inserted.
+pub const MAX_COOKIES_PER_DOMAIN: usize = 180;
+/// Session-wide storage bound across all domains.
+pub const MAX_COOKIES_TOTAL: usize = 3000;
+
 /// SameSite policy for cookies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SameSite {
@@ -97,6 +107,10 @@ impl Cookie {
 /// clock and ignore document-relative fallback timestamps. That distinction is
 /// important because a new document resets JavaScript's event-loop time to
 /// zero while cookie lifetime must continue monotonically across navigation.
+///
+/// `cookies` is kept in oldest-to-newest insertion order. Updating an existing
+/// `(name, domain, path)` moves it to the end, so bounded eviction naturally
+/// keeps recently refreshed state and removes the oldest state first.
 pub struct CookieJar {
     cookies: Vec<Cookie>,
     clock: Option<Rc<dyn Clock>>,
@@ -181,10 +195,18 @@ impl CookieJar {
     /// invariants are enforced here too, before a cookie can enter the jar:
     /// `Secure` cannot be set over clear-text HTTP, `SameSite=None` requires
     /// `Secure`, and the `__Secure-` / `__Host-` prefixes keep their guarantees.
+    ///
+    /// Invalid control bytes, non-token names, invalid cookie-octet values and
+    /// fields larger than [`MAX_SET_COOKIE_BYTES`] are rejected rather than
+    /// normalized into a different cookie.
     pub fn parse_set_cookie(header: &str, url: &Url, now_ms: u64) -> Option<Cookie> {
         if !matches!(url.scheme(), "http" | "https") {
             return None;
         }
+        if header.len() > MAX_SET_COOKIE_BYTES || has_unsafe_header_control(header) {
+            return None;
+        }
+
         let origin_host = url.host().trim_end_matches('.').to_ascii_lowercase();
         if origin_host.is_empty() {
             return None;
@@ -203,7 +225,10 @@ impl CookieJar {
             None => (first.to_string(), String::new()),
         };
 
-        if name.is_empty() {
+        if name.is_empty()
+            || !name.bytes().all(is_cookie_name_byte)
+            || !valid_cookie_value(&value)
+        {
             return None;
         }
 
@@ -319,19 +344,50 @@ impl CookieJar {
         })
     }
 
-    /// Stores or updates a cookie in the jar. If the cookie is expired, removes any existing match.
+    /// Stores or updates a cookie in the jar.
+    ///
+    /// Expired entries are purged on every mutation. A replacement is removed
+    /// first and then appended, which refreshes its recency. New live state is
+    /// bounded by [`MAX_COOKIES_PER_DOMAIN`] and [`MAX_COOKIES_TOTAL`]; the
+    /// oldest eligible entry is evicted instead of allowing unbounded growth.
     pub fn store(&mut self, cookie: Cookie, now_ms: u64) {
         let now_ms = self.effective_now_ms(now_ms);
-        // Remove existing cookie with same (name, domain, path)
+        self.cookies.retain(|c| !c.is_expired(now_ms));
+
+        // Remove existing cookie with same (name, domain, path). Host-only and
+        // Domain cookies with the same canonical triple replace one another.
         self.cookies.retain(|c| {
             !(c.name == cookie.name
                 && c.domain.eq_ignore_ascii_case(&cookie.domain)
                 && c.path == cookie.path)
         });
 
-        if !cookie.is_expired(now_ms) {
-            self.cookies.push(cookie);
+        if cookie.is_expired(now_ms) {
+            return;
         }
+
+        while self
+            .cookies
+            .iter()
+            .filter(|stored| stored.domain.eq_ignore_ascii_case(&cookie.domain))
+            .count()
+            >= MAX_COOKIES_PER_DOMAIN
+        {
+            let Some(oldest) = self
+                .cookies
+                .iter()
+                .position(|stored| stored.domain.eq_ignore_ascii_case(&cookie.domain))
+            else {
+                break;
+            };
+            self.cookies.remove(oldest);
+        }
+
+        while self.cookies.len() >= MAX_COOKIES_TOTAL {
+            self.cookies.remove(0);
+        }
+
+        self.cookies.push(cookie);
     }
 
     /// `document.cookie` getter: returns formatted string of matching non-HttpOnly cookies.
@@ -393,8 +449,8 @@ impl CookieJar {
         }
     }
 
-    /// Number of stored cookies. Expired entries are ignored by lookups and
-    /// are replaced/removed when a matching cookie is stored again.
+    /// Number of stored, not-yet-purged cookies. Mutations purge expired state;
+    /// read lookups also ignore expiration even before the next mutation.
     pub fn len(&self) -> usize {
         self.cookies.len()
     }
@@ -406,6 +462,42 @@ impl CookieJar {
     pub fn clear(&mut self) {
         self.cookies.clear();
     }
+}
+
+fn has_unsafe_header_control(header: &str) -> bool {
+    header.bytes().any(|byte| {
+        byte == b'\r'
+            || byte == b'\n'
+            || byte == 0
+            || byte == 0x7f
+            || (byte < 0x20 && byte != b'\t')
+    })
+}
+
+/// Cookie names use the RFC HTTP `token` character set.
+fn is_cookie_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+/// Validate the RFC 6265 cookie-octet set. Quotes are permitted only as a
+/// matching pair around a value; they remain in the stored value so outbound
+/// `Cookie` serialization preserves what the server supplied.
+fn valid_cookie_value(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.first() == Some(&b'"') || bytes.last() == Some(&b'"') {
+        if bytes.len() < 2 || bytes.first() != Some(&b'"') || bytes.last() != Some(&b'"') {
+            return false;
+        }
+        return bytes[1..bytes.len() - 1]
+            .iter()
+            .copied()
+            .all(is_cookie_octet);
+    }
+    bytes.iter().copied().all(is_cookie_octet)
+}
+
+fn is_cookie_octet(byte: u8) -> bool {
+    matches!(byte, 0x21 | 0x23..=0x2b | 0x2d..=0x3a | 0x3c..=0x5b | 0x5d..=0x7e)
 }
 
 fn domain_matches(host: &str, domain: &str) -> bool {
