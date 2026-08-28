@@ -11,6 +11,7 @@ pub mod browser;
 mod browser_cursor;
 pub mod css;
 pub mod cursor;
+pub mod cursor_assets;
 pub mod document;
 pub mod dom;
 pub mod editing;
