@@ -29,6 +29,21 @@ fn public_cursor_runtime_reads_ua_and_author_styles() {
 }
 
 #[test]
+fn public_cursor_runtime_supports_all_scroll_keyword() {
+    let doc = document(
+        "<style>#drag { cursor: all-scroll; }</style>\
+         <div id='drag'>drag surface</div>",
+    );
+    let drag = dom_api::query_selector(&doc.dom, &[], "#drag").unwrap();
+
+    assert_eq!(
+        cursor_for_path(&doc, &drag, 800.0, &PointerState::default()),
+        Some(CursorIcon::AllScroll)
+    );
+    assert_eq!(CursorIcon::AllScroll.css_keyword(), "all-scroll");
+}
+
+#[test]
 fn public_cursor_runtime_restyles_hovered_element() {
     let doc = document(
         "<style>#target { cursor: default; } #target:hover { cursor: grab; }</style>\
