@@ -819,6 +819,13 @@ impl<'a> LayoutBox<'a> {
         )
     }
 
+    fn flex_wrap_reverse(&self) -> bool {
+        matches!(
+            self.style().and_then(|s| s.value("flex-wrap")),
+            Some(Value::Keyword(s)) if s == "wrap-reverse"
+        )
+    }
+
     fn flex_justify_content(&self) -> JustifyContent {
         match self.style().and_then(|s| s.value("justify-content")) {
             Some(Value::Keyword(s)) => match s.as_str() {
@@ -1013,7 +1020,7 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
-        let mut cross_cursor = if direction.is_row() {
+        let cross_origin = if direction.is_row() {
             container.content.y
         } else {
             container.content.x
@@ -1024,8 +1031,30 @@ impl<'a> LayoutBox<'a> {
             container.content.y
         };
 
+        let total_cross_lines: f32 = line_cross.iter().sum::<f32>()
+            + cross_gap * line_cross.len().saturating_sub(1) as f32;
+        let is_wrap_reverse = self.flex_wrap_reverse();
+
+        let mut line_cross_offsets = Vec::with_capacity(lines.len());
+        if is_wrap_reverse {
+            let start_cross = container_cross.unwrap_or(total_cross_lines);
+            let mut curr = start_cross;
+            for &size in &line_cross {
+                curr -= size;
+                line_cross_offsets.push(curr);
+                curr -= cross_gap;
+            }
+        } else {
+            let mut curr = 0.0;
+            for &size in &line_cross {
+                line_cross_offsets.push(curr);
+                curr += size + cross_gap;
+            }
+        }
+
         for (line_index, line) in lines.iter().enumerate() {
             let line_size = line_cross[line_index];
+            let line_cross_pos = cross_origin + line_cross_offsets[line_index];
 
             // Stretch items that have no size of their own on the cross axis.
             for &i in line {
@@ -1066,14 +1095,12 @@ impl<'a> LayoutBox<'a> {
                 };
 
                 if direction.is_row() {
-                    child.place_margin_box_at(main_cursor, cross_cursor + cross_offset);
+                    child.place_margin_box_at(main_cursor, line_cross_pos + cross_offset);
                 } else {
-                    child.place_margin_box_at(cross_cursor + cross_offset, main_cursor);
+                    child.place_margin_box_at(line_cross_pos + cross_offset, main_cursor);
                 }
                 main_cursor += target + main_edges + main_gap + extra_gap;
             }
-
-            cross_cursor += line_size + cross_gap;
         }
 
         // ── 5. Container size along the block axis ────────────────────────

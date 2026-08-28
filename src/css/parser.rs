@@ -1382,6 +1382,10 @@ impl Parser {
                 let values = self.parse_shorthand_values(first_value);
                 expand_flex_shorthand(values)
             }
+            "flex-flow" => {
+                let values = self.parse_shorthand_values(first_value);
+                expand_flex_flow_shorthand(values)
+            }
             "gap" | "grid-gap" => {
                 let values = self.parse_shorthand_values(first_value);
                 expand_gap_shorthand(values)
@@ -1904,6 +1908,35 @@ fn expand_flex_shorthand(values: Vec<Value>) -> Vec<Declaration> {
     ]
 }
 
+/// `flex-flow: <flex-direction> || <flex-wrap>`
+fn expand_flex_flow_shorthand(values: Vec<Value>) -> Vec<Declaration> {
+    let mut direction: Option<Value> = None;
+    let mut wrap: Option<Value> = None;
+
+    for val in values {
+        if let Value::Keyword(k) = &val {
+            match k.as_str() {
+                "row" | "row-reverse" | "column" | "column-reverse" => {
+                    direction = Some(val.clone());
+                }
+                "nowrap" | "wrap" | "wrap-reverse" => {
+                    wrap = Some(val.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut decls = Vec::new();
+    if let Some(d) = direction {
+        decls.push(Declaration::new("flex-direction", d));
+    }
+    if let Some(w) = wrap {
+        decls.push(Declaration::new("flex-wrap", w));
+    }
+    decls
+}
+
 /// `gap: <row> <column>` (one value sets both).
 fn expand_gap_shorthand(values: Vec<Value>) -> Vec<Declaration> {
     let Some(row) = values.first().cloned() else {
@@ -2135,7 +2168,7 @@ fn hue_channel(p: f32, q: f32, mut t: f32) -> f32 {
 
 // ── Named color table ─────────────────────────────────────────────────────────
 
-fn named_color(name: &str) -> Option<Color> {
+pub fn named_color(name: &str) -> Option<Color> {
     Some(match name {
         "transparent" => Color::transparent(),
         "black" => Color::rgb(0, 0, 0),

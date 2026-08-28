@@ -27,6 +27,7 @@ pub mod paint;
 pub mod script;
 pub mod select_state;
 pub mod style;
+pub mod svg;
 pub mod text;
 pub mod transition;
 pub mod validation;

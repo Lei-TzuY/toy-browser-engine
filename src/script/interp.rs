@@ -151,6 +151,9 @@ pub enum Builtin {
     ClearInterval,
     RequestAnimationFrame,
     CancelAnimationFrame,
+    RequestIdleCallback,
+    CancelIdleCallback,
+    StructuredClone,
     DateMeta,
     Math,
     Json,
@@ -3414,6 +3417,25 @@ impl JsRuntime {
                 }
                 JsValue::Undefined
             }
+            Builtin::RequestIdleCallback => {
+                let Some(callback) = args.first().filter(|value| is_callable(value)).cloned()
+                else {
+                    self.log("TypeError: requestIdleCallback needs a function");
+                    return JsValue::Number(0.0);
+                };
+                let now = self.now_ms;
+                let id = self.scheduler.set_timeout(callback, 0.0, now);
+                JsValue::Number(id as f32)
+            }
+            Builtin::CancelIdleCallback => {
+                if let Some(id) = task_id(&arg) {
+                    self.scheduler.clear_timer(id);
+                }
+                JsValue::Undefined
+            }
+            Builtin::StructuredClone => {
+                clone_value(&arg)
+            }
             Builtin::ParseInt => {
                 let s = to_string(&arg);
                 let digits: String = s
@@ -3568,6 +3590,29 @@ impl JsRuntime {
     }
 }
 
+fn clone_value(val: &JsValue) -> JsValue {
+    match val {
+        JsValue::Undefined => JsValue::Undefined,
+        JsValue::Null => JsValue::Null,
+        JsValue::Bool(b) => JsValue::Bool(*b),
+        JsValue::Number(n) => JsValue::Number(*n),
+        JsValue::Str(s) => JsValue::Str(s.clone()),
+        JsValue::Array(items) => {
+            let cloned_items: Vec<JsValue> = items.borrow().iter().map(clone_value).collect();
+            JsValue::Array(Rc::new(RefCell::new(cloned_items)))
+        }
+        JsValue::Object(props) => {
+            let cloned_props: Vec<(String, JsValue)> = props
+                .borrow()
+                .iter()
+                .map(|(k, v)| (k.clone(), clone_value(v)))
+                .collect();
+            JsValue::Object(Rc::new(RefCell::new(cloned_props)))
+        }
+        other => other.clone(),
+    }
+}
+
 // ── Detached-tree helpers ─────────────────────────────────────────────────────
 
 /// Remove and return the node at `path` (which must be non-empty).
@@ -3649,6 +3694,9 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "clearInterval" => Builtin::ClearInterval,
         "requestAnimationFrame" => Builtin::RequestAnimationFrame,
         "cancelAnimationFrame" => Builtin::CancelAnimationFrame,
+        "requestIdleCallback" => Builtin::RequestIdleCallback,
+        "cancelIdleCallback" => Builtin::CancelIdleCallback,
+        "structuredClone" => Builtin::StructuredClone,
         "Date" => Builtin::DateMeta,
         "Math" => Builtin::Math,
         "JSON" => Builtin::Json,
