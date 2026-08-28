@@ -26,8 +26,9 @@ use crate::net::fetch::{FetchError, FetchResponse, HeaderMap, Method, Origin};
 use crate::net::Url;
 
 use super::host::{
-    decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, RequestData, ResponseData,
-    UrlData, UrlSearchParamsData,
+    decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
+    IntersectionObserverTarget, IntersectionObserverEntryData,
+    RequestData, ResponseData, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
@@ -49,6 +50,15 @@ pub struct PendingFetch {
     pub promise: PromiseRef,
     /// The signal watching this request, if `fetch` was given one.
     pub signal: Option<Rc<AbortState>>,
+}
+
+fn rect_to_js(r: &[f32; 4]) -> JsValue {
+    JsValue::Object(Rc::new(RefCell::new(vec![
+        ("x".to_string(), JsValue::Number(r[0])),
+        ("y".to_string(), JsValue::Number(r[1])),
+        ("width".to_string(), JsValue::Number(r[2])),
+        ("height".to_string(), JsValue::Number(r[3])),
+    ])))
 }
 
 impl JsRuntime {
@@ -396,6 +406,60 @@ impl JsRuntime {
             Builtin::AudioContextCtor => {
                 host_value(HostObject::AudioContext(Rc::new(RefCell::new(crate::audio::AudioContext::new()))))
             }
+            Builtin::IntersectionObserverCtor => {
+                // new IntersectionObserver(callback, options?)
+                // callback is stored in JS land; we just track targets
+                let mut thresholds = vec![0.0];
+                if let Some(JsValue::Object(opts)) = args.get(1) {
+                    for (k, v) in opts.borrow().iter() {
+                        if k == "threshold" {
+                            match v {
+                                JsValue::Number(n) => thresholds = vec![*n],
+                                JsValue::Array(arr) => {
+                                    thresholds = arr.borrow().iter().map(|x| to_number(x)).collect();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                let data = IntersectionObserverData::new(thresholds);
+                host_value(HostObject::IntersectionObserver(Rc::new(RefCell::new(data))))
+            }
+            Builtin::MapCtor => {
+                let entries: Vec<(String, JsValue)> = if let Some(JsValue::Array(arr)) = args.first() {
+                    arr.borrow().iter().filter_map(|item| {
+                        if let JsValue::Array(pair) = item {
+                            let pair = pair.borrow();
+                            if pair.len() >= 2 {
+                                Some((to_string(&pair[0]), pair[1].clone()))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }).collect()
+                } else {
+                    Vec::new()
+                };
+                host_value(HostObject::JsMap(Rc::new(RefCell::new(entries))))
+            }
+            Builtin::SetCtor => {
+                let items: Vec<String> = if let Some(JsValue::Array(arr)) = args.first() {
+                    let mut seen = Vec::new();
+                    for item in arr.borrow().iter() {
+                        let s = to_string(item);
+                        if !seen.contains(&s) {
+                            seen.push(s);
+                        }
+                    }
+                    seen
+                } else {
+                    Vec::new()
+                };
+                host_value(HostObject::JsSet(Rc::new(RefCell::new(items))))
+            }
             other => {
                 self.throw_type_error(format!("{other:?} is not a constructor"));
                 JsValue::Undefined
@@ -546,6 +610,35 @@ impl JsRuntime {
                     _ => JsValue::Undefined,
                 }
             }
+            HostObject::IntersectionObserver(data) => {
+                let d = data.borrow();
+                match prop {
+                    "root" => JsValue::Null,
+                    "rootMargin" => JsValue::Str(d.root_margin.clone()),
+                    "thresholds" => {
+                        let arr: Vec<JsValue> = d.thresholds.iter().map(|t| JsValue::Number(*t)).collect();
+                        JsValue::Array(Rc::new(RefCell::new(arr)))
+                    }
+                    _ => JsValue::Undefined,
+                }
+            }
+            HostObject::IntersectionObserverEntry(entry) => match prop {
+                "isIntersecting" => JsValue::Bool(entry.is_intersecting),
+                "intersectionRatio" => JsValue::Number(entry.intersection_ratio),
+                "target" => JsValue::Str(entry.target_id.clone()),
+                "boundingClientRect" => rect_to_js(&entry.bounding_client_rect),
+                "intersectionRect" => rect_to_js(&entry.intersection_rect),
+                "rootBounds" => rect_to_js(&entry.root_bounds),
+                _ => JsValue::Undefined,
+            },
+            HostObject::JsMap(entries) => match prop {
+                "size" => JsValue::Number(entries.borrow().len() as f32),
+                _ => JsValue::Undefined,
+            },
+            HostObject::JsSet(items) => match prop {
+                "size" => JsValue::Number(items.borrow().len() as f32),
+                _ => JsValue::Undefined,
+            },
         }
     }
 
@@ -707,6 +800,131 @@ impl JsRuntime {
                         }
                     }
                     JsValue::Undefined
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::IntersectionObserver(data) => match prop {
+                "observe" => {
+                    let target_id = args.first().map(to_string).unwrap_or_default();
+                    let mut d = data.borrow_mut();
+                    if !d.targets.iter().any(|t| t.element_id == target_id) {
+                        d.targets.push(IntersectionObserverTarget {
+                            element_id: target_id,
+                            is_intersecting: true,
+                            intersection_ratio: 1.0,
+                        });
+                    }
+                    JsValue::Undefined
+                }
+                "unobserve" => {
+                    let target_id = args.first().map(to_string).unwrap_or_default();
+                    data.borrow_mut().targets.retain(|t| t.element_id != target_id);
+                    JsValue::Undefined
+                }
+                "disconnect" => {
+                    data.borrow_mut().targets.clear();
+                    JsValue::Undefined
+                }
+                "takeRecords" => {
+                    let entries: Vec<JsValue> = data.borrow().targets.iter().map(|t| {
+                        host_value(HostObject::IntersectionObserverEntry(IntersectionObserverEntryData {
+                            target_id: t.element_id.clone(),
+                            is_intersecting: t.is_intersecting,
+                            intersection_ratio: t.intersection_ratio,
+                            bounding_client_rect: [0.0, 0.0, 0.0, 0.0],
+                            intersection_rect: [0.0, 0.0, 0.0, 0.0],
+                            root_bounds: [0.0, 0.0, 0.0, 0.0],
+                        }))
+                    }).collect();
+                    JsValue::Array(Rc::new(RefCell::new(entries)))
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::IntersectionObserverEntry(_) => JsValue::Undefined,
+            HostObject::JsMap(entries) => match prop {
+                "get" => {
+                    let key = args.first().map(to_string).unwrap_or_default();
+                    entries.borrow().iter()
+                        .find(|(k, _)| k == &key)
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or(JsValue::Undefined)
+                }
+                "set" => {
+                    let key = args.first().map(to_string).unwrap_or_default();
+                    let val = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+                    let mut e = entries.borrow_mut();
+                    if let Some(entry) = e.iter_mut().find(|(k, _)| k == &key) {
+                        entry.1 = val;
+                    } else {
+                        e.push((key, val));
+                    }
+                    // Return the Map itself for chaining
+                    host_value(HostObject::JsMap(entries.clone()))
+                }
+                "has" => {
+                    let key = args.first().map(to_string).unwrap_or_default();
+                    JsValue::Bool(entries.borrow().iter().any(|(k, _)| k == &key))
+                }
+                "delete" => {
+                    let key = args.first().map(to_string).unwrap_or_default();
+                    let mut e = entries.borrow_mut();
+                    let len_before = e.len();
+                    e.retain(|(k, _)| k != &key);
+                    JsValue::Bool(e.len() < len_before)
+                }
+                "clear" => {
+                    entries.borrow_mut().clear();
+                    JsValue::Undefined
+                }
+                "keys" => {
+                    let keys: Vec<JsValue> = entries.borrow().iter().map(|(k, _)| JsValue::Str(k.clone())).collect();
+                    JsValue::Array(Rc::new(RefCell::new(keys)))
+                }
+                "values" => {
+                    let vals: Vec<JsValue> = entries.borrow().iter().map(|(_, v)| v.clone()).collect();
+                    JsValue::Array(Rc::new(RefCell::new(vals)))
+                }
+                "entries" => {
+                    let pairs: Vec<JsValue> = entries.borrow().iter().map(|(k, v)| {
+                        JsValue::Array(Rc::new(RefCell::new(vec![JsValue::Str(k.clone()), v.clone()])))
+                    }).collect();
+                    JsValue::Array(Rc::new(RefCell::new(pairs)))
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::JsSet(items) => match prop {
+                "add" => {
+                    let val = args.first().map(to_string).unwrap_or_default();
+                    let mut s = items.borrow_mut();
+                    if !s.contains(&val) {
+                        s.push(val);
+                    }
+                    host_value(HostObject::JsSet(items.clone()))
+                }
+                "has" => {
+                    let val = args.first().map(to_string).unwrap_or_default();
+                    JsValue::Bool(items.borrow().contains(&val))
+                }
+                "delete" => {
+                    let val = args.first().map(to_string).unwrap_or_default();
+                    let mut s = items.borrow_mut();
+                    let len_before = s.len();
+                    s.retain(|v| v != &val);
+                    JsValue::Bool(s.len() < len_before)
+                }
+                "clear" => {
+                    items.borrow_mut().clear();
+                    JsValue::Undefined
+                }
+                "keys" | "values" => {
+                    let vals: Vec<JsValue> = items.borrow().iter().map(|v| JsValue::Str(v.clone())).collect();
+                    JsValue::Array(Rc::new(RefCell::new(vals)))
+                }
+                "entries" => {
+                    let pairs: Vec<JsValue> = items.borrow().iter().map(|v| {
+                        JsValue::Array(Rc::new(RefCell::new(vec![JsValue::Str(v.clone()), JsValue::Str(v.clone())])))
+                    }).collect();
+                    JsValue::Array(Rc::new(RefCell::new(pairs)))
                 }
                 _ => JsValue::Undefined,
             },

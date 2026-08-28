@@ -314,6 +314,47 @@ impl UrlData {
     }
 }
 
+// ── IntersectionObserver ────────────────────────────────────────────────────
+
+/// An observed target inside the IntersectionObserver.
+#[derive(Debug, Clone)]
+pub struct IntersectionObserverTarget {
+    pub element_id: String,
+    pub is_intersecting: bool,
+    pub intersection_ratio: f32,
+}
+
+/// Data backing a single IntersectionObserver instance.
+#[derive(Debug, Clone)]
+pub struct IntersectionObserverData {
+    pub root: Option<String>,
+    pub root_margin: String,
+    pub thresholds: Vec<f32>,
+    pub targets: Vec<IntersectionObserverTarget>,
+}
+
+impl IntersectionObserverData {
+    pub fn new(thresholds: Vec<f32>) -> Self {
+        Self {
+            root: None,
+            root_margin: "0px".to_string(),
+            thresholds: if thresholds.is_empty() { vec![0.0] } else { thresholds },
+            targets: Vec::new(),
+        }
+    }
+}
+
+/// An IntersectionObserverEntry snapshot.
+#[derive(Debug, Clone)]
+pub struct IntersectionObserverEntryData {
+    pub target_id: String,
+    pub is_intersecting: bool,
+    pub intersection_ratio: f32,
+    pub bounding_client_rect: [f32; 4], // [x, y, width, height]
+    pub intersection_rect: [f32; 4],
+    pub root_bounds: [f32; 4],
+}
+
 // ── The value the interpreter sees ────────────────────────────────────────────
 
 /// A Web-platform object.
@@ -334,6 +375,10 @@ pub enum HostObject {
     AudioContext(Rc<RefCell<crate::audio::AudioContext>>),
     AudioNode(Rc<RefCell<crate::audio::AudioContext>>, usize),
     AudioParam(Rc<RefCell<crate::audio::AudioContext>>, usize, String),
+    IntersectionObserver(Rc<RefCell<IntersectionObserverData>>),
+    IntersectionObserverEntry(IntersectionObserverEntryData),
+    JsMap(Rc<RefCell<Vec<(String, crate::script::interp::JsValue)>>>),
+    JsSet(Rc<RefCell<Vec<String>>>),
 }
 
 impl HostObject {
@@ -351,6 +396,10 @@ impl HostObject {
             HostObject::AudioContext(_) => "AudioContext",
             HostObject::AudioNode(_, _) => "AudioNode",
             HostObject::AudioParam(_, _, _) => "AudioParam",
+            HostObject::IntersectionObserver(_) => "IntersectionObserver",
+            HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
+            HostObject::JsMap(_) => "Map",
+            HostObject::JsSet(_) => "Set",
         }
     }
 

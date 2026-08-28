@@ -174,6 +174,9 @@ pub enum Builtin {
     NumberConv,
     BooleanConv,
     IsNaN,
+    IntersectionObserverCtor,
+    MapCtor,
+    SetCtor,
 }
 
 pub struct FunctionValue {
@@ -662,7 +665,10 @@ impl JsRuntime {
                 | Builtin::AbortControllerCtor
                 | Builtin::URLCtor
                 | Builtin::URLSearchParamsCtor
-                | Builtin::AudioContextCtor),
+                | Builtin::AudioContextCtor
+                | Builtin::IntersectionObserverCtor
+                | Builtin::MapCtor
+                | Builtin::SetCtor),
             ) => self.construct_host(*builtin, args),
             other => {
                 let description = to_string(other);
@@ -3745,6 +3751,9 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "Number" => Builtin::NumberConv,
         "Boolean" => Builtin::BooleanConv,
         "isNaN" => Builtin::IsNaN,
+        "IntersectionObserver" => Builtin::IntersectionObserverCtor,
+        "Map" => Builtin::MapCtor,
+        "Set" => Builtin::SetCtor,
         _ => return None,
     };
     Some(JsValue::Builtin(builtin))

@@ -122,6 +122,18 @@ impl<'a> StyledNode<'a> {
     pub fn establishes_stacking_context(&self) -> bool {
         self.position() != Position::Static && self.z_index().is_some()
     }
+
+    pub fn overflow(&self) -> Overflow {
+        match self.value("overflow") {
+            Some(Value::Keyword(s)) => match s.as_str() {
+                "hidden" => Overflow::Hidden,
+                "scroll" => Overflow::Scroll,
+                "auto" => Overflow::Auto,
+                _ => Overflow::Visible,
+            },
+            _ => Overflow::Visible,
+        }
+    }
 }
 
 fn default_display(node_type: &NodeType) -> Display {
@@ -164,6 +176,14 @@ pub enum Position {
     Absolute,
     Fixed,
     Sticky,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Overflow {
+    Visible,
+    Hidden,
+    Scroll,
+    Auto,
 }
 
 // ── Interactive state context ───────────────────────────────────────────────

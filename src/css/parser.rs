@@ -2177,6 +2177,9 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "opacity" | "transform" | "transition" | "animation" | "box-shadow" | "filter" => true,
         "grid-template-columns" | "grid-template-rows" | "grid-column" | "grid-row" | "gap" | "row-gap" | "column-gap" => true,
         "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" => true,
+        "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
+        "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
+        "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }
 }
