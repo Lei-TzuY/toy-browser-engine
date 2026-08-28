@@ -77,7 +77,10 @@ mod image_prev17;
 #[allow(dead_code)]
 #[path = "image_ico_os2_core_final.rs"]
 mod image_prev18;
+#[allow(dead_code)]
 #[path = "image_cur_final.rs"]
+mod image_prev19;
+#[path = "image_cursor_assets_final.rs"]
 pub mod image;
 pub mod input;
 pub mod layout;
