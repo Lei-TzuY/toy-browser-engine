@@ -1,7 +1,7 @@
 use browser_engine::{
     net::{DefaultLoader, MemoryLoader, Url},
     script::dom_api,
-    Browser,
+    Browser, Document,
 };
 
 fn browser_with_script(script: &str) -> Browser {
@@ -124,25 +124,17 @@ fn allowing_data_does_not_expose_about_or_javascript_schemes() {
 
 #[test]
 fn opaque_document_origin_still_cannot_fetch_local_resources() {
-    // `about:blank` is an opaque security origin under PR #100. Allowing data:
-    // must not turn hostless/opaque documents into local-file or demo origins.
-    let mut browser = Browser::open(
-        Box::new(DefaultLoader::new()),
+    let loader = DefaultLoader::new();
+    let document = Document::from_html(
+        r#"<!doctype html><body>pending<script>
+          fetch("file:///tmp/secret.txt")
+            .then(function () { document.body.textContent = "unexpected"; })
+            .catch(function () { document.body.textContent = "blocked"; });
+        </script></body>"#,
         &Url::parse("about:blank").unwrap(),
-    )
-    .unwrap();
-    browser
-        .document_mut()
-        .runtime
-        .run_script(
-            &mut browser.document_mut().dom,
-            r#"
-            fetch("file:///tmp/secret.txt")
-              .then(function () { document.body.textContent = "unexpected"; })
-              .catch(function () { document.body.textContent = "blocked"; });
-            "#,
-        );
-    browser.tick();
-    browser.tick();
-    assert!(dom_api::text_content(&browser.document().dom).contains("blocked"));
+        &loader,
+    );
+
+    assert!(dom_api::text_content(&document.dom).contains("blocked"));
+    assert!(!dom_api::text_content(&document.dom).contains("unexpected"));
 }
