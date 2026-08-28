@@ -10,8 +10,16 @@
 pub mod browser;
 pub mod browser_chrome;
 mod browser_cursor;
+#[allow(dead_code)]
+#[path = "css/mod.rs"]
+mod css_prev;
+#[path = "css_cursor_final.rs"]
 pub mod css;
 pub mod cursor;
+#[allow(dead_code)]
+#[path = "cursor_assets.rs"]
+mod cursor_assets_prev;
+#[path = "cursor_assets_candidates_final.rs"]
 pub mod cursor_assets;
 pub mod cursor_frame;
 pub mod cursor_overlay;
