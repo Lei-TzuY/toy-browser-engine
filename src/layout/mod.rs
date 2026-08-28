@@ -1612,6 +1612,21 @@ impl<'a> LayoutBox<'a> {
                 } else {
                     h
                 };
+            } else if let Some(ratio) = style.aspect_ratio() {
+                if ratio > 0.0 && self.dimensions.content.width > 0.0 {
+                    let border_box = matches!(
+                        style.value("box-sizing"),
+                        Some(Value::Keyword(s)) if s == "border-box"
+                    );
+                    if border_box {
+                        let d = &self.dimensions;
+                        let full_w = d.content.width + d.padding.left + d.padding.right + d.border.left + d.border.right;
+                        let full_h = full_w / ratio;
+                        self.dimensions.content.height = (full_h - d.border.top - d.border.bottom - d.padding.top - d.padding.bottom).max(0.0);
+                    } else {
+                        self.dimensions.content.height = self.dimensions.content.width / ratio;
+                    }
+                }
             }
         }
     }
@@ -2990,6 +3005,7 @@ fn number_value(value: &Value) -> f32 {
         Value::Color(_) => 0.0,
         Value::LinearGradient(_) => 0.0,
         Value::RadialGradient(_) => 0.0,
+        Value::ConicGradient(_) => 0.0,
         Value::BoxShadow(_) => 0.0,
         Value::Transform(_) => 0.0,
         Value::Transition(_) => 0.0,

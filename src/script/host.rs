@@ -355,6 +355,31 @@ pub struct IntersectionObserverEntryData {
     pub root_bounds: [f32; 4],
 }
 
+// ── ResizeObserver ──────────────────────────────────────────────────────────
+
+/// Data backing a single ResizeObserver instance.
+#[derive(Debug, Clone, Default)]
+pub struct ResizeObserverData {
+    pub targets: Vec<String>,
+}
+
+impl ResizeObserverData {
+    pub fn new() -> Self {
+        Self {
+            targets: Vec::new(),
+        }
+    }
+}
+
+/// A ResizeObserverEntry snapshot.
+#[derive(Debug, Clone)]
+pub struct ResizeObserverEntryData {
+    pub target_id: String,
+    pub content_rect: [f32; 4],
+    pub border_box_size: (f32, f32),
+    pub content_box_size: (f32, f32),
+}
+
 // ── The value the interpreter sees ────────────────────────────────────────────
 
 /// A Web-platform object.
@@ -377,6 +402,8 @@ pub enum HostObject {
     AudioParam(Rc<RefCell<crate::audio::AudioContext>>, usize, String),
     IntersectionObserver(Rc<RefCell<IntersectionObserverData>>),
     IntersectionObserverEntry(IntersectionObserverEntryData),
+    ResizeObserver(Rc<RefCell<ResizeObserverData>>),
+    ResizeObserverEntry(ResizeObserverEntryData),
     JsMap(Rc<RefCell<Vec<(String, crate::script::interp::JsValue)>>>),
     JsSet(Rc<RefCell<Vec<String>>>),
     Crypto,
@@ -399,6 +426,8 @@ impl HostObject {
             HostObject::AudioParam(_, _, _) => "AudioParam",
             HostObject::IntersectionObserver(_) => "IntersectionObserver",
             HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
+            HostObject::ResizeObserver(_) => "ResizeObserver",
+            HostObject::ResizeObserverEntry(_) => "ResizeObserverEntry",
             HostObject::JsMap(_) => "Map",
             HostObject::JsSet(_) => "Set",
             HostObject::Crypto => "Crypto",

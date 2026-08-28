@@ -148,6 +148,14 @@ pub struct RadialGradient {
     pub stops: Vec<ColorStop>,
 }
 
+/// A parsed `conic-gradient(…)` value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConicGradient {
+    /// Starting angle in degrees (0 = top, 90 = right, etc.)
+    pub from_angle_deg: f32,
+    pub stops: Vec<ColorStop>,
+}
+
 // ── Pseudo-class types ────────────────────────────────────────────────────────
 
 /// The `An+B` expression used in `:nth-child(An+B)` and related selectors.
@@ -478,6 +486,7 @@ pub enum Value {
     Number(f32),
     LinearGradient(LinearGradient),
     RadialGradient(RadialGradient),
+    ConicGradient(ConicGradient),
     BoxShadow(BoxShadow),
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
@@ -523,6 +532,7 @@ impl Value {
             Value::Var { name, .. } => format!("var({})", name),
             Value::LinearGradient(_) => "linear-gradient(...)".to_string(),
             Value::RadialGradient(_) => "radial-gradient(...)".to_string(),
+            Value::ConicGradient(_) => "conic-gradient(...)".to_string(),
             Value::BoxShadow(_) => "box-shadow(...)".to_string(),
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
@@ -984,6 +994,7 @@ impl Parser {
         match name.to_ascii_lowercase().as_str() {
             "linear-gradient" => self.parse_linear_gradient_inner(),
             "radial-gradient" => self.parse_radial_gradient_inner(),
+            "conic-gradient" => self.parse_conic_gradient_inner(),
             "var" => self.parse_var_inner(),
             "calc" => self.parse_calc_inner(),
             "rgb" | "rgba" => self.parse_rgb_inner(),
@@ -1412,6 +1423,104 @@ impl Parser {
         Value::RadialGradient(RadialGradient { stops })
     }
 
+    /// Parse the body of `conic-gradient(…)` after the opening `(` has been consumed.
+    fn parse_conic_gradient_inner(&mut self) -> Value {
+        self.skip_ws_and_comments();
+        let mut from_angle_deg = 0.0f32;
+        let saved = self.pos;
+        let token = self.parse_ident().to_ascii_lowercase();
+        if token == "from" {
+            self.skip_ws_and_comments();
+            let mut num_s = String::new();
+            if matches!(self.peek(), '+' | '-') {
+                num_s.push(self.consume());
+            }
+            num_s.push_str(&self.consume_while(|c| c.is_ascii_digit() || c == '.'));
+            let num: f32 = num_s.parse().unwrap_or(0.0);
+            let unit = self.consume_while(char::is_alphabetic).to_ascii_lowercase();
+            from_angle_deg = match unit.as_str() {
+                "turn" => num * 360.0,
+                "rad" => num * 180.0 / std::f32::consts::PI,
+                _ => num,
+            };
+            self.skip_ws_and_comments();
+            if self.peek() == ',' {
+                self.consume();
+            }
+        } else {
+            self.pos = saved;
+        }
+
+        let mut stops: Vec<ColorStop> = Vec::new();
+        loop {
+            self.skip_ws_and_comments();
+            if matches!(self.peek(), ')' | '\0') {
+                break;
+            }
+
+            let color_opt: Option<Color> = match self.peek() {
+                '#' => {
+                    self.consume();
+                    if let Value::Color(c) = self.parse_hex_color() {
+                        Some(c)
+                    } else {
+                        None
+                    }
+                }
+                c if c.is_alphabetic() => {
+                    let sp = self.pos;
+                    let name = self.parse_ident();
+                    if let Some(c) = named_color(&name) {
+                        Some(c)
+                    } else {
+                        self.pos = sp;
+                        None
+                    }
+                }
+                _ => None,
+            };
+
+            let Some(color) = color_opt else {
+                self.consume_while(|c| c != ',' && c != ')');
+                if self.peek() == ',' {
+                    self.consume();
+                }
+                continue;
+            };
+
+            self.skip_ws_and_comments();
+            let position = if self.peek().is_ascii_digit() || self.peek() == '.' {
+                let num_s = self.consume_while(|c| c.is_ascii_digit() || c == '.');
+                let num: f32 = num_s.parse().unwrap_or(0.0);
+                let unit = self.consume_while(|c| c.is_alphabetic() || c == '%').to_ascii_lowercase();
+                if unit == "%" {
+                    Some(num / 100.0)
+                } else if unit == "deg" {
+                    Some(num / 360.0)
+                } else if unit == "turn" {
+                    Some(num)
+                } else {
+                    Some(num / 100.0)
+                }
+            } else {
+                None
+            };
+
+            stops.push(ColorStop { color, position });
+            self.skip_ws_and_comments();
+            if self.peek() == ',' {
+                self.consume();
+            } else if self.peek() == ')' {
+                break;
+            }
+        }
+
+        if self.peek() == ')' {
+            self.consume();
+        }
+        Value::ConicGradient(ConicGradient { from_angle_deg, stops })
+    }
+
     // ── Declaration parsing ───────────────────────────────────────────────
 
     fn parse_shorthand_values(&mut self, first: Value) -> Vec<Value> {
@@ -1542,6 +1651,23 @@ impl Parser {
                     })
                     .collect();
                 vec![Declaration::new(name, Value::Keyword(raw_strs.join(" ")))]
+            }
+            "aspect-ratio" => {
+                let rest = self.consume_while(|c| c != ';' && c != '}');
+                let raw = match first_value {
+                    Value::Number(n) => format!("{}{}", n, rest),
+                    Value::Keyword(k) => format!("{}{}", k, rest),
+                    Value::Length(n, _) => format!("{}{}", n, rest),
+                    _ => rest,
+                };
+                let ratio = if let Some((w, h)) = raw.split_once('/') {
+                    let w: f32 = w.trim().parse().unwrap_or(1.0);
+                    let h: f32 = h.trim().parse().unwrap_or(1.0);
+                    if h > 0.0 { w / h } else { 1.0 }
+                } else {
+                    raw.trim().parse().unwrap_or(1.0)
+                };
+                vec![Declaration::new(name, Value::Number(ratio))]
             }
             "transform" => {
                 let values = self.parse_shorthand_values(first_value);
@@ -2281,6 +2407,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
         "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
+        "aspect-ratio" => true,
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }

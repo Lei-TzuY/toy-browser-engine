@@ -141,6 +141,23 @@ impl<'a> StyledNode<'a> {
             _ => BoxSizing::ContentBox,
         }
     }
+
+    pub fn aspect_ratio(&self) -> Option<f32> {
+        match self.value("aspect-ratio") {
+            Some(Value::Number(n)) if *n > 0.0 => Some(*n),
+            Some(Value::Length(n, _)) if *n > 0.0 => Some(*n),
+            Some(Value::Keyword(s)) => {
+                if let Some((w, h)) = s.split_once('/') {
+                    let w: f32 = w.trim().parse().ok()?;
+                    let h: f32 = h.trim().parse().ok()?;
+                    if h > 0.0 { Some(w / h) } else { None }
+                } else {
+                    s.trim().parse::<f32>().ok().filter(|&r| r > 0.0)
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 fn default_display(node_type: &NodeType) -> Display {

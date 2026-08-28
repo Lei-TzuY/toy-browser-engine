@@ -27,7 +27,7 @@ use crate::net::Url;
 
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
-    IntersectionObserverTarget, IntersectionObserverEntryData,
+    IntersectionObserverTarget, IntersectionObserverEntryData, ResizeObserverData, ResizeObserverEntryData,
     RequestData, ResponseData, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
@@ -426,6 +426,10 @@ impl JsRuntime {
                 let data = IntersectionObserverData::new(thresholds);
                 host_value(HostObject::IntersectionObserver(Rc::new(RefCell::new(data))))
             }
+            Builtin::ResizeObserverCtor => {
+                let data = ResizeObserverData::new();
+                host_value(HostObject::ResizeObserver(Rc::new(RefCell::new(data))))
+            }
             Builtin::MapCtor => {
                 let entries: Vec<(String, JsValue)> = if let Some(JsValue::Array(arr)) = args.first() {
                     arr.borrow().iter().filter_map(|item| {
@@ -629,6 +633,12 @@ impl JsRuntime {
                 "boundingClientRect" => rect_to_js(&entry.bounding_client_rect),
                 "intersectionRect" => rect_to_js(&entry.intersection_rect),
                 "rootBounds" => rect_to_js(&entry.root_bounds),
+                _ => JsValue::Undefined,
+            },
+            HostObject::ResizeObserver(_) => JsValue::Undefined,
+            HostObject::ResizeObserverEntry(entry) => match prop {
+                "target" => JsValue::Str(entry.target_id.clone()),
+                "contentRect" => rect_to_js(&entry.content_rect),
                 _ => JsValue::Undefined,
             },
             HostObject::JsMap(entries) => match prop {
@@ -842,6 +852,38 @@ impl JsRuntime {
                 _ => JsValue::Undefined,
             },
             HostObject::IntersectionObserverEntry(_) => JsValue::Undefined,
+            HostObject::ResizeObserver(data) => match prop {
+                "observe" => {
+                    let target_id = args.first().map(to_string).unwrap_or_default();
+                    let mut d = data.borrow_mut();
+                    if !d.targets.contains(&target_id) {
+                        d.targets.push(target_id);
+                    }
+                    JsValue::Undefined
+                }
+                "unobserve" => {
+                    let target_id = args.first().map(to_string).unwrap_or_default();
+                    data.borrow_mut().targets.retain(|t| t != &target_id);
+                    JsValue::Undefined
+                }
+                "disconnect" => {
+                    data.borrow_mut().targets.clear();
+                    JsValue::Undefined
+                }
+                "takeRecords" => {
+                    let entries: Vec<JsValue> = data.borrow().targets.iter().map(|target_id| {
+                        host_value(HostObject::ResizeObserverEntry(ResizeObserverEntryData {
+                            target_id: target_id.clone(),
+                            content_rect: [0.0, 0.0, 100.0, 100.0],
+                            border_box_size: (100.0, 100.0),
+                            content_box_size: (100.0, 100.0),
+                        }))
+                    }).collect();
+                    JsValue::Array(Rc::new(RefCell::new(entries)))
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::ResizeObserverEntry(_) => JsValue::Undefined,
             HostObject::JsMap(entries) => match prop {
                 "get" => {
                     let key = args.first().map(to_string).unwrap_or_default();
