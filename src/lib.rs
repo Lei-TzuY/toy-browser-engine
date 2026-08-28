@@ -46,7 +46,10 @@ mod image_prev8;
 #[allow(dead_code)]
 #[path = "image_bmp_rle4_final.rs"]
 mod image_prev9;
+#[allow(dead_code)]
 #[path = "image_bmp_bitfields_final.rs"]
+mod image_prev10;
+#[path = "image_bmp_os2_final.rs"]
 pub mod image;
 pub mod input;
 pub mod layout;
