@@ -9,6 +9,7 @@
 
 pub mod browser;
 pub mod css;
+pub mod cursor;
 pub mod document;
 pub mod dom;
 pub mod editing;
