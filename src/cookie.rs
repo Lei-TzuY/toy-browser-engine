@@ -2,6 +2,10 @@
 //  cookie.rs  —  RFC 6265 HTTP State Management & Cookie Jar
 // ============================================================
 
+use std::fmt;
+use std::rc::Rc;
+
+use crate::eventloop::Clock;
 use crate::net::Url;
 
 /// SameSite policy for cookies.
@@ -22,7 +26,7 @@ pub struct Cookie {
     /// exactly one host rather than leaking to its subdomains.
     pub host_only: bool,
     pub path: String,
-    /// Absolute epoch timestamp in milliseconds when this cookie expires.
+    /// Absolute timestamp in the cookie jar's time domain when this expires.
     pub expires_at_ms: Option<u64>,
     pub secure: bool,
     pub http_only: bool,
@@ -77,16 +81,87 @@ impl Cookie {
 }
 
 /// RFC 6265 Cookie Jar managing origin and path scoped cookies.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// A standalone jar uses the `now_ms` arguments supplied to its methods. A
+/// browser session can instead bind the jar to a shared [`Clock`] with
+/// [`CookieJar::with_clock`]. Once bound, all expiry checks use that session
+/// clock and ignore document-relative fallback timestamps. That distinction is
+/// important because a new document resets JavaScript's event-loop time to
+/// zero while cookie lifetime must continue monotonically across navigation.
 pub struct CookieJar {
     cookies: Vec<Cookie>,
+    clock: Option<Rc<dyn Clock>>,
+}
+
+impl fmt::Debug for CookieJar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CookieJar")
+            .field("cookies", &self.cookies)
+            .field("clock_bound", &self.clock.is_some())
+            .finish()
+    }
+}
+
+impl Clone for CookieJar {
+    fn clone(&self) -> Self {
+        CookieJar {
+            cookies: self.cookies.clone(),
+            clock: self.clock.clone(),
+        }
+    }
+}
+
+impl PartialEq for CookieJar {
+    fn eq(&self, other: &Self) -> bool {
+        // The clock is execution context, not stored cookie state. Two jars
+        // with the same cookies compare equal regardless of which clock drives
+        // their expiry checks.
+        self.cookies == other.cookies
+    }
+}
+
+impl Eq for CookieJar {}
+
+impl Default for CookieJar {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CookieJar {
     pub fn new() -> Self {
         CookieJar {
             cookies: Vec::new(),
+            clock: None,
         }
+    }
+
+    /// Create a jar whose expiry time follows one shared browser/session clock.
+    pub fn with_clock(clock: Rc<dyn Clock>) -> Self {
+        CookieJar {
+            cookies: Vec::new(),
+            clock: Some(clock),
+        }
+    }
+
+    /// Attach or replace the shared clock without changing stored cookies.
+    pub fn bind_clock(&mut self, clock: Rc<dyn Clock>) {
+        self.clock = Some(clock);
+    }
+
+    pub fn has_bound_clock(&self) -> bool {
+        self.clock.is_some()
+    }
+
+    /// Resolve a caller-provided timestamp into the jar's actual time domain.
+    /// Standalone callers keep their explicit deterministic time; browser
+    /// sessions use the bound monotonic clock so document time resets do not
+    /// extend cookie lifetime.
+    pub fn effective_now_ms(&self, fallback_ms: u64) -> u64 {
+        self.clock
+            .as_ref()
+            .map(|clock| clock.now_ms().max(0.0) as u64)
+            .unwrap_or(fallback_ms)
     }
 
     /// Parses a `Set-Cookie` header value into a [`Cookie`].
@@ -202,6 +277,7 @@ impl CookieJar {
 
     /// Stores or updates a cookie in the jar. If the cookie is expired, removes any existing match.
     pub fn store(&mut self, cookie: Cookie, now_ms: u64) {
+        let now_ms = self.effective_now_ms(now_ms);
         // Remove existing cookie with same (name, domain, path)
         self.cookies.retain(|c| {
             !(c.name == cookie.name
@@ -216,6 +292,7 @@ impl CookieJar {
 
     /// `document.cookie` getter: returns formatted string of matching non-HttpOnly cookies.
     pub fn get_document_cookie(&self, url: &Url, now_ms: u64) -> String {
+        let now_ms = self.effective_now_ms(now_ms);
         let host = url.host();
         let path = url.path();
         let is_secure = url.scheme() == "https";
@@ -236,6 +313,7 @@ impl CookieJar {
 
     /// `document.cookie = "key=value; ..."` setter from JavaScript.
     pub fn set_document_cookie(&mut self, cookie_str: &str, url: &Url, now_ms: u64) {
+        let now_ms = self.effective_now_ms(now_ms);
         if let Some(cookie) = Self::parse_set_cookie(cookie_str, url, now_ms) {
             // Script cannot create an HttpOnly cookie.
             let mut cookie = cookie;
@@ -249,6 +327,7 @@ impl CookieJar {
         if !matches!(url.scheme(), "http" | "https") {
             return None;
         }
+        let now_ms = self.effective_now_ms(now_ms);
         let host = url.host();
         let path = url.path();
         let is_secure = url.scheme() == "https";
@@ -270,17 +349,16 @@ impl CookieJar {
         }
     }
 
-    /// Number of active cookies in the jar.
+    /// Number of stored cookies. Expired entries are ignored by lookups and
+    /// are replaced/removed when a matching cookie is stored again.
     pub fn len(&self) -> usize {
         self.cookies.len()
     }
 
-    /// Check if the jar is empty.
     pub fn is_empty(&self) -> bool {
         self.cookies.is_empty()
     }
 
-    /// Clear all cookies.
     pub fn clear(&mut self) {
         self.cookies.clear();
     }
