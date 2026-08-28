@@ -82,3 +82,10 @@ fn rejects_overlapping_masks_via_existing_bmp_decoder() {
     dib[44..48].copy_from_slice(&0xf800u32.to_le_bytes());
     assert!(decode(&ico(16, dib)).is_err());
 }
+
+#[test]
+fn rejects_nonzero_directory_reserved_byte_on_bitfield_path() {
+    let mut bytes = ico(16, rgb565_with_external_masks(false));
+    bytes[9] = 1;
+    assert!(decode(&bytes).is_err());
+}
