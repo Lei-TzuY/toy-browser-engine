@@ -1,4 +1,4 @@
-use browser_engine::cookie::{Cookie, CookieJar, SameSite};
+use browser_engine::cookie::{Cookie, CookieJar, SameSite, MAX_COOKIE_AGE_SECONDS};
 use browser_engine::Url;
 
 fn https(path: &str) -> Url {
@@ -53,73 +53,89 @@ fn same_site_none_requires_secure_transport_and_secure_attribute() {
 }
 
 #[test]
-fn secure_prefix_requires_secure_https_cookie() {
-    assert!(CookieJar::parse_set_cookie(
-        "__Secure-id=1; Path=/",
-        &https("/"),
-        0,
-    )
-    .is_none());
-    assert!(CookieJar::parse_set_cookie(
-        "__Secure-id=1; Path=/; Secure",
-        &http("/"),
-        0,
-    )
-    .is_none());
-
-    let cookie = CookieJar::parse_set_cookie(
-        "__Secure-id=1; Path=/; Secure",
-        &https("/"),
-        0,
-    )
-    .expect("valid __Secure- cookie");
-    assert!(cookie.secure);
+fn secure_prefix_is_enforced_case_insensitively_by_the_user_agent() {
+    for name in ["__Secure-id", "__secure-id", "__SECURE-id", "__SeCuRe-id"] {
+        assert!(
+            CookieJar::parse_set_cookie(&format!("{name}=1; Path=/"), &https("/"), 0)
+                .is_none(),
+            "UA accepted prefixed cookie without Secure: {name}"
+        );
+        assert!(
+            CookieJar::parse_set_cookie(
+                &format!("{name}=1; Path=/; Secure"),
+                &http("/"),
+                0,
+            )
+            .is_none(),
+            "clear-text origin established prefixed cookie: {name}"
+        );
+        assert!(
+            CookieJar::parse_set_cookie(
+                &format!("{name}=1; Path=/; Secure"),
+                &https("/"),
+                0,
+            )
+            .is_some(),
+            "secure origin rejected valid prefixed cookie: {name}"
+        );
+    }
 }
 
 #[test]
-fn host_prefix_requires_secure_host_only_root_path() {
+fn host_prefix_requires_secure_host_only_root_path_and_explicit_path_attribute() {
     let url = https("/account/profile");
 
-    assert!(CookieJar::parse_set_cookie(
-        "__Host-session=1; Path=/; Secure; Domain=example.test",
-        &url,
-        0,
-    )
-    .is_none());
-    assert!(CookieJar::parse_set_cookie(
-        "__Host-session=1; Path=/account; Secure",
-        &url,
-        0,
-    )
-    .is_none());
-    assert!(CookieJar::parse_set_cookie(
-        "__Host-session=1; Path=/",
-        &url,
-        0,
-    )
-    .is_none());
+    for name in ["__Host-session", "__host-session", "__HOST-session"] {
+        assert!(CookieJar::parse_set_cookie(
+            &format!("{name}=1; Path=/; Secure; Domain=example.test"),
+            &url,
+            0,
+        )
+        .is_none());
+        assert!(CookieJar::parse_set_cookie(
+            &format!("{name}=1; Path=/account; Secure"),
+            &url,
+            0,
+        )
+        .is_none());
+        assert!(CookieJar::parse_set_cookie(
+            &format!("{name}=1; Secure"),
+            &https("/"),
+            0,
+        )
+        .is_none(), "Path=/ must be explicitly represented by a Path attribute");
+        assert!(CookieJar::parse_set_cookie(
+            &format!("{name}=1; Path=/"),
+            &url,
+            0,
+        )
+        .is_none());
 
-    let cookie = CookieJar::parse_set_cookie(
-        "__Host-session=1; Path=/; Secure",
-        &url,
-        0,
-    )
-    .expect("valid __Host- cookie");
-    assert!(cookie.secure);
-    assert!(cookie.host_only);
-    assert_eq!(cookie.domain, "example.test");
-    assert_eq!(cookie.path, "/");
+        let cookie = CookieJar::parse_set_cookie(
+            &format!("{name}=1; Path=/; Secure"),
+            &url,
+            0,
+        )
+        .expect("valid __Host- family cookie");
+        assert!(cookie.secure);
+        assert!(cookie.host_only);
+        assert_eq!(cookie.domain, "example.test");
+        assert_eq!(cookie.path, "/");
+    }
 }
 
 #[test]
-fn cookie_prefix_matching_is_case_sensitive() {
-    let cookie = CookieJar::parse_set_cookie(
-        "__secure-id=1; Path=/",
-        &https("/"),
-        0,
-    )
-    .expect("lower-case spelling is not the reserved prefix");
-    assert!(!cookie.secure);
+fn nameless_cookie_cannot_smuggle_a_reserved_prefix_in_its_value() {
+    for value in ["__Secure-id=1", "__secure-id=1", "__HOST-id=1"] {
+        assert!(
+            CookieJar::parse_set_cookie(value, &https("/"), 0).is_none(),
+            "accepted nameless reserved-prefix cookie: {value}"
+        );
+    }
+    let ordinary = CookieJar::parse_set_cookie("plain-value", &https("/"), 0)
+        .expect("nameless non-prefixed cookies are permitted by UA parsing");
+    assert_eq!(ordinary.name, "");
+    assert_eq!(ordinary.value, "plain-value");
 }
 
 #[test]
@@ -160,7 +176,7 @@ fn ip_domain_attributes_are_exact_only() {
 }
 
 #[test]
-fn trailing_dot_domain_is_not_normalized_into_a_valid_cookie() {
+fn trailing_dot_domain_does_not_domain_match_the_origin() {
     assert!(CookieJar::parse_set_cookie(
         "sid=1; Domain=example.test.; Path=/",
         &https("/"),
@@ -170,15 +186,17 @@ fn trailing_dot_domain_is_not_normalized_into_a_valid_cookie() {
 }
 
 #[test]
-fn enormous_max_age_saturates_instead_of_overflowing() {
+fn enormous_max_age_is_clamped_to_the_engine_400_day_policy() {
+    let now_ms = 123;
     let cookie = CookieJar::parse_set_cookie(
         "long=1; Max-Age=9223372036854775807; Path=/",
         &https("/"),
-        123,
+        now_ms,
     )
     .expect("large but parseable Max-Age");
 
-    assert_eq!(cookie.expires_at_ms, Some(u64::MAX));
-    assert!(!cookie.is_expired(u64::MAX - 1));
-    assert!(cookie.is_expired(u64::MAX));
+    let expected = now_ms + MAX_COOKIE_AGE_SECONDS * 1000;
+    assert_eq!(cookie.expires_at_ms, Some(expected));
+    assert!(!cookie.is_expired(expected - 1));
+    assert!(cookie.is_expired(expected));
 }
