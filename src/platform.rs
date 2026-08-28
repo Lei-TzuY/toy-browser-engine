@@ -1,10 +1,11 @@
 // ============================================================
-//  platform.rs  —  minifb → engine input adapter
+//  platform.rs  —  minifb → engine input/cursor adapter
 // ============================================================
 //
-//  The only place that knows about minifb's key representation. It turns
-//  window events into the engine's [`KeyEvent`]s, so `main` never interprets
-//  keystrokes and the engine never mentions a window toolkit.
+//  The only place that knows about minifb's input and cursor representation.
+//  It turns window events into engine [`KeyEvent`]s and translates the
+//  backend-neutral cursor presentation plan into minifb's limited native
+//  cursor vocabulary.
 //
 //  minifb reports characters and keys through two separate channels:
 //  `get_keys_pressed` gives physical keys, and an input callback gives the
@@ -14,8 +15,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use browser_engine::cursor_presentation::{CursorPresentation, NativeCursor};
 use browser_engine::input::{Key as EngineKey, KeyEvent, Modifiers};
-use minifb::{InputCallback, Key as MinifbKey, KeyRepeat, Window};
+use minifb::{CursorStyle, InputCallback, Key as MinifbKey, KeyRepeat, Window};
 
 /// Characters the platform produced since the last frame.
 #[derive(Default)]
@@ -79,6 +81,37 @@ impl InputAdapter {
     }
 }
 
+/// Apply the engine's backend-neutral cursor presentation to a minifb window.
+///
+/// `Hidden` implements CSS `cursor: none`; `SoftwareImage` hides minifb's
+/// cursor so the decoded image can be painted by `cursor_overlay`; native
+/// presentations keep the OS cursor visible and choose the nearest minifb
+/// shape.
+pub fn apply_cursor_presentation(window: &mut Window, presentation: CursorPresentation) {
+    match presentation {
+        CursorPresentation::Hidden | CursorPresentation::SoftwareImage => {
+            window.set_cursor_visibility(false);
+        }
+        CursorPresentation::Native(cursor) => {
+            window.set_cursor_visibility(true);
+            window.set_cursor_style(cursor_style(cursor));
+        }
+    }
+}
+
+fn cursor_style(cursor: NativeCursor) -> CursorStyle {
+    match cursor {
+        NativeCursor::Arrow => CursorStyle::Arrow,
+        NativeCursor::IBeam => CursorStyle::Ibeam,
+        NativeCursor::Crosshair => CursorStyle::Crosshair,
+        NativeCursor::ClosedHand => CursorStyle::ClosedHand,
+        NativeCursor::OpenHand => CursorStyle::OpenHand,
+        NativeCursor::ResizeLeftRight => CursorStyle::ResizeLeftRight,
+        NativeCursor::ResizeUpDown => CursorStyle::ResizeUpDown,
+        NativeCursor::ResizeAll => CursorStyle::ResizeAll,
+    }
+}
+
 /// Wrapper so the queue can be shared between the callback and the adapter.
 struct SharedQueue(Rc<RefCell<CharacterQueue>>);
 
@@ -109,4 +142,27 @@ fn translate(key: MinifbKey) -> Option<EngineKey> {
         MinifbKey::PageDown => EngineKey::PageDown,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_cursor_mapping_covers_every_backend_shape() {
+        assert_eq!(cursor_style(NativeCursor::Arrow), CursorStyle::Arrow);
+        assert_eq!(cursor_style(NativeCursor::IBeam), CursorStyle::Ibeam);
+        assert_eq!(cursor_style(NativeCursor::Crosshair), CursorStyle::Crosshair);
+        assert_eq!(cursor_style(NativeCursor::ClosedHand), CursorStyle::ClosedHand);
+        assert_eq!(cursor_style(NativeCursor::OpenHand), CursorStyle::OpenHand);
+        assert_eq!(
+            cursor_style(NativeCursor::ResizeLeftRight),
+            CursorStyle::ResizeLeftRight
+        );
+        assert_eq!(
+            cursor_style(NativeCursor::ResizeUpDown),
+            CursorStyle::ResizeUpDown
+        );
+        assert_eq!(cursor_style(NativeCursor::ResizeAll), CursorStyle::ResizeAll);
+    }
 }
