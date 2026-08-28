@@ -121,7 +121,12 @@ fn unrelated_domain_and_different_cookie_name_do_not_trigger_integrity_block() {
 #[test]
 fn insecure_document_cookie_cannot_overlay_secure_state_but_https_can() {
     let mut jar = CookieJar::new();
-    seed_secure(&mut jar, "/");
+    let secure_source = url("https://example.test/");
+    assert!(jar.store_set_cookie(
+        "sid=good; Path=/; Secure",
+        &secure_source,
+        0,
+    ));
 
     jar.set_document_cookie(
         "sid=script-http; Path=/",
@@ -129,14 +134,16 @@ fn insecure_document_cookie_cannot_overlay_secure_state_but_https_can() {
         0,
     );
     assert_eq!(
-        jar.get_http_cookie_header(&url("https://example.test/"), 0)
-            .as_deref(),
+        jar.get_http_cookie_header(&secure_source, 0).as_deref(),
         Some("sid=good")
     );
 
+    // HttpOnly is intentionally absent here. This test isolates the Secure
+    // overlay rule; #111 separately proves that script can never overwrite an
+    // HttpOnly cookie, even from HTTPS.
     jar.set_document_cookie(
         "sid=script-https; Path=/",
-        &url("https://example.test/"),
+        &secure_source,
         0,
     );
     assert_eq!(
