@@ -76,6 +76,11 @@ fn selected_masked_ico_entry(bytes: &[u8]) -> Result<Option<Entry>, ImageError> 
         let base = 6 + index * 16;
         let width = if bytes[base] == 0 { 256 } else { bytes[base] as u32 };
         let height = if bytes[base + 1] == 0 { 256 } else { bytes[base + 1] as u32 };
+        if bytes[base + 3] != 0 {
+            return Err(ImageError::Decode(format!(
+                "ICO entry {index} reserved byte must be zero"
+            )));
+        }
         let bit_depth = u16_le(bytes, base + 6, "entry bit depth")?;
         let size = usize::try_from(u32_le(bytes, base + 8, "entry byte size")?)
             .map_err(|_| ImageError::Decode("ICO entry size does not fit this platform".into()))?;
