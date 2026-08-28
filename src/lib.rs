@@ -67,7 +67,10 @@ mod image_prev15;
 #[allow(dead_code)]
 #[path = "image_ico_bitfields_final.rs"]
 mod image_prev16;
+#[allow(dead_code)]
 #[path = "image_ico_rle_final.rs"]
+mod image_prev17;
+#[path = "image_ico_os2_core_final.rs"]
 pub mod image;
 pub mod input;
 pub mod layout;
