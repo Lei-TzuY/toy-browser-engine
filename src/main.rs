@@ -11,6 +11,8 @@ use std::{env, fs, process};
 
 use browser_engine::{
     browser::{Browser, ClickOutcome},
+    cursor_assets::CursorResolver,
+    cursor_frame::prepare_cursor_frame,
     document::PointerState,
     dom::NodeType,
     layout::{BoxType, LayoutBox},
@@ -433,6 +435,17 @@ fn node_label(node: &browser_engine::dom::Node) -> String {
 /// `requestAnimationFrame` callbacks get to run.
 const FRAME_RATE: usize = 60;
 
+fn reset_cursor_resolver(resolver: &mut CursorResolver, browser: &Browser) {
+    *resolver = CursorResolver::new();
+    let report = resolver.preload_stylesheet(browser);
+    if report.failed > 0 {
+        eprintln!(
+            "cursor preload: {} loaded, {} failed",
+            report.loaded, report.failed
+        );
+    }
+}
+
 fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), minifb::Error> {
     let mut window = Window::new(
         &browser.status_line(),
@@ -444,12 +457,22 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
     // not spin the CPU. minifb sleeps for us inside `update_with_buffer`.
     window.set_target_fps(FRAME_RATE);
     let input = platform::InputAdapter::attach(&mut window);
+    let mut cursor_resolver = CursorResolver::new();
+    let preload = cursor_resolver.preload_stylesheet(browser);
+    if preload.failed > 0 {
+        eprintln!(
+            "cursor preload: {} loaded, {} failed",
+            preload.loaded, preload.failed
+        );
+    }
 
     let mut scroll_y: f32 = 0.0;
     let mut was_mouse_down = false;
     let mut title = String::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
+        let mut document_changed = false;
+
         // ── Browser chrome shortcuts ──────────────────────────────────────
         // These are the window's own keys; everything else goes to the page.
         if let Some((_, wheel_y)) = window.get_scroll_wheel() {
@@ -461,13 +484,16 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         if chrome {
             if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) && browser.back() {
                 scroll_y = 0.0;
+                document_changed = true;
             }
             if window.is_key_pressed(Key::Right, minifb::KeyRepeat::No) && browser.forward() {
                 scroll_y = 0.0;
+                document_changed = true;
             }
             if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
-                if let Err(error) = browser.reload() {
-                    eprintln!("reload failed: {error}");
+                match browser.reload() {
+                    Ok(()) => document_changed = true,
+                    Err(error) => eprintln!("reload failed: {error}"),
                 }
             }
             if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
@@ -485,6 +511,7 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
                     ClickOutcome::Navigated(url) => {
                         println!("→ {url}");
                         scroll_y = 0.0;
+                        document_changed = true;
                     }
                     ClickOutcome::NavigationFailed { url, error } => {
                         eprintln!("could not open {url}: {error}");
@@ -505,6 +532,7 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
                     ClickOutcome::Navigated(url) => {
                         println!("→ {url}");
                         scroll_y = 0.0;
+                        document_changed = true;
                     }
                     ClickOutcome::NavigationFailed { url, error } => {
                         eprintln!("could not open {url}: {error}");
@@ -515,6 +543,10 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         }
         was_mouse_down = is_mouse_down;
 
+        if document_changed {
+            reset_cursor_resolver(&mut cursor_resolver, browser);
+        }
+
         // ── Event loop ────────────────────────────────────────────────────
         // Timers and animation frames run here, between input and paint, so
         // whatever a callback changed is in the frame that follows.
@@ -524,6 +556,10 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         let max_scroll = (browser.document().content_height(width as f32) - height as f32).max(0.0);
         scroll_y = scroll_y.clamp(0.0, max_scroll);
 
+        // Recompute page coordinates after navigation or scroll clamping. The
+        // software cursor itself is composited with the original viewport
+        // coordinates by `prepare_cursor_frame` below.
+        let page_point = mouse.map(|(x, y)| (x, y + scroll_y));
         let hovered = page_point.and_then(|(x, y)| browser.document().hit_test(x, y, width as f32));
         let active = is_mouse_down.then(|| hovered.clone()).flatten();
         let pointer = PointerState {
@@ -532,7 +568,17 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
             hovered,
         };
 
-        let canvas = browser.render(width, height, scroll_y, &pointer);
+        let mut canvas = browser.render(width, height, scroll_y, &pointer);
+        let cursor_outcome = prepare_cursor_frame(
+            &mut cursor_resolver,
+            browser,
+            &mut canvas,
+            pointer.hovered.as_ref(),
+            mouse,
+            width as f32,
+            &pointer,
+        );
+        platform::apply_cursor_presentation(&mut window, cursor_outcome.presentation);
         window.update_with_buffer(&canvas.to_u32_buffer(), width, height)?;
 
         // The title bar is the address bar: URL, title and history position.
