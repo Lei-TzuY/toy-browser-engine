@@ -639,6 +639,7 @@ impl JsRuntime {
                 "size" => JsValue::Number(items.borrow().len() as f32),
                 _ => JsValue::Undefined,
             },
+            HostObject::Crypto => JsValue::Undefined,
         }
     }
 
@@ -925,6 +926,34 @@ impl JsRuntime {
                         JsValue::Array(Rc::new(RefCell::new(vec![JsValue::Str(v.clone()), JsValue::Str(v.clone())])))
                     }).collect();
                     JsValue::Array(Rc::new(RefCell::new(pairs)))
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::Crypto => match prop {
+                "getRandomValues" => {
+                    if let Some(arr_val) = args.first() {
+                        if let JsValue::Array(items) = arr_val {
+                            let mut items_mut = items.borrow_mut();
+                            let len = items_mut.len();
+                            for i in 0..len {
+                                let pseudo = ((i as u32 * 1103515245 + 12345) % 256) as f32;
+                                items_mut[i] = JsValue::Number(pseudo);
+                            }
+                            return arr_val.clone();
+                        }
+                    }
+                    JsValue::Undefined
+                }
+                "randomUUID" => {
+                    let uuid = format!(
+                        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+                        0x110ec58a_u32,
+                        0xa0f2_u16,
+                        0xac4_u16,
+                        0x8393_u16,
+                        0xc0de00000001_u64
+                    );
+                    JsValue::Str(uuid)
                 }
                 _ => JsValue::Undefined,
             },

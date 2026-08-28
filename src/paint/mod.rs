@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{Color, ColorStop, LinearGradient, Unit, Value};
+use crate::css::parser::{Color, ColorStop, LinearGradient, RadialGradient, Unit, Value};
 use crate::dom::NodeType;
 use crate::image::RasterImage;
 use crate::layout::{BoxType, LayoutBox, ObjectFit, Rect, TextFragment};
@@ -34,6 +34,8 @@ pub enum DisplayCommand {
     PopClip,
     /// Linear gradient background: (gradient spec, rect, opacity).
     LinearGradient(LinearGradient, Rect, f32),
+    /// Radial gradient background: (gradient spec, rect, opacity).
+    RadialGradient(RadialGradient, Rect, f32),
     /// A decoded bitmap: `source` (in image pixels) is scaled onto `dest`.
     Image {
         image: Rc<RasterImage>,
@@ -73,6 +75,10 @@ impl DisplayCommand {
             }
             DisplayCommand::PopClip => {}
             DisplayCommand::LinearGradient(_, rect, _) => {
+                rect.x += dx;
+                rect.y += dy;
+            }
+            DisplayCommand::RadialGradient(_, rect, _) => {
                 rect.x += dx;
                 rect.y += dy;
             }
@@ -780,6 +786,13 @@ fn render_background_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacit
             opacity,
         ));
     }
+    if let Some(Value::RadialGradient(g)) = grad_val {
+        list.push(DisplayCommand::RadialGradient(
+            g.clone(),
+            lb.dimensions.border_box(),
+            opacity,
+        ));
+    }
 }
 
 fn render_borders_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
@@ -943,6 +956,9 @@ impl Canvas {
             DisplayCommand::LinearGradient(grad, rect, opacity) => {
                 self.paint_linear_gradient(grad, *rect, *opacity);
             }
+            DisplayCommand::RadialGradient(grad, rect, opacity) => {
+                self.paint_radial_gradient(grad, *rect, *opacity);
+            }
             DisplayCommand::BoxShadow {
                 rect,
                 offset_x,
@@ -1103,6 +1119,43 @@ impl Canvas {
                 let rpy = y as f32 + 0.5 - cy;
                 let proj = rpx * dx + rpy * dy;
                 let t = ((proj + half_len) / (2.0 * half_len)).clamp(0.0, 1.0);
+                let color = interp_gradient_stops(&stops, t);
+                let a = (color.a as f32 * opacity) as u8;
+                if a == 0 {
+                    continue;
+                }
+                self.blend_pixel(x, y, Color { a, ..color }, a);
+            }
+        }
+    }
+
+    fn paint_radial_gradient(&mut self, grad: &RadialGradient, rect: Rect, opacity: f32) {
+        if grad.stops.is_empty() {
+            return;
+        }
+
+        let cx = rect.x + rect.width / 2.0;
+        let cy = rect.y + rect.height / 2.0;
+        let max_r = ((rect.width / 2.0).powi(2) + (rect.height / 2.0).powi(2)).sqrt().max(1.0);
+
+        let stops = resolve_gradient_stops(&grad.stops);
+
+        let x0 = clamp(rect.x as i32, 0, self.width as i32);
+        let y0 = clamp(rect.y as i32, 0, self.height as i32);
+        let x1 = clamp((rect.x + rect.width) as i32, 0, self.width as i32);
+        let y1 = clamp((rect.y + rect.height) as i32, 0, self.height as i32);
+
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if let Some(&(cx0, cy0, cx1, cy1)) = self.clip_stack.last() {
+                    if x < cx0 || x >= cx1 || y < cy0 || y >= cy1 {
+                        continue;
+                    }
+                }
+                let rpx = x as f32 + 0.5 - cx;
+                let rpy = y as f32 + 0.5 - cy;
+                let dist = (rpx * rpx + rpy * rpy).sqrt();
+                let t = (dist / max_r).clamp(0.0, 1.0);
                 let color = interp_gradient_stops(&stops, t);
                 let a = (color.a as f32 * opacity) as u8;
                 if a == 0 {

@@ -134,6 +134,13 @@ impl<'a> StyledNode<'a> {
             _ => Overflow::Visible,
         }
     }
+
+    pub fn box_sizing(&self) -> BoxSizing {
+        match self.value("box-sizing") {
+            Some(Value::Keyword(s)) if s == "border-box" => BoxSizing::BorderBox,
+            _ => BoxSizing::ContentBox,
+        }
+    }
 }
 
 fn default_display(node_type: &NodeType) -> Display {
@@ -184,6 +191,12 @@ pub enum Overflow {
     Hidden,
     Scroll,
     Auto,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BoxSizing {
+    ContentBox,
+    BorderBox,
 }
 
 // ── Interactive state context ───────────────────────────────────────────────

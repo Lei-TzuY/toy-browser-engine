@@ -142,6 +142,12 @@ pub struct LinearGradient {
     pub stops: Vec<ColorStop>,
 }
 
+/// A parsed `radial-gradient(…)` value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadialGradient {
+    pub stops: Vec<ColorStop>,
+}
+
 // ── Pseudo-class types ────────────────────────────────────────────────────────
 
 /// The `An+B` expression used in `:nth-child(An+B)` and related selectors.
@@ -471,6 +477,7 @@ pub enum Value {
     /// Unitless number (e.g. `line-height: 1.5`, `opacity: 0.8`, `flex-grow: 2`).
     Number(f32),
     LinearGradient(LinearGradient),
+    RadialGradient(RadialGradient),
     BoxShadow(BoxShadow),
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
@@ -515,6 +522,7 @@ impl Value {
             Value::Calc(_) => "calc(...)".to_string(),
             Value::Var { name, .. } => format!("var({})", name),
             Value::LinearGradient(_) => "linear-gradient(...)".to_string(),
+            Value::RadialGradient(_) => "radial-gradient(...)".to_string(),
             Value::BoxShadow(_) => "box-shadow(...)".to_string(),
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
@@ -975,6 +983,7 @@ impl Parser {
     fn parse_function(&mut self, name: String) -> Value {
         match name.to_ascii_lowercase().as_str() {
             "linear-gradient" => self.parse_linear_gradient_inner(),
+            "radial-gradient" => self.parse_radial_gradient_inner(),
             "var" => self.parse_var_inner(),
             "calc" => self.parse_calc_inner(),
             "rgb" | "rgba" => self.parse_rgb_inner(),
@@ -1309,6 +1318,98 @@ impl Parser {
             self.consume();
         }
         Value::LinearGradient(LinearGradient { angle_deg, stops })
+    }
+
+    /// Parse the body of `radial-gradient(…)` after the opening `(` has been consumed.
+    fn parse_radial_gradient_inner(&mut self) -> Value {
+        self.skip_ws_and_comments();
+        let saved = self.pos;
+        let token = self.parse_ident().to_ascii_lowercase();
+        if matches!(
+            token.as_str(),
+            "circle"
+                | "ellipse"
+                | "closest-side"
+                | "farthest-side"
+                | "closest-corner"
+                | "farthest-corner"
+        ) {
+            self.skip_ws_and_comments();
+            if self.peek() == ',' {
+                self.consume();
+            } else if self.peek().is_alphabetic() {
+                let _at = self.parse_ident();
+                self.consume_while(|c| c != ',' && c != ')');
+                if self.peek() == ',' {
+                    self.consume();
+                }
+            }
+        } else {
+            self.pos = saved;
+        }
+
+        let mut stops: Vec<ColorStop> = Vec::new();
+        loop {
+            self.skip_ws_and_comments();
+            if matches!(self.peek(), ')' | '\0') {
+                break;
+            }
+
+            let color_opt: Option<Color> = match self.peek() {
+                '#' => {
+                    self.consume();
+                    if let Value::Color(c) = self.parse_hex_color() {
+                        Some(c)
+                    } else {
+                        None
+                    }
+                }
+                c if c.is_alphabetic() => {
+                    let sp = self.pos;
+                    let name = self.parse_ident();
+                    if let Some(c) = named_color(&name) {
+                        Some(c)
+                    } else {
+                        self.pos = sp;
+                        None
+                    }
+                }
+                _ => None,
+            };
+
+            let Some(color) = color_opt else {
+                self.consume_while(|c| c != ',' && c != ')');
+                if self.peek() == ',' {
+                    self.consume();
+                }
+                continue;
+            };
+
+            self.skip_ws_and_comments();
+            let position = if self.peek().is_ascii_digit() || self.peek() == '.' {
+                let num_s = self.consume_while(|c| c.is_ascii_digit() || c == '.');
+                let num: f32 = num_s.parse().unwrap_or(0.0);
+                if self.peek() == '%' {
+                    self.consume();
+                }
+                Some(num / 100.0)
+            } else {
+                None
+            };
+
+            stops.push(ColorStop { color, position });
+            self.skip_ws_and_comments();
+            if self.peek() == ',' {
+                self.consume();
+            } else if self.peek() == ')' {
+                break;
+            }
+        }
+
+        if self.peek() == ')' {
+            self.consume();
+        }
+        Value::RadialGradient(RadialGradient { stops })
     }
 
     // ── Declaration parsing ───────────────────────────────────────────────
@@ -2179,6 +2280,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" => true,
         "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
         "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
+        "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }

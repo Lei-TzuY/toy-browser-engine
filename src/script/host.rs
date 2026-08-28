@@ -379,6 +379,7 @@ pub enum HostObject {
     IntersectionObserverEntry(IntersectionObserverEntryData),
     JsMap(Rc<RefCell<Vec<(String, crate::script::interp::JsValue)>>>),
     JsSet(Rc<RefCell<Vec<String>>>),
+    Crypto,
 }
 
 impl HostObject {
@@ -400,6 +401,7 @@ impl HostObject {
             HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
             HostObject::JsMap(_) => "Map",
             HostObject::JsSet(_) => "Set",
+            HostObject::Crypto => "Crypto",
         }
     }
 
