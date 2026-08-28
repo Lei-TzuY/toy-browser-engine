@@ -2,6 +2,7 @@
 // cursor_assets.rs — CSS cursor URL resource resolution
 // ============================================================
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::browser::Browser;
@@ -45,6 +46,17 @@ impl ResolvedCursor {
     }
 }
 
+/// Summary returned by stylesheet cursor preloading.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CursorPreloadReport {
+    /// Unique `cursor: url(...)` resources discovered in the merged stylesheet.
+    pub discovered: usize,
+    /// Resources already cached or loaded and decoded successfully.
+    pub loaded: usize,
+    /// Resources that could not be resolved, loaded, or decoded.
+    pub failed: usize,
+}
+
 /// Cache-backed resolver for CSS image cursors.
 ///
 /// The current CSS parser preserves unknown functions as `Value::Keyword`, so
@@ -67,6 +79,47 @@ impl CursorResolver {
 
     pub fn cache_mut(&mut self) -> &mut CursorCache {
         &mut self.cache
+    }
+
+    /// Load every unique single-URL cursor referenced by the merged stylesheet.
+    ///
+    /// Preloading is optional: `resolve_for_path()` still loads on demand. A UI
+    /// can call this after navigation so the first hover over a custom cursor
+    /// does not pay resource I/O and decode latency on the pointer-move path.
+    pub fn preload_stylesheet(&mut self, browser: &Browser) -> CursorPreloadReport {
+        let mut report = CursorPreloadReport::default();
+        let mut seen = HashSet::new();
+
+        for rule in &browser.document().stylesheet.rules {
+            for declaration in &rule.declarations {
+                if declaration.name != "cursor" {
+                    continue;
+                }
+                let Value::Keyword(raw) = &declaration.value else {
+                    continue;
+                };
+                let Some(reference) = parse_cursor_url(raw) else {
+                    continue;
+                };
+                let Some(url) = browser.document().resolve(&reference) else {
+                    report.discovered += 1;
+                    report.failed += 1;
+                    continue;
+                };
+                let key = url.without_fragment().to_string();
+                if !seen.insert(key) {
+                    continue;
+                }
+
+                report.discovered += 1;
+                match self.cache.fetch(&url, browser.loader()) {
+                    Ok(_) => report.loaded += 1,
+                    Err(_) => report.failed += 1,
+                }
+            }
+        }
+
+        report
     }
 
     /// Resolve a cursor for a known DOM path. Relative image references use
@@ -238,6 +291,33 @@ mod tests {
         // A second resolution is served by CursorCache rather than re-decoding.
         let _ = resolver.resolve_for_path(&browser, &path, 800.0, &PointerState::default());
         assert_eq!(resolver.cache().len(), 1);
+    }
+
+    #[test]
+    fn preload_deduplicates_and_warms_successes_and_failures() {
+        let mut loader = MemoryLoader::new();
+        loader.insert(
+            "demo:///index.html",
+            b"<style>#a { cursor: url(pointer.cur); } #b { cursor: url(pointer.cur); } #c { cursor: url(missing.cur); }</style><div id='a'></div><div id='b'></div><div id='c'></div>".to_vec(),
+        );
+        loader.insert("demo:///pointer.cur", cur([1, 2, 3]));
+        let browser = Browser::open(
+            Box::new(loader),
+            &Url::parse("demo:///index.html").unwrap(),
+        )
+        .unwrap();
+
+        let mut resolver = CursorResolver::new();
+        let report = resolver.preload_stylesheet(&browser);
+        assert_eq!(
+            report,
+            CursorPreloadReport {
+                discovered: 2,
+                loaded: 1,
+                failed: 1,
+            }
+        );
+        assert_eq!(resolver.cache().len(), 2);
     }
 
     #[test]
