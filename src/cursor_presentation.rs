@@ -52,7 +52,7 @@ pub fn presentation_for_icon(icon: CursorIcon) -> CursorPresentation {
         Grabbing => NativeCursor::ClosedHand,
         ColResize | EResize | WResize | EwResize => NativeCursor::ResizeLeftRight,
         RowResize | NResize | SResize | NsResize => NativeCursor::ResizeUpDown,
-        Move | NeResize | NwResize | SeResize | SwResize | NeswResize | NwseResize => {
+        Move | AllScroll | NeResize | NwResize | SeResize | SwResize | NeswResize | NwseResize => {
             NativeCursor::ResizeAll
         }
         Auto
@@ -112,6 +112,10 @@ mod tests {
         );
         assert_eq!(
             presentation_for_icon(CursorIcon::NwseResize),
+            CursorPresentation::Native(NativeCursor::ResizeAll)
+        );
+        assert_eq!(
+            presentation_for_icon(CursorIcon::AllScroll),
             CursorPresentation::Native(NativeCursor::ResizeAll)
         );
     }

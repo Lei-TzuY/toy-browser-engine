@@ -31,6 +31,7 @@ pub enum CursorIcon {
     Alias,
     Copy,
     Move,
+    AllScroll,
     NoDrop,
     NotAllowed,
     Grab,
@@ -73,6 +74,7 @@ impl CursorIcon {
             "alias" => Self::Alias,
             "copy" => Self::Copy,
             "move" => Self::Move,
+            "all-scroll" => Self::AllScroll,
             "no-drop" => Self::NoDrop,
             "not-allowed" => Self::NotAllowed,
             "grab" => Self::Grab,
@@ -114,6 +116,7 @@ impl CursorIcon {
             Self::Alias => "alias",
             Self::Copy => "copy",
             Self::Move => "move",
+            Self::AllScroll => "all-scroll",
             Self::NoDrop => "no-drop",
             Self::NotAllowed => "not-allowed",
             Self::Grab => "grab",
@@ -254,6 +257,7 @@ mod tests {
             ("text", CursorIcon::Text),
             ("crosshair", CursorIcon::Crosshair),
             ("move", CursorIcon::Move),
+            ("all-scroll", CursorIcon::AllScroll),
             ("not-allowed", CursorIcon::NotAllowed),
             ("grab", CursorIcon::Grab),
             ("nwse-resize", CursorIcon::NwseResize),
@@ -293,6 +297,16 @@ mod tests {
         let doc = document("<style>#parent { cursor: move; }</style><div id='parent'><span id='child'>child</span></div>");
         let child = dom_api::query_selector(&doc.dom, &[], "#child").unwrap();
         assert_eq!(cursor_for_path(&doc, &child, 800.0, &PointerState::default()), Some(CursorIcon::Move));
+    }
+
+    #[test]
+    fn all_scroll_keyword_flows_through_the_computed_style_runtime() {
+        let doc = document("<style>#target { cursor: all-scroll; }</style><div id='target'>drag</div>");
+        let target = dom_api::query_selector(&doc.dom, &[], "#target").unwrap();
+        assert_eq!(
+            cursor_for_path(&doc, &target, 800.0, &PointerState::default()),
+            Some(CursorIcon::AllScroll)
+        );
     }
 
     #[test]
