@@ -9,18 +9,18 @@ use crate::net::{LoadError, ResourceLoader, Url};
 
 pub use crate::image_prev9::{ImageError, ImageFormat, RasterImage};
 
-/// Decode image bytes into straight RGBA8, adding BI_BITFIELDS support on top
-/// of the existing BMP/image decoder stack.
+/// Decode image bytes into straight RGBA8, adding BI_BITFIELDS and
+/// BI_ALPHABITFIELDS support on top of the existing BMP/image decoder stack.
 pub fn decode(bytes: &[u8]) -> Result<RasterImage, ImageError> {
-    if is_bitfields_bmp(bytes) {
-        decode_bitfields_bmp(bytes)
+    if is_masked_bmp(bytes) {
+        decode_masked_bmp(bytes)
     } else {
         crate::image_prev9::decode(bytes)
     }
 }
 
-fn is_bitfields_bmp(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"BM") && read_u32_raw(bytes, 30) == Some(3)
+fn is_masked_bmp(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"BM") && matches!(read_u32_raw(bytes, 30), Some(3 | 6))
 }
 
 fn read_u16_raw(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -62,7 +62,6 @@ impl ChannelMask {
         }
         let shift = mask.trailing_zeros();
         let normalized = mask >> shift;
-        // Windows bitfield masks describe one contiguous run of channel bits.
         if normalized & normalized.wrapping_add(1) != 0 {
             return Err(ImageError::Decode(format!("BMP {name} bitfield mask is non-contiguous")));
         }
@@ -75,9 +74,9 @@ impl ChannelMask {
     }
 }
 
-fn decode_bitfields_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
+fn decode_masked_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
     if bytes.len() < 66 {
-        return Err(ImageError::Decode("truncated BMP BI_BITFIELDS header".into()));
+        return Err(ImageError::Decode("truncated BMP bitfield header".into()));
     }
     let pixel_offset = u32_le(bytes, 10, "pixel offset")? as usize;
     let dib_size = u32_le(bytes, 14, "DIB header size")? as usize;
@@ -96,31 +95,51 @@ fn decode_bitfields_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         return Err(ImageError::Decode("BMP bitfields require positive width and non-zero height".into()));
     }
     if u16_le(bytes, 26, "planes")? != 1 {
-        return Err(ImageError::Decode("BI_BITFIELDS requires one plane".into()));
+        return Err(ImageError::Decode("BMP bitfields require one plane".into()));
     }
     let depth = u16_le(bytes, 28, "bits per pixel")?;
     if depth != 16 && depth != 32 {
-        return Err(ImageError::Decode("BI_BITFIELDS supports only 16- or 32-bit pixels".into()));
+        return Err(ImageError::Decode("BMP bitfields support only 16- or 32-bit pixels".into()));
     }
-    if u32_le(bytes, 30, "compression")? != 3 {
-        return Err(ImageError::Decode("BMP is not BI_BITFIELDS-compressed".into()));
+    let compression = u32_le(bytes, 30, "compression")?;
+    if compression != 3 && compression != 6 {
+        return Err(ImageError::Decode("BMP is not bitfield-compressed".into()));
+    }
+    let has_alpha = compression == 6;
+    if has_alpha && depth != 32 {
+        return Err(ImageError::Decode("BI_ALPHABITFIELDS requires 32-bit pixels".into()));
     }
 
-    // BITMAPINFOHEADER stores the masks immediately after its 40-byte body;
-    // V2+ headers store the same fields at these fixed offsets inside the DIB.
-    let masks_end = 66usize;
+    // BITMAPINFOHEADER stores masks immediately after its 40-byte body;
+    // V2/V3+ headers store the same fields at these fixed file offsets.
+    let masks_end = if has_alpha { 70usize } else { 66usize };
     if pixel_offset < masks_end || bytes.len() < masks_end {
-        return Err(ImageError::Decode("truncated BMP BI_BITFIELDS masks".into()));
+        return Err(ImageError::Decode("truncated BMP bitfield masks".into()));
     }
     let red_raw = u32_le(bytes, 54, "red mask")?;
     let green_raw = u32_le(bytes, 58, "green mask")?;
     let blue_raw = u32_le(bytes, 62, "blue mask")?;
-    if (red_raw & green_raw) != 0 || (red_raw & blue_raw) != 0 || (green_raw & blue_raw) != 0 {
-        return Err(ImageError::Decode("BMP BI_BITFIELDS channel masks overlap".into()));
+    let alpha_raw = if has_alpha { Some(u32_le(bytes, 66, "alpha mask")?) } else { None };
+
+    let mut occupied = 0u32;
+    for (name, mask) in [("red", red_raw), ("green", green_raw), ("blue", blue_raw)] {
+        if occupied & mask != 0 {
+            return Err(ImageError::Decode("BMP bitfield channel masks overlap".into()));
+        }
+        occupied |= mask;
+        ChannelMask::parse(mask, depth, name)?;
     }
+    if let Some(mask) = alpha_raw {
+        if occupied & mask != 0 {
+            return Err(ImageError::Decode("BMP bitfield alpha mask overlaps a color channel".into()));
+        }
+        ChannelMask::parse(mask, depth, "alpha")?;
+    }
+
     let red = ChannelMask::parse(red_raw, depth, "red")?;
     let green = ChannelMask::parse(green_raw, depth, "green")?;
     let blue = ChannelMask::parse(blue_raw, depth, "blue")?;
+    let alpha = alpha_raw.map(|mask| ChannelMask::parse(mask, depth, "alpha")).transpose()?;
 
     let width = width_signed as usize;
     let height = height_signed.unsigned_abs() as usize;
@@ -135,7 +154,7 @@ fn decode_bitfields_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
     let raster_end = pixel_offset.checked_add(raster_len)
         .ok_or_else(|| ImageError::Decode("BMP bitfields raster offset overflow".into()))?;
     if raster_end > bytes.len() {
-        return Err(ImageError::Decode("truncated BMP BI_BITFIELDS raster".into()));
+        return Err(ImageError::Decode("truncated BMP bitfields raster".into()));
     }
     let capacity = width.checked_mul(height).and_then(|n| n.checked_mul(4))
         .ok_or_else(|| ImageError::Decode("BMP bitfields RGBA size overflow".into()))?;
@@ -153,7 +172,8 @@ fn decode_bitfields_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
                 u32::from_le_bytes(bytes[src..src + 4].try_into().expect("raster bounds checked"))
             };
             let dst = (image_y * width + x) * 4;
-            pixels[dst..dst + 4].copy_from_slice(&[red.byte(pixel), green.byte(pixel), blue.byte(pixel), 255]);
+            let a = alpha.map(|channel| channel.byte(pixel)).unwrap_or(255);
+            pixels[dst..dst + 4].copy_from_slice(&[red.byte(pixel), green.byte(pixel), blue.byte(pixel), a]);
         }
     }
 
@@ -200,8 +220,8 @@ fn load_and_decode(url: &Url, loader: &dyn ResourceLoader) -> Result<Rc<RasterIm
 mod tests {
     use super::*;
 
-    fn bmp(width: i32, height: i32, depth: u16, masks: [u32; 3], raster: &[u8]) -> Vec<u8> {
-        let offset = 66usize;
+    fn bmp(width: i32, height: i32, depth: u16, compression: u32, masks: &[u32], raster: &[u8]) -> Vec<u8> {
+        let offset = 54 + masks.len() * 4;
         let mut out = vec![0u8; offset];
         out[0..2].copy_from_slice(b"BM");
         out[2..6].copy_from_slice(&((offset + raster.len()) as u32).to_le_bytes());
@@ -211,8 +231,8 @@ mod tests {
         out[22..26].copy_from_slice(&height.to_le_bytes());
         out[26..28].copy_from_slice(&1u16.to_le_bytes());
         out[28..30].copy_from_slice(&depth.to_le_bytes());
-        out[30..34].copy_from_slice(&3u32.to_le_bytes());
-        for (i, mask) in masks.into_iter().enumerate() {
+        out[30..34].copy_from_slice(&compression.to_le_bytes());
+        for (i, mask) in masks.iter().copied().enumerate() {
             out[54 + i * 4..58 + i * 4].copy_from_slice(&mask.to_le_bytes());
         }
         out.extend_from_slice(raster);
@@ -221,7 +241,7 @@ mod tests {
 
     #[test]
     fn decodes_rgb565_and_bottom_up_rows() {
-        let bytes = bmp(2, 1, 16, [0xf800, 0x07e0, 0x001f], &[0x00, 0xf8, 0x1f, 0x00]);
+        let bytes = bmp(2, 1, 16, 3, &[0xf800, 0x07e0, 0x001f], &[0x00, 0xf8, 0x1f, 0x00]);
         let image = decode(&bytes).expect("RGB565");
         assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
         assert_eq!(image.pixel(1, 0), [0, 0, 255, 255]);
@@ -229,14 +249,30 @@ mod tests {
 
     #[test]
     fn decodes_top_down_32_bit_masks() {
-        let bytes = bmp(1, -1, 32, [0x00ff0000, 0x0000ff00, 0x000000ff], &[0x33, 0x22, 0x11, 0xaa]);
+        let bytes = bmp(1, -1, 32, 3, &[0x00ff0000, 0x0000ff00, 0x000000ff], &[0x33, 0x22, 0x11, 0xaa]);
         let image = decode(&bytes).expect("32-bit bitfields");
         assert_eq!(image.pixel(0, 0), [0x11, 0x22, 0x33, 255]);
     }
 
     #[test]
-    fn rejects_overlapping_or_noncontiguous_masks() {
-        assert!(decode(&bmp(1, 1, 16, [0xf800, 0x7800, 0x001f], &[0, 0, 0, 0])).is_err());
-        assert!(decode(&bmp(1, 1, 16, [0xa800, 0x0700, 0x001f], &[0, 0, 0, 0])).is_err());
+    fn decodes_alpha_bitfields() {
+        let bytes = bmp(1, 1, 32, 6, &[0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000], &[0x33, 0x22, 0x11, 0x80]);
+        let image = decode(&bytes).expect("alpha bitfields");
+        assert_eq!(image.pixel(0, 0), [0x11, 0x22, 0x33, 0x80]);
+    }
+
+    #[test]
+    fn scales_narrow_alpha_masks() {
+        let bytes = bmp(1, 1, 32, 6, &[0x000000ff, 0x0000ff00, 0x00ff0000, 0x03000000], &[0xff, 0x80, 0x40, 0x02]);
+        let image = decode(&bytes).expect("2-bit alpha");
+        assert_eq!(image.pixel(0, 0), [255, 128, 64, 170]);
+    }
+
+    #[test]
+    fn rejects_overlapping_noncontiguous_or_missing_alpha_masks() {
+        assert!(decode(&bmp(1, 1, 16, 3, &[0xf800, 0x7800, 0x001f], &[0, 0, 0, 0])).is_err());
+        assert!(decode(&bmp(1, 1, 16, 3, &[0xa800, 0x0700, 0x001f], &[0, 0, 0, 0])).is_err());
+        assert!(decode(&bmp(1, 1, 32, 6, &[0x00ff0000, 0x0000ff00, 0x000000ff, 0], &[0; 4])).is_err());
+        assert!(decode(&bmp(1, 1, 32, 6, &[0x00ff0000, 0x0000ff00, 0x000000ff, 0x000000ff], &[0; 4])).is_err());
     }
 }
