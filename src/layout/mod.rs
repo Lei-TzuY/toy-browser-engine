@@ -2923,6 +2923,7 @@ fn number_value(value: &Value) -> f32 {
         Value::Transform(_) => 0.0,
         Value::Transition(_) => 0.0,
         Value::Animation(_) => 0.0,
+        Value::Filter(_) => 0.0,
         Value::Var { .. } => 0.0,
         Value::Calc(expr) => eval_calc(expr, 0.0, 16.0),
     }

@@ -10,6 +10,7 @@
 pub mod animation;
 pub mod browser;
 pub mod canvas;
+pub mod cookie;
 pub mod css;
 pub mod document;
 pub mod dom;

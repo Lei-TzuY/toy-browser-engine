@@ -140,6 +140,8 @@ pub enum Builtin {
     RequestCtor,
     ResponseCtor,
     AbortControllerCtor,
+    URLCtor,
+    URLSearchParamsCtor,
     LocalStorage,
     SessionStorage,
     StorageCtor,
@@ -347,6 +349,8 @@ pub struct JsRuntime {
     pub local_storage: StorageRef,
     /// Ephemeral storage for this session/document.
     pub session_storage: StorageRef,
+    /// Origin and path scoped cookie storage.
+    pub cookie_jar: Rc<RefCell<crate::cookie::CookieJar>>,
     /// Everything scripts printed, newest last. Also echoed to stdout.
     pub console: Vec<String>,
     /// When true, console output is only recorded, not printed (used by tests).
@@ -396,6 +400,7 @@ impl JsRuntime {
             next_listener_id: 1,
             local_storage: Rc::new(RefCell::new(Vec::new())),
             session_storage: Rc::new(RefCell::new(Vec::new())),
+            cookie_jar: Rc::new(RefCell::new(crate::cookie::CookieJar::new())),
             console: Vec::new(),
             quiet: false,
             focused: None,
@@ -650,7 +655,9 @@ impl JsRuntime {
                 builtin @ (Builtin::HeadersCtor
                 | Builtin::RequestCtor
                 | Builtin::ResponseCtor
-                | Builtin::AbortControllerCtor),
+                | Builtin::AbortControllerCtor
+                | Builtin::URLCtor
+                | Builtin::URLSearchParamsCtor),
             ) => self.construct_host(*builtin, args),
             other => {
                 let description = to_string(other);
@@ -1950,6 +1957,10 @@ impl JsRuntime {
                 _ => global_builtin(prop).unwrap_or(JsValue::Undefined),
             },
             JsValue::Builtin(Builtin::Document) => match prop {
+                "cookie" => {
+                    let jar = self.cookie_jar.borrow();
+                    JsValue::Str(jar.get_document_cookie(&self.url, self.now_ms as u64))
+                }
                 "body" => dom_api::body_path(dom)
                     .map(|p| JsValue::Element(NodeRef::Tree(p)))
                     .unwrap_or(JsValue::Null),
@@ -2207,6 +2218,23 @@ impl JsRuntime {
                     s.push((prop.to_string(), val_str));
                 }
             }
+            JsValue::Builtin(Builtin::Document) => match prop {
+                "cookie" => {
+                    let cookie_str = to_string(&value);
+                    self.cookie_jar
+                        .borrow_mut()
+                        .set_document_cookie(&cookie_str, &self.url, self.now_ms as u64);
+                }
+                "title" => {
+                    let text = to_string(&value);
+                    if let Some(p) = dom_api::query_selector(dom, &[], "title") {
+                        self.with_node_mut(dom, &NodeRef::Tree(p), |n| {
+                            dom_api::set_text_content(n, &text)
+                        });
+                    }
+                }
+                _ => {}
+            },
             JsValue::Style(r) => {
                 let css = dom_api::css_property_name(prop);
                 let text = to_string(&value);
@@ -2322,6 +2350,26 @@ impl JsRuntime {
                         "globalAlpha" => {
                             ctx.global_alpha = to_number(&value).clamp(0.0, 1.0);
                         }
+                        "filter" => {
+                            ctx.set_filter(&to_string(&value));
+                        }
+                        _ => {}
+                    }
+                } else if let HostObject::URL(u_rc) = host.as_ref() {
+                    let mut u = u_rc.borrow_mut();
+                    let val_str = to_string(&value);
+                    match prop {
+                        "href" => {
+                            if let Ok(new_u) = crate::net::Url::parse(&val_str) {
+                                u.url = new_u;
+                            }
+                        }
+                        "pathname" => u.url.set_path(&val_str),
+                        "search" => u.url.set_query(Some(val_str)),
+                        "hash" => u.url.set_fragment(Some(val_str)),
+                        "protocol" => u.url.set_scheme(&val_str),
+                        "host" | "hostname" => u.url.set_host(&val_str),
+                        "port" => u.url.set_port(val_str.parse().ok()),
                         _ => {}
                     }
                 }
@@ -3590,6 +3638,8 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "Request" => Builtin::RequestCtor,
         "Response" => Builtin::ResponseCtor,
         "AbortController" => Builtin::AbortControllerCtor,
+        "URL" => Builtin::URLCtor,
+        "URLSearchParams" => Builtin::URLSearchParamsCtor,
         "localStorage" => Builtin::LocalStorage,
         "sessionStorage" => Builtin::SessionStorage,
         "Storage" => Builtin::StorageCtor,

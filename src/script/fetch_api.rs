@@ -19,6 +19,7 @@
 //  print A, B, C however fast the resource is, including one already sitting
 //  in memory.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::net::fetch::{FetchError, FetchResponse, HeaderMap, Method, Origin};
@@ -26,6 +27,7 @@ use crate::net::Url;
 
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, RequestData, ResponseData,
+    UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
@@ -336,6 +338,61 @@ impl JsRuntime {
             Builtin::AbortControllerCtor => {
                 host_value(HostObject::AbortController(AbortState::new()))
             }
+            Builtin::URLCtor => {
+                let url_str = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                let base_str = args.get(1).map(to_string);
+                let parsed_url = if let Some(base) = base_str {
+                    match Url::parse(&base) {
+                        Ok(base_u) => match base_u.join(&url_str) {
+                            Ok(u) => u,
+                            Err(_) => {
+                                self.throw_type_error(format!("Invalid URL: {url_str} with base {base}"));
+                                return JsValue::Undefined;
+                            }
+                        },
+                        Err(_) => {
+                            self.throw_type_error(format!("Invalid base URL: {base}"));
+                            return JsValue::Undefined;
+                        }
+                    }
+                } else {
+                    match Url::parse(&url_str) {
+                        Ok(u) => u,
+                        Err(_) => {
+                            self.throw_type_error(format!("Invalid URL: {url_str}"));
+                            return JsValue::Undefined;
+                        }
+                    }
+                };
+                host_value(HostObject::URL(Rc::new(RefCell::new(UrlData::new(parsed_url)))))
+            }
+            Builtin::URLSearchParamsCtor => {
+                let init_val = args.first().unwrap_or(&JsValue::Undefined);
+                let params = match init_val {
+                    JsValue::Str(s) => UrlSearchParamsData::from_query(s, None),
+                    JsValue::Array(arr) => {
+                        let mut pairs = Vec::new();
+                        for item in arr.borrow().iter() {
+                            if let JsValue::Array(pair_arr) = item {
+                                let b = pair_arr.borrow();
+                                let k = b.first().map(to_string).unwrap_or_default();
+                                let v = b.get(1).map(to_string).unwrap_or_default();
+                                pairs.push((k, v));
+                            }
+                        }
+                        UrlSearchParamsData::new(pairs, None)
+                    }
+                    JsValue::Host(h) => {
+                        if let HostObject::URLSearchParams(other) = h.as_ref() {
+                            UrlSearchParamsData::new(other.borrow().pairs.borrow().clone(), None)
+                        } else {
+                            UrlSearchParamsData::new(Vec::new(), None)
+                        }
+                    }
+                    _ => UrlSearchParamsData::new(Vec::new(), None),
+                };
+                host_value(HostObject::URLSearchParams(Rc::new(RefCell::new(params))))
+            }
             other => {
                 self.throw_type_error(format!("{other:?} is not a constructor"));
                 JsValue::Undefined
@@ -381,6 +438,34 @@ impl JsRuntime {
                 "aborted" => JsValue::Bool(state.aborted()),
                 _ => JsValue::Undefined,
             },
+            HostObject::URL(u_rc) => {
+                let u = u_rc.borrow();
+                match prop {
+                    "href" => JsValue::Str(u.url.to_string()),
+                    "origin" => JsValue::Str(u.origin()),
+                    "protocol" => JsValue::Str(format!("{}:", u.url.scheme())),
+                    "host" => JsValue::Str(if let Some(port) = u.url.port() {
+                        format!("{}:{}", u.url.host(), port)
+                    } else {
+                        u.url.host().to_string()
+                    }),
+                    "hostname" => JsValue::Str(u.url.host().to_string()),
+                    "port" => JsValue::Str(u.url.port().map(|p| p.to_string()).unwrap_or_default()),
+                    "pathname" => JsValue::Str(u.url.path().to_string()),
+                    "search" => JsValue::Str(u.url.query().map(|q| format!("?{}", q)).unwrap_or_default()),
+                    "hash" => JsValue::Str(u.url.fragment().map(|f| format!("#{}", f)).unwrap_or_default()),
+                    "searchParams" => {
+                        let qs = u.url.query().unwrap_or("");
+                        let params = UrlSearchParamsData::from_query(qs, Some(u_rc.clone()));
+                        host_value(HostObject::URLSearchParams(Rc::new(RefCell::new(params))))
+                    }
+                    _ => JsValue::Undefined,
+                }
+            }
+            HostObject::URLSearchParams(params) => match prop {
+                "size" => JsValue::Number(params.borrow().pairs.borrow().len() as f32),
+                _ => JsValue::Undefined,
+            }
             HostObject::CanvasRenderingContext2D(ctx) => {
                 let ctx = ctx.borrow();
                 match prop {
@@ -406,6 +491,7 @@ impl JsRuntime {
                         crate::layout::TextAlign::Right => "right".to_string(),
                     }),
                     "globalAlpha" => JsValue::Number(ctx.global_alpha),
+                    "filter" => JsValue::Str(ctx.filter.clone()),
                     _ => JsValue::Undefined,
                 }
             }
@@ -444,6 +530,58 @@ impl JsRuntime {
                 _ => JsValue::Undefined,
             },
             HostObject::AbortSignal(_) => JsValue::Undefined,
+            HostObject::URL(u_rc) => match prop {
+                "toString" | "toJSON" => JsValue::Str(u_rc.borrow().url.to_string()),
+                _ => JsValue::Undefined,
+            },
+            HostObject::URLSearchParams(params) => match prop {
+                "get" => {
+                    let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    params.borrow().get(&name).map(JsValue::Str).unwrap_or(JsValue::Null)
+                }
+                "getAll" => {
+                    let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    let all: Vec<JsValue> = params.borrow().get_all(&name).into_iter().map(JsValue::Str).collect();
+                    JsValue::Array(Rc::new(std::cell::RefCell::new(all)))
+                }
+                "has" => {
+                    let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    JsValue::Bool(params.borrow().has(&name))
+                }
+                "set" => {
+                    let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    let val = to_string(args.get(1).unwrap_or(&JsValue::Undefined));
+                    params.borrow().set(&name, &val);
+                    JsValue::Undefined
+                }
+                "append" => {
+                    let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    let val = to_string(args.get(1).unwrap_or(&JsValue::Undefined));
+                    params.borrow().append(&name, &val);
+                    JsValue::Undefined
+                }
+                "delete" => {
+                    let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
+                    params.borrow().delete(&name);
+                    JsValue::Undefined
+                }
+                "toString" => JsValue::Str(params.borrow().to_query_string()),
+                "keys" => {
+                    let keys: Vec<JsValue> = params.borrow().pairs.borrow().iter().map(|(k, _)| JsValue::Str(k.clone())).collect();
+                    JsValue::Array(Rc::new(std::cell::RefCell::new(keys)))
+                }
+                "values" => {
+                    let vals: Vec<JsValue> = params.borrow().pairs.borrow().iter().map(|(_, v)| JsValue::Str(v.clone())).collect();
+                    JsValue::Array(Rc::new(std::cell::RefCell::new(vals)))
+                }
+                "entries" => {
+                    let entries: Vec<JsValue> = params.borrow().pairs.borrow().iter().map(|(k, v)| {
+                        JsValue::Array(Rc::new(std::cell::RefCell::new(vec![JsValue::Str(k.clone()), JsValue::Str(v.clone())])))
+                    }).collect();
+                    JsValue::Array(Rc::new(std::cell::RefCell::new(entries)))
+                }
+                _ => JsValue::Undefined,
+            },
             HostObject::CanvasRenderingContext2D(ctx) => {
                 self.canvas_context_method(ctx, prop, args)
             }

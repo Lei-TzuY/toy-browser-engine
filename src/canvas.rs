@@ -27,6 +27,8 @@ struct CanvasState {
     text_align: TextAlign,
     global_alpha: f32,
     transform: [f32; 6],
+    filter: String,
+    parsed_filters: Vec<crate::css::parser::FilterFunction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,6 +50,8 @@ pub struct CanvasContext2D {
     pub text_align: TextAlign,
     pub global_alpha: f32,
     pub transform: [f32; 6],
+    pub filter: String,
+    pub parsed_filters: Vec<crate::css::parser::FilterFunction>,
     state_stack: Vec<CanvasState>,
     path: Vec<PathCommand>,
     current_point: (f32, f32),
@@ -69,6 +73,8 @@ impl CanvasContext2D {
             text_align: TextAlign::Left,
             global_alpha: 1.0,
             transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            filter: "none".to_string(),
+            parsed_filters: Vec::new(),
             state_stack: Vec::new(),
             path: Vec::new(),
             current_point: (0.0, 0.0),
@@ -77,6 +83,11 @@ impl CanvasContext2D {
 
     pub fn to_raster_image(&self) -> Rc<RasterImage> {
         Rc::new(RasterImage::new(self.width, self.height, self.pixels.clone()))
+    }
+
+    pub fn set_filter(&mut self, filter_str: &str) {
+        self.filter = filter_str.to_string();
+        self.parsed_filters = crate::css::parser::parse_filter(filter_str).unwrap_or_default();
     }
 
     pub fn save(&mut self) {
@@ -88,6 +99,8 @@ impl CanvasContext2D {
             text_align: self.text_align,
             global_alpha: self.global_alpha,
             transform: self.transform,
+            filter: self.filter.clone(),
+            parsed_filters: self.parsed_filters.clone(),
         });
     }
 
@@ -100,6 +113,106 @@ impl CanvasContext2D {
             self.text_align = state.text_align;
             self.global_alpha = state.global_alpha;
             self.transform = state.transform;
+            self.filter = state.filter;
+            self.parsed_filters = state.parsed_filters;
+        }
+    }
+
+    pub fn apply_filters(&mut self) {
+        if self.parsed_filters.is_empty() {
+            return;
+        }
+        for filter in &self.parsed_filters {
+            match filter {
+                crate::css::parser::FilterFunction::Grayscale(amt) => {
+                    let amt = *amt;
+                    for chunk in self.pixels.chunks_exact_mut(4) {
+                        let r = chunk[0] as f32;
+                        let g = chunk[1] as f32;
+                        let b = chunk[2] as f32;
+                        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                        chunk[0] = (r + (y - r) * amt).round().clamp(0.0, 255.0) as u8;
+                        chunk[1] = (g + (y - g) * amt).round().clamp(0.0, 255.0) as u8;
+                        chunk[2] = (b + (y - b) * amt).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+                crate::css::parser::FilterFunction::Brightness(amt) => {
+                    let amt = *amt;
+                    for chunk in self.pixels.chunks_exact_mut(4) {
+                        chunk[0] = (chunk[0] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                        chunk[1] = (chunk[1] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                        chunk[2] = (chunk[2] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+                crate::css::parser::FilterFunction::Contrast(amt) => {
+                    let amt = *amt;
+                    for chunk in self.pixels.chunks_exact_mut(4) {
+                        let r = chunk[0] as f32;
+                        let g = chunk[1] as f32;
+                        let b = chunk[2] as f32;
+                        chunk[0] = ((r - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                        chunk[1] = ((g - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                        chunk[2] = ((b - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+                crate::css::parser::FilterFunction::Invert(amt) => {
+                    let amt = *amt;
+                    for chunk in self.pixels.chunks_exact_mut(4) {
+                        let r = chunk[0] as f32;
+                        let g = chunk[1] as f32;
+                        let b = chunk[2] as f32;
+                        chunk[0] = (r + (255.0 - 2.0 * r) * amt).round().clamp(0.0, 255.0) as u8;
+                        chunk[1] = (g + (255.0 - 2.0 * g) * amt).round().clamp(0.0, 255.0) as u8;
+                        chunk[2] = (b + (255.0 - 2.0 * b) * amt).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+                crate::css::parser::FilterFunction::Opacity(amt) => {
+                    let amt = *amt;
+                    for chunk in self.pixels.chunks_exact_mut(4) {
+                        chunk[3] = (chunk[3] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+                crate::css::parser::FilterFunction::Blur(px) => {
+                    let radius = (*px).round() as i32;
+                    if radius > 0 {
+                        let w = self.width as i32;
+                        let h = self.height as i32;
+                        let mut temp = self.pixels.clone();
+                        for y in 0..h {
+                            for x in 0..w {
+                                let mut r_sum = 0u32;
+                                let mut g_sum = 0u32;
+                                let mut b_sum = 0u32;
+                                let mut a_sum = 0u32;
+                                let mut count = 0u32;
+                                for dy in -radius..=radius {
+                                    for dx in -radius..=radius {
+                                        let nx = x + dx;
+                                        let ny = y + dy;
+                                        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+                                            let idx = ((ny * w + nx) * 4) as usize;
+                                            r_sum += self.pixels[idx] as u32;
+                                            g_sum += self.pixels[idx + 1] as u32;
+                                            b_sum += self.pixels[idx + 2] as u32;
+                                            a_sum += self.pixels[idx + 3] as u32;
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                                if count > 0 {
+                                    let out_idx = ((y * w + x) * 4) as usize;
+                                    temp[out_idx] = (r_sum / count) as u8;
+                                    temp[out_idx + 1] = (g_sum / count) as u8;
+                                    temp[out_idx + 2] = (b_sum / count) as u8;
+                                    temp[out_idx + 3] = (a_sum / count) as u8;
+                                }
+                            }
+                        }
+                        self.pixels = temp;
+                    }
+                }
+                crate::css::parser::FilterFunction::None => {}
+            }
         }
     }
 

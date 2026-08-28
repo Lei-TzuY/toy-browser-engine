@@ -171,6 +171,149 @@ impl ResponseData {
     }
 }
 
+// ── URL & URLSearchParams ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct UrlSearchParamsData {
+    pub pairs: Rc<RefCell<Vec<(String, String)>>>,
+    pub parent_url: Option<Rc<RefCell<UrlData>>>,
+}
+
+impl UrlSearchParamsData {
+    pub fn new(pairs: Vec<(String, String)>, parent: Option<Rc<RefCell<UrlData>>>) -> Self {
+        UrlSearchParamsData {
+            pairs: Rc::new(RefCell::new(pairs)),
+            parent_url: parent,
+        }
+    }
+
+    pub fn from_query(query: &str, parent: Option<Rc<RefCell<UrlData>>>) -> Self {
+        let pairs = parse_query_string(query);
+        Self::new(pairs, parent)
+    }
+
+    pub fn sync_to_parent(&self) {
+        if let Some(parent) = &self.parent_url {
+            let qs = self.to_query_string();
+            let mut u = parent.borrow_mut();
+            if qs.is_empty() {
+                u.url.set_query(None);
+            } else {
+                u.url.set_query(Some(qs));
+            }
+        }
+    }
+
+    pub fn to_query_string(&self) -> String {
+        let pairs = self.pairs.borrow();
+        pairs
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{}={}",
+                    crate::net::url::percent_encode_query(k),
+                    crate::net::url::percent_encode_query(v)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("&")
+    }
+
+    pub fn get(&self, name: &str) -> Option<String> {
+        self.pairs
+            .borrow()
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    }
+
+    pub fn get_all(&self, name: &str) -> Vec<String> {
+        self.pairs
+            .borrow()
+            .iter()
+            .filter(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.pairs.borrow().iter().any(|(k, _)| k == name)
+    }
+
+    pub fn set(&self, name: &str, value: &str) {
+        let mut pairs = self.pairs.borrow_mut();
+        let mut found = false;
+        pairs.retain_mut(|(k, v)| {
+            if k == name {
+                if !found {
+                    *v = value.to_string();
+                    found = true;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        });
+        if !found {
+            pairs.push((name.to_string(), value.to_string()));
+        }
+        drop(pairs);
+        self.sync_to_parent();
+    }
+
+    pub fn append(&self, name: &str, value: &str) {
+        self.pairs.borrow_mut().push((name.to_string(), value.to_string()));
+        self.sync_to_parent();
+    }
+
+    pub fn delete(&self, name: &str) {
+        self.pairs.borrow_mut().retain(|(k, _)| k != name);
+        self.sync_to_parent();
+    }
+}
+
+pub fn parse_query_string(query: &str) -> Vec<(String, String)> {
+    let clean = query.trim_start_matches('?');
+    if clean.is_empty() {
+        return Vec::new();
+    }
+    clean
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if let Some(idx) = part.find('=') {
+                let k = crate::net::url::percent_decode(&part[..idx].replace('+', " "));
+                let v = crate::net::url::percent_decode(&part[idx + 1..].replace('+', " "));
+                (k, v)
+            } else {
+                let k = crate::net::url::percent_decode(&part.replace('+', " "));
+                (k, String::new())
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+pub struct UrlData {
+    pub url: Url,
+}
+
+impl UrlData {
+    pub fn new(url: Url) -> Self {
+        UrlData { url }
+    }
+
+    pub fn origin(&self) -> String {
+        if let Some(port) = self.url.port() {
+            format!("{}://{}:{}", self.url.scheme(), self.url.host(), port)
+        } else {
+            format!("{}://{}", self.url.scheme(), self.url.host())
+        }
+    }
+}
+
 // ── The value the interpreter sees ────────────────────────────────────────────
 
 /// A Web-platform object.
@@ -186,6 +329,8 @@ pub enum HostObject {
     AbortController(Rc<AbortState>),
     AbortSignal(Rc<AbortState>),
     CanvasRenderingContext2D(Rc<RefCell<crate::canvas::CanvasContext2D>>),
+    URL(Rc<RefCell<UrlData>>),
+    URLSearchParams(Rc<RefCell<UrlSearchParamsData>>),
 }
 
 impl HostObject {
@@ -198,6 +343,8 @@ impl HostObject {
             HostObject::AbortController(_) => "AbortController",
             HostObject::AbortSignal(_) => "AbortSignal",
             HostObject::CanvasRenderingContext2D(_) => "CanvasRenderingContext2D",
+            HostObject::URL(_) => "URL",
+            HostObject::URLSearchParams(_) => "URLSearchParams",
         }
     }
 

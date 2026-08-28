@@ -201,6 +201,10 @@ impl Url {
         &self.host
     }
 
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
     /// The port, falling back to the scheme's default where there is one.
     pub fn port_or_default(&self) -> Option<u16> {
         self.port.or(match self.scheme.as_str() {
@@ -220,6 +224,35 @@ impl Url {
 
     pub fn fragment(&self) -> Option<&str> {
         self.fragment.as_deref()
+    }
+
+    pub fn set_scheme(&mut self, scheme: &str) {
+        self.scheme = scheme.trim_end_matches(':').to_ascii_lowercase();
+    }
+
+    pub fn set_host(&mut self, host: &str) {
+        self.host = host.to_ascii_lowercase();
+    }
+
+    pub fn set_port(&mut self, port: Option<u16>) {
+        self.port = port;
+    }
+
+    pub fn set_path(&mut self, path: &str) {
+        let p = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        };
+        self.path = percent_encode_path(&p);
+    }
+
+    pub fn set_query(&mut self, query: Option<String>) {
+        self.query = query.map(|q| q.trim_start_matches('?').to_string()).filter(|q| !q.is_empty());
+    }
+
+    pub fn set_fragment(&mut self, fragment: Option<String>) {
+        self.fragment = fragment.map(|f| f.trim_start_matches('#').to_string()).filter(|f| !f.is_empty());
     }
 
     /// Path plus query — what an HTTP request line carries.
@@ -409,6 +442,23 @@ fn percent_encode_path(input: &str) -> String {
             '#' => out.push_str("%23"),
             '?' => out.push_str("%3F"),
             other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Percent-encode query component per application/x-www-form-urlencoded & URLSearchParams standard.
+pub fn percent_encode_query(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            other => {
+                out.push_str(&format!("%{:02X}", other));
+            }
         }
     }
     out

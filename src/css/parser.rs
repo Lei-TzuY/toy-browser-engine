@@ -350,6 +350,117 @@ pub struct AnimationSpec {
     pub fill_mode: AnimationFillMode,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterFunction {
+    Blur(f32),
+    Grayscale(f32),
+    Brightness(f32),
+    Contrast(f32),
+    Invert(f32),
+    Opacity(f32),
+    None,
+}
+
+impl FilterFunction {
+    pub fn to_css_string(&self) -> String {
+        match self {
+            FilterFunction::Blur(px) => format!("blur({}px)", px),
+            FilterFunction::Grayscale(amt) => format!("grayscale({}%)", (amt * 100.0).round()),
+            FilterFunction::Brightness(amt) => format!("brightness({})", amt),
+            FilterFunction::Contrast(amt) => format!("contrast({})", amt),
+            FilterFunction::Invert(amt) => format!("invert({}%)", (amt * 100.0).round()),
+            FilterFunction::Opacity(amt) => format!("opacity({})", amt),
+            FilterFunction::None => "none".to_string(),
+        }
+    }
+}
+
+pub fn parse_filter(input: &str) -> Option<Vec<FilterFunction>> {
+    let trimmed = input.trim();
+    if trimmed.eq_ignore_ascii_case("none") || trimmed.is_empty() {
+        return Some(vec![FilterFunction::None]);
+    }
+    let mut funcs = Vec::new();
+    let mut pos = 0;
+    let bytes = trimmed.as_bytes();
+
+    while pos < bytes.len() {
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if pos >= bytes.len() {
+            break;
+        }
+
+        let open_paren = match trimmed[pos..].find('(') {
+            Some(idx) => pos + idx,
+            None => break,
+        };
+        let close_paren = match trimmed[open_paren..].find(')') {
+            Some(idx) => open_paren + idx,
+            None => break,
+        };
+
+        let fname = trimmed[pos..open_paren].trim().to_ascii_lowercase();
+        let arg = trimmed[open_paren + 1..close_paren].trim();
+
+        match fname.as_str() {
+            "blur" => {
+                let px = arg.trim_end_matches("px").trim().parse::<f32>().unwrap_or(0.0);
+                funcs.push(FilterFunction::Blur(px));
+            }
+            "grayscale" => {
+                let val = if let Some(stripped) = arg.strip_suffix('%') {
+                    stripped.trim().parse::<f32>().unwrap_or(100.0) / 100.0
+                } else {
+                    arg.parse::<f32>().unwrap_or(1.0)
+                };
+                funcs.push(FilterFunction::Grayscale(val.clamp(0.0, 1.0)));
+            }
+            "brightness" => {
+                let val = if let Some(stripped) = arg.strip_suffix('%') {
+                    stripped.trim().parse::<f32>().unwrap_or(100.0) / 100.0
+                } else {
+                    arg.parse::<f32>().unwrap_or(1.0)
+                };
+                funcs.push(FilterFunction::Brightness(val.max(0.0)));
+            }
+            "contrast" => {
+                let val = if let Some(stripped) = arg.strip_suffix('%') {
+                    stripped.trim().parse::<f32>().unwrap_or(100.0) / 100.0
+                } else {
+                    arg.parse::<f32>().unwrap_or(1.0)
+                };
+                funcs.push(FilterFunction::Contrast(val.max(0.0)));
+            }
+            "invert" => {
+                let val = if let Some(stripped) = arg.strip_suffix('%') {
+                    stripped.trim().parse::<f32>().unwrap_or(100.0) / 100.0
+                } else {
+                    arg.parse::<f32>().unwrap_or(1.0)
+                };
+                funcs.push(FilterFunction::Invert(val.clamp(0.0, 1.0)));
+            }
+            "opacity" => {
+                let val = if let Some(stripped) = arg.strip_suffix('%') {
+                    stripped.trim().parse::<f32>().unwrap_or(100.0) / 100.0
+                } else {
+                    arg.parse::<f32>().unwrap_or(1.0)
+                };
+                funcs.push(FilterFunction::Opacity(val.clamp(0.0, 1.0)));
+            }
+            _ => {}
+        }
+        pos = close_paren + 1;
+    }
+
+    if funcs.is_empty() {
+        None
+    } else {
+        Some(funcs)
+    }
+}
+
 // ── Value ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -364,6 +475,7 @@ pub enum Value {
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
     Animation(Vec<AnimationSpec>),
+    Filter(Vec<FilterFunction>),
     /// `var(--name)` or `var(--name, fallback)`.
     Var {
         name: String,
@@ -407,6 +519,9 @@ impl Value {
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
             Value::Animation(_) => "animation(...)".to_string(),
+            Value::Filter(funcs) => {
+                funcs.iter().map(|f| f.to_css_string()).collect::<Vec<_>>().join(" ")
+            }
         }
     }
 }
@@ -1409,6 +1524,22 @@ impl Parser {
                 };
                 let time_ms = parse_time_to_ms(&raw).unwrap_or(0.0);
                 vec![Declaration::new(name, Value::Number(time_ms))]
+            }
+            "filter" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, Unit::Px) => format!("{}px", n),
+                    Value::Number(n) => format!("{}", n),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                raw.push(' ');
+                raw.push_str(&rest);
+                if let Some(filters) = parse_filter(&raw) {
+                    vec![Declaration::new(name, Value::Filter(filters))]
+                } else {
+                    vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
+                }
             }
             _ => vec![Declaration::new(name, first_value)],
         };
