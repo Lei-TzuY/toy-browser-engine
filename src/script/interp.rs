@@ -176,6 +176,7 @@ pub enum Builtin {
     IsNaN,
     IntersectionObserverCtor,
     ResizeObserverCtor,
+    MutationObserverCtor,
     MapCtor,
     SetCtor,
     Crypto,
@@ -670,6 +671,7 @@ impl JsRuntime {
                 | Builtin::AudioContextCtor
                 | Builtin::IntersectionObserverCtor
                 | Builtin::ResizeObserverCtor
+                | Builtin::MutationObserverCtor
                 | Builtin::MapCtor
                 | Builtin::SetCtor),
             ) => self.construct_host(*builtin, args),
@@ -3757,6 +3759,7 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "isNaN" => Builtin::IsNaN,
         "IntersectionObserver" => Builtin::IntersectionObserverCtor,
         "ResizeObserver" => Builtin::ResizeObserverCtor,
+        "MutationObserver" => Builtin::MutationObserverCtor,
         "Map" => Builtin::MapCtor,
         "Set" => Builtin::SetCtor,
         "crypto" => Builtin::Crypto,

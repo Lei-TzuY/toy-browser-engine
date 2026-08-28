@@ -380,6 +380,39 @@ pub struct ResizeObserverEntryData {
     pub content_box_size: (f32, f32),
 }
 
+#[derive(Debug, Clone)]
+pub struct MutationObserverTarget {
+    pub target_id: String,
+    pub child_list: bool,
+    pub attributes: bool,
+    pub character_data: bool,
+    pub subtree: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationRecordData {
+    pub type_name: String,
+    pub target_id: String,
+    pub added_nodes: Vec<String>,
+    pub removed_nodes: Vec<String>,
+    pub attribute_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationObserverData {
+    pub targets: Vec<MutationObserverTarget>,
+    pub records: Vec<MutationRecordData>,
+}
+
+impl MutationObserverData {
+    pub fn new() -> Self {
+        Self {
+            targets: Vec::new(),
+            records: Vec::new(),
+        }
+    }
+}
+
 // ── The value the interpreter sees ────────────────────────────────────────────
 
 /// A Web-platform object.
@@ -404,6 +437,8 @@ pub enum HostObject {
     IntersectionObserverEntry(IntersectionObserverEntryData),
     ResizeObserver(Rc<RefCell<ResizeObserverData>>),
     ResizeObserverEntry(ResizeObserverEntryData),
+    MutationObserver(Rc<RefCell<MutationObserverData>>),
+    MutationRecord(MutationRecordData),
     JsMap(Rc<RefCell<Vec<(String, crate::script::interp::JsValue)>>>),
     JsSet(Rc<RefCell<Vec<String>>>),
     Crypto,
@@ -428,6 +463,8 @@ impl HostObject {
             HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
             HostObject::ResizeObserver(_) => "ResizeObserver",
             HostObject::ResizeObserverEntry(_) => "ResizeObserverEntry",
+            HostObject::MutationObserver(_) => "MutationObserver",
+            HostObject::MutationRecord(_) => "MutationRecord",
             HostObject::JsMap(_) => "Map",
             HostObject::JsSet(_) => "Set",
             HostObject::Crypto => "Crypto",

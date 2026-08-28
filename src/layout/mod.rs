@@ -617,6 +617,14 @@ impl<'a> LayoutBox<'a> {
     // ── Children ──────────────────────────────────────────────────────────
 
     fn layout_children(&mut self) {
+        if let Some(col_count) = self.style().and_then(|s| s.column_count()) {
+            if col_count > 1 {
+                let col_gap = self.style().map(|s| s.column_gap()).unwrap_or(16.0);
+                self.layout_multi_column_children(col_count, col_gap);
+                return;
+            }
+        }
+
         // `content.height` doubles as the block-flow cursor below, so it must
         // start at zero — grid and table lay a box out more than once, and a
         // stale cursor would push the children down by the previous height.
@@ -690,6 +698,43 @@ impl<'a> LayoutBox<'a> {
                 }
             }
         }
+    }
+
+    fn layout_multi_column_children(&mut self, col_count: usize, col_gap: f32) {
+        self.dimensions.content.height = 0.0;
+        let vp_w = self.viewport_w;
+        let content_w = self.dimensions.content.width;
+        let total_gaps = (col_count - 1) as f32 * col_gap;
+        let col_w = ((content_w - total_gaps) / (col_count as f32)).max(0.0);
+
+        let mut col_heights = vec![0.0f32; col_count];
+        let mut in_flow_idx = 0;
+
+        for i in 0..self.children.len() {
+            self.children[i].viewport_w = vp_w;
+            let col_idx = in_flow_idx % col_count;
+            let col_x_offset = col_idx as f32 * (col_w + col_gap);
+            let col_y_offset = col_heights[col_idx];
+
+            let containing = Dimensions {
+                content: Rect {
+                    x: self.dimensions.content.x + col_x_offset,
+                    y: self.dimensions.content.y + col_y_offset,
+                    width: col_w,
+                    height: 0.0,
+                },
+                ..Default::default()
+            };
+
+            self.children[i].layout(containing);
+            let child_h = self.children[i].dimensions.margin_box().height;
+            if child_h > 0.0 || self.children[i].styled_node().is_some() {
+                col_heights[col_idx] += child_h;
+                in_flow_idx += 1;
+            }
+        }
+
+        self.dimensions.content.height = col_heights.into_iter().fold(0.0f32, f32::max);
     }
 
     /// Lay out an absolutely positioned box relative to `containing` (its containing block).
@@ -3022,6 +3067,7 @@ fn number_value(value: &Value) -> f32 {
         Value::Transition(_) => 0.0,
         Value::Animation(_) => 0.0,
         Value::Filter(_) => 0.0,
+        Value::ClipPath(_) => 0.0,
         Value::Var { .. } => 0.0,
         Value::Calc(expr) => eval_calc(expr, 0.0, 16.0),
     }

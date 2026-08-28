@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{Color, ColorStop, ConicGradient, FilterFunction, LinearGradient, RadialGradient, Unit, Value};
+use crate::css::parser::{ClipPath, Color, ColorStop, ConicGradient, FilterFunction, LinearGradient, RadialGradient, Unit, Value};
 use crate::dom::NodeType;
 use crate::image::RasterImage;
 use crate::layout::{BoxType, LayoutBox, ObjectFit, Rect, TextFragment};
@@ -32,6 +32,10 @@ pub enum DisplayCommand {
     PushClip(Rect),
     /// Restore the previous clip rectangle.
     PopClip,
+    /// Push a CSS clip-path mask: (clip-path spec, bounding rect).
+    PushClipPath(ClipPath, Rect),
+    /// Restore the previous clip-path mask.
+    PopClipPath,
     /// Linear gradient background: (gradient spec, rect, opacity).
     LinearGradient(LinearGradient, Rect, f32),
     /// Radial gradient background: (gradient spec, rect, opacity).
@@ -98,6 +102,11 @@ impl DisplayCommand {
                 dest.x += dx;
                 dest.y += dy;
             }
+            DisplayCommand::PushClipPath(_, rect) => {
+                rect.x += dx;
+                rect.y += dy;
+            }
+            DisplayCommand::PopClipPath => {}
             DisplayCommand::BoxShadow { rect, .. } => {
                 rect.x += dx;
                 rect.y += dy;
@@ -248,6 +257,12 @@ fn render_in_flow_subtree_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
     if establishes_stacking_context(lb) || is_positioned(lb) {
         return;
     }
+
+    let clip_path = styled_node(lb).and_then(|s| s.clip_path());
+    if let Some(ref cp) = clip_path {
+        list.push(DisplayCommand::PushClipPath(cp.clone(), lb.dimensions.border_box()));
+    }
+
     render_box_decorations_with_opacity(list, lb, opacity);
     render_list_marker(list, lb, opacity);
 
@@ -263,6 +278,10 @@ fn render_in_flow_subtree_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
 
     if clip {
         list.push(DisplayCommand::PopClip);
+    }
+
+    if clip_path.is_some() {
+        list.push(DisplayCommand::PopClipPath);
     }
 }
 
@@ -926,6 +945,8 @@ pub struct Canvas {
     pub height: usize,
     /// Each entry is the effective (intersected) clip rect as (x0,y0,x1,y1).
     clip_stack: Vec<(i32, i32, i32, i32)>,
+    /// Active clip-path masks.
+    clip_path_stack: Vec<(ClipPath, Rect)>,
 }
 
 impl Canvas {
@@ -941,6 +962,7 @@ impl Canvas {
             width,
             height,
             clip_stack: Vec::new(),
+            clip_path_stack: Vec::new(),
         }
     }
 
@@ -1002,6 +1024,12 @@ impl Canvas {
             }
             DisplayCommand::BackdropFilter(filters, rect) => {
                 self.apply_backdrop_filter(filters, *rect);
+            }
+            DisplayCommand::PushClipPath(cp, rect) => {
+                self.clip_path_stack.push((cp.clone(), *rect));
+            }
+            DisplayCommand::PopClipPath => {
+                self.clip_path_stack.pop();
             }
             DisplayCommand::BoxShadow {
                 rect,
@@ -1412,6 +1440,12 @@ impl Canvas {
                 return;
             }
         }
+        // Respect active clip-path masks.
+        for (cp, rect) in &self.clip_path_stack {
+            if !point_in_clip_path(cp, *rect, x as f32 + 0.5, y as f32 + 0.5) {
+                return;
+            }
+        }
         let idx = (y as usize * self.width + x as usize) * 3;
         let alpha = color.a as f32 / 255.0 * coverage as f32 / 255.0;
         let ia = 1.0 - alpha;
@@ -1419,7 +1453,47 @@ impl Canvas {
         self.pixels[idx + 1] = (color.g as f32 * alpha + self.pixels[idx + 1] as f32 * ia) as u8;
         self.pixels[idx + 2] = (color.b as f32 * alpha + self.pixels[idx + 2] as f32 * ia) as u8;
     }
+}
 
+pub fn point_in_clip_path(cp: &ClipPath, rect: Rect, px: f32, py: f32) -> bool {
+    match cp {
+        ClipPath::Polygon(points) => {
+            if points.len() < 3 {
+                return true;
+            }
+            let mut inside = false;
+            let n = points.len();
+            for i in 0..n {
+                let j = if i == 0 { n - 1 } else { i - 1 };
+                let xi = rect.x + points[i].0 * rect.width;
+                let yi = rect.y + points[i].1 * rect.height;
+                let xj = rect.x + points[j].0 * rect.width;
+                let yj = rect.y + points[j].1 * rect.height;
+
+                if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                    inside = !inside;
+                }
+            }
+            inside
+        }
+        ClipPath::Circle { cx, cy, radius } => {
+            let center_x = rect.x + cx * rect.width;
+            let center_y = rect.y + cy * rect.height;
+            let r = radius * rect.width.min(rect.height);
+            let dx = px - center_x;
+            let dy = py - center_y;
+            (dx * dx + dy * dy) <= r * r
+        }
+        ClipPath::Inset { top, right, bottom, left } => {
+            px >= rect.x + left
+                && px <= rect.x + rect.width - right
+                && py >= rect.y + top
+                && py <= rect.y + rect.height - bottom
+        }
+    }
+}
+
+impl Canvas {
     pub fn to_u32_buffer(&self) -> Vec<u32> {
         self.pixels
             .chunks_exact(3)

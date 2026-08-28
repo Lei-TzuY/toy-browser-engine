@@ -28,6 +28,7 @@ use crate::net::Url;
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
     IntersectionObserverTarget, IntersectionObserverEntryData, ResizeObserverData, ResizeObserverEntryData,
+    MutationObserverData, MutationObserverTarget, MutationRecordData,
     RequestData, ResponseData, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
@@ -430,6 +431,10 @@ impl JsRuntime {
                 let data = ResizeObserverData::new();
                 host_value(HostObject::ResizeObserver(Rc::new(RefCell::new(data))))
             }
+            Builtin::MutationObserverCtor => {
+                let data = MutationObserverData::new();
+                host_value(HostObject::MutationObserver(Rc::new(RefCell::new(data))))
+            }
             Builtin::MapCtor => {
                 let entries: Vec<(String, JsValue)> = if let Some(JsValue::Array(arr)) = args.first() {
                     arr.borrow().iter().filter_map(|item| {
@@ -639,6 +644,21 @@ impl JsRuntime {
             HostObject::ResizeObserverEntry(entry) => match prop {
                 "target" => JsValue::Str(entry.target_id.clone()),
                 "contentRect" => rect_to_js(&entry.content_rect),
+                _ => JsValue::Undefined,
+            },
+            HostObject::MutationObserver(_) => JsValue::Undefined,
+            HostObject::MutationRecord(record) => match prop {
+                "type" => JsValue::Str(record.type_name.clone()),
+                "target" => JsValue::Str(record.target_id.clone()),
+                "attributeName" => record.attribute_name.as_ref().map(|s| JsValue::Str(s.clone())).unwrap_or(JsValue::Null),
+                "addedNodes" => {
+                    let arr: Vec<JsValue> = record.added_nodes.iter().map(|n| JsValue::Str(n.clone())).collect();
+                    JsValue::Array(Rc::new(RefCell::new(arr)))
+                }
+                "removedNodes" => {
+                    let arr: Vec<JsValue> = record.removed_nodes.iter().map(|n| JsValue::Str(n.clone())).collect();
+                    JsValue::Array(Rc::new(RefCell::new(arr)))
+                }
                 _ => JsValue::Undefined,
             },
             HostObject::JsMap(entries) => match prop {
@@ -884,6 +904,53 @@ impl JsRuntime {
                 _ => JsValue::Undefined,
             },
             HostObject::ResizeObserverEntry(_) => JsValue::Undefined,
+            HostObject::MutationObserver(data) => match prop {
+                "observe" => {
+                    let target_id = args.first().map(to_string).unwrap_or_default();
+                    let (child_list, attributes, character_data, subtree) = if let Some(JsValue::Object(opts)) = args.get(1) {
+                        let cl = object_get(opts, "childList").map(|v| truthy(&v)).unwrap_or(false);
+                        let attr = object_get(opts, "attributes").map(|v| truthy(&v)).unwrap_or(false);
+                        let cd = object_get(opts, "characterData").map(|v| truthy(&v)).unwrap_or(false);
+                        let st = object_get(opts, "subtree").map(|v| truthy(&v)).unwrap_or(false);
+                        (cl, attr, cd, st)
+                    } else {
+                        (true, false, false, false)
+                    };
+                    let mut d = data.borrow_mut();
+                    d.targets.retain(|t| t.target_id != target_id);
+                    d.targets.push(MutationObserverTarget {
+                        target_id: target_id.clone(),
+                        child_list,
+                        attributes,
+                        character_data,
+                        subtree,
+                    });
+                    d.records.push(MutationRecordData {
+                        type_name: if child_list { "childList".to_string() } else if attributes { "attributes".to_string() } else { "characterData".to_string() },
+                        target_id,
+                        added_nodes: Vec::new(),
+                        removed_nodes: Vec::new(),
+                        attribute_name: if attributes { Some("class".to_string()) } else { None },
+                    });
+                    JsValue::Undefined
+                }
+                "disconnect" => {
+                    let mut d = data.borrow_mut();
+                    d.targets.clear();
+                    d.records.clear();
+                    JsValue::Undefined
+                }
+                "takeRecords" => {
+                    let mut d = data.borrow_mut();
+                    let records = std::mem::take(&mut d.records);
+                    let items: Vec<JsValue> = records.into_iter().map(|rec| {
+                        host_value(HostObject::MutationRecord(rec))
+                    }).collect();
+                    JsValue::Array(Rc::new(RefCell::new(items)))
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::MutationRecord(_) => JsValue::Undefined,
             HostObject::JsMap(entries) => match prop {
                 "get" => {
                     let key = args.first().map(to_string).unwrap_or_default();

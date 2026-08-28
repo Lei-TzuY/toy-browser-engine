@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use crate::css::parser::{
-    parse_declaration_block, parse_single_value, Combinator, Declaration, PseudoClass, Selector,
+    parse_declaration_block, parse_single_value, ClipPath, Combinator, Declaration, PseudoClass, Selector,
     SelectorPart, Stylesheet, TextShadow, Unit, Value,
 };
 use crate::dom::{ElementData, Node, NodeType};
@@ -163,6 +163,29 @@ impl<'a> StyledNode<'a> {
     pub fn text_shadow(&self) -> Option<TextShadow> {
         match self.value("text-shadow") {
             Some(Value::TextShadow(ts)) => Some(ts.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn column_count(&self) -> Option<usize> {
+        match self.value("column-count") {
+            Some(Value::Number(n)) if *n >= 1.0 => Some(*n as usize),
+            _ => None,
+        }
+    }
+
+    pub fn column_gap(&self) -> f32 {
+        match self.value("column-gap").or_else(|| self.value("gap")) {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            _ => 16.0,
+        }
+    }
+
+    pub fn clip_path(&self) -> Option<ClipPath> {
+        match self.value("clip-path") {
+            Some(Value::ClipPath(cp)) => Some(cp.clone()),
             _ => None,
         }
     }

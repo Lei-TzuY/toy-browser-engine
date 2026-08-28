@@ -165,6 +165,75 @@ pub struct TextShadow {
     pub color: Color,
 }
 
+/// A parsed `clip-path` value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClipPath {
+    Polygon(Vec<(f32, f32)>),
+    Circle { cx: f32, cy: f32, radius: f32 },
+    Inset { top: f32, right: f32, bottom: f32, left: f32 },
+}
+
+pub fn parse_clip_path(input: &str) -> Option<ClipPath> {
+    let s = input.trim();
+    if s.starts_with("polygon(") && s.ends_with(')') {
+        let inner = &s[8..s.len() - 1];
+        let mut points = Vec::new();
+        for pair in inner.split(',') {
+            let parts: Vec<&str> = pair.trim().split_whitespace().collect();
+            if parts.len() >= 2 {
+                let parse_coord = |val: &str| -> f32 {
+                    let val = val.trim();
+                    if let Some(pct) = val.strip_suffix('%') {
+                        pct.parse::<f32>().unwrap_or(0.0) / 100.0
+                    } else if let Some(px) = val.strip_suffix("px") {
+                        px.parse::<f32>().unwrap_or(0.0) / 100.0
+                    } else {
+                        val.parse::<f32>().unwrap_or(0.0)
+                    }
+                };
+                let x = parse_coord(parts[0]);
+                let y = parse_coord(parts[1]);
+                points.push((x, y));
+            }
+        }
+        if !points.is_empty() {
+            return Some(ClipPath::Polygon(points));
+        }
+    } else if s.starts_with("circle(") && s.ends_with(')') {
+        let inner = &s[7..s.len() - 1].trim();
+        let (radius_str, at_str) = if let Some((r, at)) = inner.split_once("at") {
+            (r.trim(), Some(at.trim()))
+        } else {
+            (*inner, None)
+        };
+        let radius = if let Some(pct) = radius_str.strip_suffix('%') {
+            pct.parse::<f32>().unwrap_or(50.0) / 100.0
+        } else {
+            0.5
+        };
+        let (cx, cy) = if let Some(at) = at_str {
+            let parts: Vec<&str> = at.split_whitespace().collect();
+            let x = parts.first().and_then(|p| p.strip_suffix('%')).and_then(|p| p.parse().ok()).map(|p: f32| p / 100.0).unwrap_or(0.5);
+            let y = parts.get(1).and_then(|p| p.strip_suffix('%')).and_then(|p| p.parse().ok()).map(|p: f32| p / 100.0).unwrap_or(0.5);
+            (x, y)
+        } else {
+            (0.5, 0.5)
+        };
+        return Some(ClipPath::Circle { cx, cy, radius });
+    } else if s.starts_with("inset(") && s.ends_with(')') {
+        let inner = &s[6..s.len() - 1].trim();
+        let parts: Vec<f32> = inner.split_whitespace().filter_map(|p| {
+            p.trim_end_matches("px").trim_end_matches('%').parse().ok()
+        }).collect();
+        let top = parts.first().copied().unwrap_or(0.0);
+        let right = parts.get(1).copied().unwrap_or(top);
+        let bottom = parts.get(2).copied().unwrap_or(top);
+        let left = parts.get(3).copied().unwrap_or(right);
+        return Some(ClipPath::Inset { top, right, bottom, left });
+    }
+    None
+}
+
 // ── Pseudo-class types ────────────────────────────────────────────────────────
 
 /// The `An+B` expression used in `:nth-child(An+B)` and related selectors.
@@ -498,6 +567,7 @@ pub enum Value {
     ConicGradient(ConicGradient),
     BoxShadow(BoxShadow),
     TextShadow(TextShadow),
+    ClipPath(ClipPath),
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
     Animation(Vec<AnimationSpec>),
@@ -545,6 +615,7 @@ impl Value {
             Value::ConicGradient(_) => "conic-gradient(...)".to_string(),
             Value::BoxShadow(_) => "box-shadow(...)".to_string(),
             Value::TextShadow(_) => "text-shadow(...)".to_string(),
+            Value::ClipPath(_) => "clip-path(...)".to_string(),
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
             Value::Animation(_) => "animation(...)".to_string(),
@@ -1611,6 +1682,30 @@ impl Parser {
                 let values = self.parse_shorthand_values(first_value);
                 expand_gap_shorthand(values)
             }
+            "columns" => {
+                let values = self.parse_shorthand_values(first_value);
+                let mut count = None;
+                let mut width = None;
+                for v in values {
+                    match v {
+                        Value::Number(n) => count = Some(n as usize),
+                        Value::Length(n, unit) => width = Some(Value::Length(n, unit)),
+                        Value::Keyword(ref s) if s == "auto" => {}
+                        _ => {}
+                    }
+                }
+                let mut decls = Vec::new();
+                if let Some(c) = count {
+                    decls.push(Declaration::new("column-count", Value::Number(c as f32)));
+                }
+                if let Some(w) = width {
+                    decls.push(Declaration::new("column-width", w));
+                }
+                if decls.is_empty() {
+                    decls.push(Declaration::new("column-count", Value::Keyword("auto".to_string())));
+                }
+                decls
+            }
             "grid-column" | "grid-row" => {
                 let mut raw = match &first_value {
                     Value::Keyword(s) => s.clone(),
@@ -1803,6 +1898,22 @@ impl Parser {
                 raw.push_str(&rest);
                 if let Some(filters) = parse_filter(&raw) {
                     vec![Declaration::new(name, Value::Filter(filters))]
+                } else {
+                    vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
+                }
+            }
+            "clip-path" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, Unit::Px) => format!("{}px", n),
+                    Value::Number(n) => format!("{}", n),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                raw.push(' ');
+                raw.push_str(&rest);
+                if let Some(cp) = parse_clip_path(&raw) {
+                    vec![Declaration::new(name, Value::ClipPath(cp))]
                 } else {
                     vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
                 }
@@ -2442,7 +2553,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
         "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
-        "aspect-ratio" | "backdrop-filter" => true,
+        "aspect-ratio" | "backdrop-filter" | "columns" | "column-count" | "column-width" | "clip-path" => true,
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }
