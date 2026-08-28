@@ -87,7 +87,7 @@ fn decode_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         )));
     }
     let bits_per_pixel = u16_le(bytes, 28, "bits per pixel")?;
-    if bits_per_pixel != 8 && bits_per_pixel != 24 && bits_per_pixel != 32 {
+    if !matches!(bits_per_pixel, 1 | 4 | 8 | 24 | 32) {
         return Err(ImageError::Decode(format!(
             "unsupported BMP bit depth {bits_per_pixel}"
         )));
@@ -99,17 +99,18 @@ fn decode_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         )));
     }
 
-    let palette = if bits_per_pixel == 8 {
+    let palette = if bits_per_pixel <= 8 {
+        let max_palette_len = 1usize << bits_per_pixel;
         let colors_used = u32_le(bytes, 46, "colors used")?;
         let palette_len = if colors_used == 0 {
-            1usize << bits_per_pixel
+            max_palette_len
         } else {
             usize::try_from(colors_used)
                 .map_err(|_| ImageError::Decode("BMP palette size overflow".into()))?
         };
-        if palette_len == 0 || palette_len > 256 {
+        if palette_len == 0 || palette_len > max_palette_len {
             return Err(ImageError::Decode(format!(
-                "invalid BMP palette size {palette_len}"
+                "invalid BMP palette size {palette_len} for {bits_per_pixel}-bit pixels"
             )));
         }
         let palette_bytes = palette_len
@@ -129,7 +130,15 @@ fn decode_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
     let width = width_signed as u32;
     let height = height_signed.unsigned_abs();
     let row_payload = match bits_per_pixel {
-        8 => width as usize,
+        1 | 4 | 8 => {
+            let row_bits = (width as usize)
+                .checked_mul(bits_per_pixel as usize)
+                .ok_or_else(|| ImageError::Decode("BMP row size overflow".into()))?;
+            row_bits
+                .checked_add(7)
+                .map(|bits| bits / 8)
+                .ok_or_else(|| ImageError::Decode("BMP row size overflow".into()))?
+        }
         24 | 32 => (width as usize)
             .checked_mul((bits_per_pixel / 8) as usize)
             .ok_or_else(|| ImageError::Decode("BMP row size overflow".into()))?,
@@ -169,9 +178,24 @@ fn decode_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         for x in 0..width as usize {
             let dst = (image_y * width as usize + x) * 4;
             match bits_per_pixel {
-                8 => {
-                    let palette = palette.expect("8-bit BMP palette validated above");
-                    let index = row[x] as usize;
+                1 | 4 | 8 => {
+                    let palette = palette.expect("indexed BMP palette validated above");
+                    let index = match bits_per_pixel {
+                        1 => {
+                            let byte = row[x / 8];
+                            ((byte >> (7 - (x % 8))) & 0x01) as usize
+                        }
+                        4 => {
+                            let byte = row[x / 2];
+                            if x % 2 == 0 {
+                                (byte >> 4) as usize
+                            } else {
+                                (byte & 0x0f) as usize
+                            }
+                        }
+                        8 => row[x] as usize,
+                        _ => unreachable!(),
+                    };
                     let src = index.checked_mul(4).ok_or_else(|| {
                         ImageError::Decode("BMP palette index overflow".into())
                     })?;
@@ -282,7 +306,13 @@ mod tests {
         out
     }
 
-    fn indexed_bmp(width: i32, height: i32, palette: &[[u8; 4]], rows: &[u8]) -> Vec<u8> {
+    fn indexed_bmp(
+        width: i32,
+        height: i32,
+        bpp: u16,
+        palette: &[[u8; 4]],
+        rows: &[u8],
+    ) -> Vec<u8> {
         let pixel_offset = 54 + palette.len() * 4;
         let mut out = vec![0u8; 54];
         out[0..2].copy_from_slice(b"BM");
@@ -293,7 +323,7 @@ mod tests {
         out[18..22].copy_from_slice(&width.to_le_bytes());
         out[22..26].copy_from_slice(&height.to_le_bytes());
         out[26..28].copy_from_slice(&1u16.to_le_bytes());
-        out[28..30].copy_from_slice(&8u16.to_le_bytes());
+        out[28..30].copy_from_slice(&bpp.to_le_bytes());
         out[46..50].copy_from_slice(&(palette.len() as u32).to_le_bytes());
         for entry in palette {
             out.extend_from_slice(entry);
@@ -320,7 +350,7 @@ mod tests {
     #[test]
     fn decodes_8_bit_palette_and_padding() {
         let palette = [[0, 0, 255, 0], [0, 255, 0, 0], [255, 0, 0, 0]];
-        let bytes = indexed_bmp(3, 1, &palette, &[0, 1, 2, 0]);
+        let bytes = indexed_bmp(3, 1, 8, &palette, &[0, 1, 2, 0]);
         let image = decode(&bytes).expect("8-bit indexed BMP");
         assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
         assert_eq!(image.pixel(1, 0), [0, 255, 0, 255]);
@@ -328,9 +358,43 @@ mod tests {
     }
 
     #[test]
+    fn decodes_packed_4_bit_high_nibble_first() {
+        let palette = [
+            [0, 0, 0, 0],
+            [0, 0, 255, 0],
+            [0, 255, 0, 0],
+            [255, 0, 0, 0],
+        ];
+        let bytes = indexed_bmp(3, 1, 4, &palette, &[0x12, 0x30, 0, 0]);
+        let image = decode(&bytes).expect("4-bit indexed BMP");
+        assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
+        assert_eq!(image.pixel(1, 0), [0, 255, 0, 255]);
+        assert_eq!(image.pixel(2, 0), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn decodes_packed_1_bit_msb_first_and_ignores_tail_bits() {
+        let palette = [[0, 0, 0, 0], [255, 255, 255, 0]];
+        let bytes = indexed_bmp(5, 1, 1, &palette, &[0b1010_1111, 0, 0, 0]);
+        let image = decode(&bytes).expect("1-bit indexed BMP");
+        assert_eq!(image.pixel(0, 0), [255, 255, 255, 255]);
+        assert_eq!(image.pixel(1, 0), [0, 0, 0, 255]);
+        assert_eq!(image.pixel(2, 0), [255, 255, 255, 255]);
+        assert_eq!(image.pixel(3, 0), [0, 0, 0, 255]);
+        assert_eq!(image.pixel(4, 0), [255, 255, 255, 255]);
+    }
+
+    #[test]
     fn rejects_palette_index_outside_declared_table() {
         let palette = [[0, 0, 0, 0], [255, 255, 255, 0]];
-        let bytes = indexed_bmp(1, 1, &palette, &[2, 0, 0, 0]);
+        let bytes = indexed_bmp(1, 1, 8, &palette, &[2, 0, 0, 0]);
+        assert!(decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_palette_larger_than_bit_depth_can_address() {
+        let palette = [[0, 0, 0, 0]; 3];
+        let bytes = indexed_bmp(1, 1, 1, &palette, &[0, 0, 0, 0]);
         assert!(decode(&bytes).is_err());
     }
 

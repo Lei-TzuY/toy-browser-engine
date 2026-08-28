@@ -16,7 +16,13 @@ fn bmp(width: i32, height: i32, bpp: u16, rows: &[u8]) -> Vec<u8> {
     out
 }
 
-fn indexed_bmp(width: i32, height: i32, palette: &[[u8; 4]], rows: &[u8]) -> Vec<u8> {
+fn indexed_bmp(
+    width: i32,
+    height: i32,
+    bpp: u16,
+    palette: &[[u8; 4]],
+    rows: &[u8],
+) -> Vec<u8> {
     let pixel_offset = 54 + palette.len() * 4;
     let mut out = vec![0u8; 54];
     out[0..2].copy_from_slice(b"BM");
@@ -27,7 +33,7 @@ fn indexed_bmp(width: i32, height: i32, palette: &[[u8; 4]], rows: &[u8]) -> Vec
     out[18..22].copy_from_slice(&width.to_le_bytes());
     out[22..26].copy_from_slice(&height.to_le_bytes());
     out[26..28].copy_from_slice(&1u16.to_le_bytes());
-    out[28..30].copy_from_slice(&8u16.to_le_bytes());
+    out[28..30].copy_from_slice(&bpp.to_le_bytes());
     out[46..50].copy_from_slice(&(palette.len() as u32).to_le_bytes());
     for entry in palette {
         out.extend_from_slice(entry);
@@ -58,18 +64,19 @@ fn public_decoder_handles_24_bit_bgr_padding_and_bottom_up_rows() {
 #[test]
 fn public_decoder_handles_8_bit_palette_rows_and_orientation() {
     let palette = [
-        [0, 0, 255, 0],   // red
-        [0, 255, 0, 0],   // green
-        [255, 0, 0, 0],   // blue
-        [255, 255, 255, 0], // white
+        [0, 0, 255, 0],
+        [0, 255, 0, 0],
+        [255, 0, 0, 0],
+        [255, 255, 255, 0],
     ];
     let bytes = indexed_bmp(
         2,
         2,
+        8,
         &palette,
         &[
-            2, 3, 0, 0, // bottom: blue, white + row padding
-            0, 1, 0, 0, // top: red, green + row padding
+            2, 3, 0, 0,
+            0, 1, 0, 0,
         ],
     );
     let image = decode(&bytes).expect("8-bit indexed BMP");
@@ -80,15 +87,52 @@ fn public_decoder_handles_8_bit_palette_rows_and_orientation() {
 }
 
 #[test]
-fn image_cache_uses_bmp_decoder() {
-    let bytes = indexed_bmp(1, -1, &[[3, 2, 1, 0]], &[0, 0, 0, 0]);
+fn public_decoder_handles_packed_4_bit_nibbles_and_row_padding() {
+    let palette = [
+        [0, 0, 0, 0],
+        [0, 0, 255, 0],
+        [0, 255, 0, 0],
+        [255, 0, 0, 0],
+    ];
+    let bytes = indexed_bmp(3, 1, 4, &palette, &[0x12, 0x30, 0, 0]);
+    let image = decode(&bytes).expect("4-bit indexed BMP");
+    assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
+    assert_eq!(image.pixel(1, 0), [0, 255, 0, 255]);
+    assert_eq!(image.pixel(2, 0), [0, 0, 255, 255]);
+}
+
+#[test]
+fn public_decoder_handles_packed_1_bit_rows_msb_first() {
+    let palette = [[0, 0, 0, 0], [255, 255, 255, 0]];
+    let bytes = indexed_bmp(
+        5,
+        2,
+        1,
+        &palette,
+        &[
+            0b0101_0000, 0, 0, 0,
+            0b1010_1000, 0, 0, 0,
+        ],
+    );
+    let image = decode(&bytes).expect("1-bit indexed BMP");
+    assert_eq!(image.pixel(0, 0), [255, 255, 255, 255]);
+    assert_eq!(image.pixel(1, 0), [0, 0, 0, 255]);
+    assert_eq!(image.pixel(4, 0), [255, 255, 255, 255]);
+    assert_eq!(image.pixel(0, 1), [0, 0, 0, 255]);
+    assert_eq!(image.pixel(1, 1), [255, 255, 255, 255]);
+}
+
+#[test]
+fn image_cache_uses_packed_bmp_decoder() {
+    let palette = [[3, 2, 1, 0], [30, 20, 10, 0]];
+    let bytes = indexed_bmp(1, -1, 1, &palette, &[0b1000_0000, 0, 0, 0]);
     let mut loader = MemoryLoader::new();
     loader.insert("demo:///pixel.bmp", bytes);
     let url = Url::parse("demo:///pixel.bmp").unwrap();
     let mut cache = ImageCache::new();
 
     let image = cache.fetch(&url, &loader).expect("cached BMP");
-    assert_eq!(image.pixel(0, 0), [1, 2, 3, 255]);
+    assert_eq!(image.pixel(0, 0), [10, 20, 30, 255]);
     assert_eq!(cache.len(), 1);
 }
 
@@ -101,8 +145,18 @@ fn rejects_unsupported_and_malformed_bmp_layouts() {
     let unsupported_depth = bmp(1, 1, 16, &[0, 0, 0, 0]);
     assert!(decode(&unsupported_depth).is_err());
 
-    let bad_index = indexed_bmp(1, 1, &[[0, 0, 0, 0]], &[1, 0, 0, 0]);
+    let bad_index = indexed_bmp(1, 1, 8, &[[0, 0, 0, 0]], &[1, 0, 0, 0]);
     assert!(decode(&bad_index).is_err());
+
+    let oversized_1bit_palette = [[0, 0, 0, 0]; 3];
+    assert!(decode(&indexed_bmp(
+        1,
+        1,
+        1,
+        &oversized_1bit_palette,
+        &[0, 0, 0, 0],
+    ))
+    .is_err());
 
     assert!(decode(&bmp(1, 2, 24, &[0, 0, 0, 0])).is_err());
 }
