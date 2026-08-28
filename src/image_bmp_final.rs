@@ -87,7 +87,7 @@ fn decode_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         )));
     }
     let bits_per_pixel = u16_le(bytes, 28, "bits per pixel")?;
-    if bits_per_pixel != 24 && bits_per_pixel != 32 {
+    if bits_per_pixel != 8 && bits_per_pixel != 24 && bits_per_pixel != 32 {
         return Err(ImageError::Decode(format!(
             "unsupported BMP bit depth {bits_per_pixel}"
         )));
@@ -99,12 +99,42 @@ fn decode_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         )));
     }
 
+    let palette = if bits_per_pixel == 8 {
+        let colors_used = u32_le(bytes, 46, "colors used")?;
+        let palette_len = if colors_used == 0 {
+            1usize << bits_per_pixel
+        } else {
+            usize::try_from(colors_used)
+                .map_err(|_| ImageError::Decode("BMP palette size overflow".into()))?
+        };
+        if palette_len == 0 || palette_len > 256 {
+            return Err(ImageError::Decode(format!(
+                "invalid BMP palette size {palette_len}"
+            )));
+        }
+        let palette_bytes = palette_len
+            .checked_mul(4)
+            .ok_or_else(|| ImageError::Decode("BMP palette size overflow".into()))?;
+        let palette_end = dib_end
+            .checked_add(palette_bytes)
+            .ok_or_else(|| ImageError::Decode("BMP palette offset overflow".into()))?;
+        if palette_end > pixel_offset || palette_end > bytes.len() {
+            return Err(ImageError::Decode("truncated BMP color palette".into()));
+        }
+        Some(&bytes[dib_end..palette_end])
+    } else {
+        None
+    };
+
     let width = width_signed as u32;
     let height = height_signed.unsigned_abs();
-    let bytes_per_pixel = (bits_per_pixel / 8) as usize;
-    let row_payload = (width as usize)
-        .checked_mul(bytes_per_pixel)
-        .ok_or_else(|| ImageError::Decode("BMP row size overflow".into()))?;
+    let row_payload = match bits_per_pixel {
+        8 => width as usize,
+        24 | 32 => (width as usize)
+            .checked_mul((bits_per_pixel / 8) as usize)
+            .ok_or_else(|| ImageError::Decode("BMP row size overflow".into()))?,
+        _ => unreachable!("bit depth validated above"),
+    };
     let row_stride = row_payload
         .checked_add(3)
         .map(|n| n & !3)
@@ -137,14 +167,37 @@ fn decode_bmp(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         let row_start = pixel_offset + file_y * row_stride;
         let row = &bytes[row_start..row_start + row_payload];
         for x in 0..width as usize {
-            let src = x * bytes_per_pixel;
             let dst = (image_y * width as usize + x) * 4;
-            // BI_RGB pixels are stored BGR/BGRX. For 32-bit BI_RGB the fourth
-            // byte is reserved rather than a reliable alpha channel.
-            pixels[dst] = row[src + 2];
-            pixels[dst + 1] = row[src + 1];
-            pixels[dst + 2] = row[src];
-            pixels[dst + 3] = 255;
+            match bits_per_pixel {
+                8 => {
+                    let palette = palette.expect("8-bit BMP palette validated above");
+                    let index = row[x] as usize;
+                    let src = index.checked_mul(4).ok_or_else(|| {
+                        ImageError::Decode("BMP palette index overflow".into())
+                    })?;
+                    let entry = palette.get(src..src + 4).ok_or_else(|| {
+                        ImageError::Decode(format!(
+                            "BMP palette index {index} exceeds declared palette"
+                        ))
+                    })?;
+                    // BITMAPINFO RGBQUAD entries are B, G, R, reserved.
+                    pixels[dst] = entry[2];
+                    pixels[dst + 1] = entry[1];
+                    pixels[dst + 2] = entry[0];
+                    pixels[dst + 3] = 255;
+                }
+                24 | 32 => {
+                    let bytes_per_pixel = (bits_per_pixel / 8) as usize;
+                    let src = x * bytes_per_pixel;
+                    // BI_RGB pixels are stored BGR/BGRX. For 32-bit BI_RGB the fourth
+                    // byte is reserved rather than a reliable alpha channel.
+                    pixels[dst] = row[src + 2];
+                    pixels[dst + 1] = row[src + 1];
+                    pixels[dst + 2] = row[src];
+                    pixels[dst + 3] = 255;
+                }
+                _ => unreachable!("bit depth validated above"),
+            }
         }
     }
 
@@ -229,6 +282,26 @@ mod tests {
         out
     }
 
+    fn indexed_bmp(width: i32, height: i32, palette: &[[u8; 4]], rows: &[u8]) -> Vec<u8> {
+        let pixel_offset = 54 + palette.len() * 4;
+        let mut out = vec![0u8; 54];
+        out[0..2].copy_from_slice(b"BM");
+        let size = pixel_offset + rows.len();
+        out[2..6].copy_from_slice(&(size as u32).to_le_bytes());
+        out[10..14].copy_from_slice(&(pixel_offset as u32).to_le_bytes());
+        out[14..18].copy_from_slice(&40u32.to_le_bytes());
+        out[18..22].copy_from_slice(&width.to_le_bytes());
+        out[22..26].copy_from_slice(&height.to_le_bytes());
+        out[26..28].copy_from_slice(&1u16.to_le_bytes());
+        out[28..30].copy_from_slice(&8u16.to_le_bytes());
+        out[46..50].copy_from_slice(&(palette.len() as u32).to_le_bytes());
+        for entry in palette {
+            out.extend_from_slice(entry);
+        }
+        out.extend_from_slice(rows);
+        out
+    }
+
     #[test]
     fn decodes_bottom_up_24_bit_with_row_padding() {
         let bytes = bmp(1, 2, 24, &[0, 0, 255, 0, 0, 255, 0, 0]);
@@ -242,6 +315,23 @@ mod tests {
         let bytes = bmp(1, -1, 32, &[30, 20, 10, 0]);
         let image = decode(&bytes).expect("32-bit top-down BMP");
         assert_eq!(image.pixel(0, 0), [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn decodes_8_bit_palette_and_padding() {
+        let palette = [[0, 0, 255, 0], [0, 255, 0, 0], [255, 0, 0, 0]];
+        let bytes = indexed_bmp(3, 1, &palette, &[0, 1, 2, 0]);
+        let image = decode(&bytes).expect("8-bit indexed BMP");
+        assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
+        assert_eq!(image.pixel(1, 0), [0, 255, 0, 255]);
+        assert_eq!(image.pixel(2, 0), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn rejects_palette_index_outside_declared_table() {
+        let palette = [[0, 0, 0, 0], [255, 255, 255, 0]];
+        let bytes = indexed_bmp(1, 1, &palette, &[2, 0, 0, 0]);
+        assert!(decode(&bytes).is_err());
     }
 
     #[test]
