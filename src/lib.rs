@@ -9,6 +9,10 @@
 
 pub mod animation;
 pub mod audio;
+#[allow(dead_code)]
+#[path = "browser.rs"]
+mod browser_prev;
+#[path = "browser_cookie_session_final.rs"]
 pub mod browser;
 pub mod canvas;
 pub mod cookie;
