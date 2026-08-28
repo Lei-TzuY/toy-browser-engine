@@ -11,6 +11,7 @@ use std::{env, fs, process};
 
 use browser_engine::{
     browser::{Browser, ClickOutcome},
+    browser_chrome::BrowserChromeTracker,
     cursor_assets::CursorResolver,
     cursor_frame::prepare_cursor_frame,
     document::PointerState,
@@ -447,8 +448,10 @@ fn reset_cursor_resolver(resolver: &mut CursorResolver, browser: &Browser) {
 }
 
 fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), minifb::Error> {
+    let mut chrome_tracker = BrowserChromeTracker::new();
+    let initial_chrome = chrome_tracker.poll(browser);
     let mut window = Window::new(
-        &browser.status_line(),
+        &initial_chrome.state.status_line(),
         width,
         height,
         WindowOptions::default(),
@@ -468,7 +471,6 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
 
     let mut scroll_y: f32 = 0.0;
     let mut was_mouse_down = false;
-    let mut title = String::new();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let mut document_changed = false;
@@ -552,6 +554,19 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         // whatever a callback changed is in the frame that follows.
         browser.tick();
 
+        // Poll live browser chrome after the event-loop turn: timers/network
+        // callbacks may change <title>, navigation state, or the page icon.
+        // If such a turn navigated without coming through the input paths
+        // above, reset viewport-local state before painting the new document.
+        let chrome_update = chrome_tracker.poll(browser);
+        if !document_changed && (chrome_update.changes.url || chrome_update.changes.history) {
+            scroll_y = 0.0;
+            reset_cursor_resolver(&mut cursor_resolver, browser);
+        }
+        if chrome_update.changes.title || chrome_update.changes.url || chrome_update.changes.history {
+            window.set_title(&chrome_update.state.status_line());
+        }
+
         // ── Draw ──────────────────────────────────────────────────────────
         let max_scroll = (browser.document().content_height(width as f32) - height as f32).max(0.0);
         scroll_y = scroll_y.clamp(0.0, max_scroll);
@@ -580,13 +595,6 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         );
         platform::apply_cursor_presentation(&mut window, cursor_outcome.presentation);
         window.update_with_buffer(&canvas.to_u32_buffer(), width, height)?;
-
-        // The title bar is the address bar: URL, title and history position.
-        let status = browser.status_line();
-        if status != title {
-            window.set_title(&status);
-            title = status;
-        }
     }
     Ok(())
 }
