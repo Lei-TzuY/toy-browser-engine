@@ -90,7 +90,10 @@ pub mod layout;
 #[allow(dead_code)]
 #[path = "net/mod.rs"]
 mod net_base;
+#[allow(dead_code)]
 #[path = "net_final.rs"]
+mod net_prev;
+#[path = "net_data_final.rs"]
 pub mod net;
 pub mod page_icon;
 pub mod paint;
