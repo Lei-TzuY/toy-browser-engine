@@ -8,7 +8,9 @@
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
 pub mod browser;
+mod browser_cursor;
 pub mod css;
+pub mod cursor;
 pub mod document;
 pub mod dom;
 pub mod editing;
