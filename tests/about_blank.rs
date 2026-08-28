@@ -2,7 +2,7 @@ use browser_engine::net::{
     AboutLoader, DefaultLoader, FetchError, FetchRequest, LoadError, MemoryLoader, ResourceLoader,
     Url,
 };
-use browser_engine::Browser;
+use browser_engine::{Browser, PointerState};
 
 fn about_blank() -> Url {
     Url::parse("about:blank").unwrap()
@@ -27,15 +27,15 @@ fn browser_can_open_reload_and_render_about_blank() {
 
     assert_eq!(browser.url().to_string(), "about:blank");
     assert_eq!(browser.document().url.to_string(), "about:blank");
-    assert!(browser.history().len() == 1);
+    assert_eq!(browser.history().len(), 1);
 
     browser.reload().unwrap();
     assert_eq!(browser.url().to_string(), "about:blank");
 
     // Rendering the built-in document should need no special frontend path.
-    let canvas = browser.render(320.0);
-    assert!(canvas.width > 0);
-    assert!(canvas.height > 0);
+    let canvas = browser.render(320, 200, 0.0, &PointerState::default());
+    assert_eq!(canvas.width, 320);
+    assert_eq!(canvas.height, 200);
 }
 
 #[test]
