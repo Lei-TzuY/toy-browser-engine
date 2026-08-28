@@ -103,6 +103,10 @@ mod net_base;
 mod net_prev;
 #[path = "net_data_final.rs"]
 pub mod net;
+#[allow(dead_code)]
+#[path = "page_icon.rs"]
+mod page_icon_prev;
+#[path = "page_icon_type_final.rs"]
 pub mod page_icon;
 pub mod paint;
 pub mod script;
