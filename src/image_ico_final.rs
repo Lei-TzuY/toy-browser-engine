@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::net::{LoadError, ResourceLoader, Url};
 
-pub use crate::image::{ImageError, ImageFormat, RasterImage};
+pub use crate::image_prev14::{ImageError, ImageFormat, RasterImage};
 
 /// Decode image bytes into straight RGBA8, adding Windows ICO container support.
 ///
@@ -19,7 +19,7 @@ pub fn decode(bytes: &[u8]) -> Result<RasterImage, ImageError> {
     if looks_like_ico(bytes) {
         decode_ico(bytes)
     } else {
-        crate::image::decode(bytes)
+        crate::image_prev14::decode(bytes)
     }
 }
 
@@ -115,7 +115,7 @@ fn decode_ico(bytes: &[u8]) -> Result<RasterImage, ImageError> {
         ));
     }
 
-    let image = crate::image::decode(payload)?;
+    let image = crate::image_prev14::decode(payload)?;
     if image.width != selected.width || image.height != selected.height {
         return Err(ImageError::Decode(format!(
             "ICO directory dimensions {}x{} do not match PNG payload {}x{}",
