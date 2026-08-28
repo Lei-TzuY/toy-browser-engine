@@ -31,6 +31,7 @@ pub enum CursorIcon {
     Alias,
     Copy,
     Move,
+    AllScroll,
     NoDrop,
     NotAllowed,
     Grab,
@@ -54,8 +55,6 @@ pub enum CursorIcon {
 }
 
 impl CursorIcon {
-    /// Parse one CSS cursor keyword. Unknown keywords are invalid CSS values
-    /// and therefore do not create a cursor request.
     pub fn from_css_keyword(keyword: &str) -> Option<Self> {
         Some(match keyword.trim().to_ascii_lowercase().as_str() {
             "auto" => Self::Auto,
@@ -73,6 +72,7 @@ impl CursorIcon {
             "alias" => Self::Alias,
             "copy" => Self::Copy,
             "move" => Self::Move,
+            "all-scroll" => Self::AllScroll,
             "no-drop" => Self::NoDrop,
             "not-allowed" => Self::NotAllowed,
             "grab" => Self::Grab,
@@ -114,6 +114,7 @@ impl CursorIcon {
             Self::Alias => "alias",
             Self::Copy => "copy",
             Self::Move => "move",
+            Self::AllScroll => "all-scroll",
             Self::NoDrop => "no-drop",
             Self::NotAllowed => "not-allowed",
             Self::Grab => "grab",
@@ -138,12 +139,6 @@ impl CursorIcon {
     }
 }
 
-/// Resolve the effective cursor for one styled node.
-///
-/// `cursor` is inherited by the existing cascade. We only have to interpret
-/// the winning computed value here. `auto` keeps a small amount of native
-/// browser behavior: selectable text/text-entry controls receive an I-beam,
-/// while everything else falls back to the platform default.
 pub fn cursor_for_styled_node(node: &StyledNode<'_>) -> CursorIcon {
     let specified = match node.value("cursor") {
         Some(Value::Keyword(keyword)) => CursorIcon::from_css_keyword(keyword).unwrap_or(CursorIcon::Auto),
@@ -170,13 +165,7 @@ fn auto_cursor_for_node(node: &StyledNode<'_>) -> CursorIcon {
     }
 }
 
-/// Locate a styled node using the DOM path convention used by the event and
-/// hit-test layers. The style tree mirrors the DOM tree, so the same child
-/// indices are stable for one style pass.
-pub fn styled_node_at_path<'a, 'n>(
-    root: &'a StyledNode<'n>,
-    path: &[usize],
-) -> Option<&'a StyledNode<'n>> {
+pub fn styled_node_at_path<'a, 'n>(root: &'a StyledNode<'n>, path: &[usize]) -> Option<&'a StyledNode<'n>> {
     let mut current = root;
     for &index in path {
         current = current.children.get(index)?;
@@ -184,29 +173,12 @@ pub fn styled_node_at_path<'a, 'n>(
     Some(current)
 }
 
-/// Resolve the computed cursor for a known DOM path under the supplied
-/// interaction state. This includes `:hover`, `:active`, focus, inheritance,
-/// author rules, and the user-agent stylesheet.
-pub fn cursor_for_path(
-    document: &Document,
-    path: &[usize],
-    viewport_width: f32,
-    pointer: &PointerState,
-) -> Option<CursorIcon> {
+pub fn cursor_for_path(document: &Document, path: &[usize], viewport_width: f32, pointer: &PointerState) -> Option<CursorIcon> {
     let styled = document.style_tree(viewport_width, pointer);
     styled_node_at_path(&styled, path).map(cursor_for_styled_node)
 }
 
-/// Hit-test a page coordinate and resolve the cursor that should be displayed
-/// there. The hit node is installed as the effective hovered node before the
-/// second style pass, so `:hover { cursor: ... }` participates correctly.
-pub fn cursor_at_point(
-    document: &Document,
-    x: f32,
-    y: f32,
-    viewport_width: f32,
-    pointer: &PointerState,
-) -> CursorIcon {
+pub fn cursor_at_point(document: &Document, x: f32, y: f32, viewport_width: f32, pointer: &PointerState) -> CursorIcon {
     let Some(path) = document.hit_test(x, y, viewport_width) else {
         return CursorIcon::Default;
     };
@@ -215,24 +187,14 @@ pub fn cursor_at_point(
     cursor_for_path(document, &path, viewport_width, &interaction).unwrap_or(CursorIcon::Default)
 }
 
-/// Same as `cursor_at_point`, but also returns the DOM path chosen by hit-test.
-/// Frontends commonly need both to update hover state and their native cursor
-/// in one pointer-move turn.
-pub fn cursor_hit_test(
-    document: &Document,
-    x: f32,
-    y: f32,
-    viewport_width: f32,
-    pointer: &PointerState,
-) -> (Option<NodePath>, CursorIcon) {
+pub fn cursor_hit_test(document: &Document, x: f32, y: f32, viewport_width: f32, pointer: &PointerState) -> (Option<NodePath>, CursorIcon) {
     let path = document.hit_test(x, y, viewport_width);
     let Some(ref path) = path else {
         return (None, CursorIcon::Default);
     };
     let mut interaction = pointer.clone();
     interaction.hovered = Some(path.clone());
-    let icon = cursor_for_path(document, path, viewport_width, &interaction)
-        .unwrap_or(CursorIcon::Default);
+    let icon = cursor_for_path(document, path, viewport_width, &interaction).unwrap_or(CursorIcon::Default);
     (Some(path.clone()), icon)
 }
 
@@ -254,6 +216,7 @@ mod tests {
             ("text", CursorIcon::Text),
             ("crosshair", CursorIcon::Crosshair),
             ("move", CursorIcon::Move),
+            ("all-scroll", CursorIcon::AllScroll),
             ("not-allowed", CursorIcon::NotAllowed),
             ("grab", CursorIcon::Grab),
             ("nwse-resize", CursorIcon::NwseResize),
@@ -270,10 +233,7 @@ mod tests {
         let doc = document("<a id='link' href='/next'>next</a><button id='button'>go</button>");
         for selector in ["#link", "#button"] {
             let path = dom_api::query_selector(&doc.dom, &[], selector).expect("element path");
-            assert_eq!(
-                cursor_for_path(&doc, &path, 800.0, &PointerState::default()),
-                Some(CursorIcon::Pointer)
-            );
+            assert_eq!(cursor_for_path(&doc, &path, 800.0, &PointerState::default()), Some(CursorIcon::Pointer));
         }
     }
 
@@ -296,11 +256,17 @@ mod tests {
     }
 
     #[test]
+    fn all_scroll_keyword_flows_through_the_computed_style_runtime() {
+        let doc = document("<style>#target { cursor: all-scroll; }</style><div id='target'>drag</div>");
+        let target = dom_api::query_selector(&doc.dom, &[], "#target").unwrap();
+        assert_eq!(cursor_for_path(&doc, &target, 800.0, &PointerState::default()), Some(CursorIcon::AllScroll));
+    }
+
+    #[test]
     fn hover_state_can_change_the_resolved_cursor() {
         let doc = document("<style>#target { cursor: default; } #target:hover { cursor: crosshair; }</style><div id='target'>target</div>");
         let target = dom_api::query_selector(&doc.dom, &[], "#target").unwrap();
         assert_eq!(cursor_for_path(&doc, &target, 800.0, &PointerState::default()), Some(CursorIcon::Default));
-
         let pointer = PointerState { hovered: Some(target.clone()), ..PointerState::default() };
         assert_eq!(cursor_for_path(&doc, &target, 800.0, &pointer), Some(CursorIcon::Crosshair));
     }
