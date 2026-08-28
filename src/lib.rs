@@ -2,7 +2,7 @@
 //!
 //! Pipeline:
 //!  HTML string
-//!   → `html::parse_html`      → DOM tree  (`dom::Node`)
+//!   → `html::parse_html`      → DOM root  (`dom::Node`)
 //!   → `style::style_tree`     → Styled tree (`style::StyledNode`)
 //!   → `layout::layout_tree`   → Layout tree (`layout::LayoutBox`)
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
@@ -101,7 +101,10 @@ mod net_base;
 #[allow(dead_code)]
 #[path = "net_final.rs"]
 mod net_prev;
+#[allow(dead_code)]
 #[path = "net_data_final.rs"]
+mod net_prev2;
+#[path = "net_about_final.rs"]
 pub mod net;
 #[allow(dead_code)]
 #[path = "page_icon.rs"]
