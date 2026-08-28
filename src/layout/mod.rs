@@ -1656,11 +1656,12 @@ impl<'a> LayoutBox<'a> {
             _ => "".to_string(),
         };
 
-        let col_tokens = crate::css::expand_grid_template_tracks(&col_spec);
+        let container_w = self.dimensions.content.width;
+        let col_tokens = crate::css::expand_grid_template_tracks_with_width(&col_spec, Some(container_w), col_gap);
         let row_tokens = if row_spec.is_empty() {
             Vec::new()
         } else {
-            crate::css::expand_grid_template_tracks(&row_spec)
+            crate::css::expand_grid_template_tracks_with_width(&row_spec, None, row_gap)
         };
 
         let num_template_cols = col_tokens.len().max(1);
@@ -1870,7 +1871,27 @@ impl<'a> LayoutBox<'a> {
             if i >= num_cols {
                 break;
             }
-            if tok.ends_with("fr") {
+            let tok_t = tok.trim();
+            if tok_t.starts_with("minmax(") && tok_t.ends_with(')') {
+                let inner = &tok_t[7..tok_t.len() - 1];
+                if let Some((min_s, max_s)) = inner.split_once(',') {
+                    let min_px = crate::css::parser::parse_min_track_size(min_s);
+                    if max_s.trim().ends_with("fr") {
+                        let weight: f32 = max_s.trim().trim_end_matches("fr").parse().unwrap_or(1.0);
+                        fr_total += weight;
+                        col_widths[i] = min_px;
+                        allocated_w += min_px;
+                    } else if max_s.trim().ends_with("px") {
+                        let px: f32 = max_s.trim().trim_end_matches("px").parse().unwrap_or(min_px);
+                        col_widths[i] = px;
+                        allocated_w += px;
+                    } else {
+                        col_widths[i] = min_px;
+                        allocated_w += min_px;
+                        fr_total += 1.0;
+                    }
+                }
+            } else if tok.ends_with("fr") {
                 let weight: f32 = tok.trim_end_matches("fr").parse().unwrap_or(1.0);
                 fr_total += weight;
             } else if tok.ends_with("px") {
@@ -1901,6 +1922,7 @@ impl<'a> LayoutBox<'a> {
             for i in 0..num_cols {
                 let is_fr = if i < col_tokens.len() {
                     col_tokens[i].ends_with("fr")
+                        || col_tokens[i].contains("fr")
                         || (!col_tokens[i].ends_with("px")
                             && !col_tokens[i].ends_with('%')
                             && col_tokens[i].parse::<f32>().is_err())
@@ -1908,12 +1930,33 @@ impl<'a> LayoutBox<'a> {
                     true
                 };
                 if is_fr {
-                    let weight: f32 = if i < col_tokens.len() && col_tokens[i].ends_with("fr") {
-                        col_tokens[i].trim_end_matches("fr").parse().unwrap_or(1.0)
+                    let weight: f32 = if i < col_tokens.len() {
+                        if col_tokens[i].ends_with("fr") {
+                            col_tokens[i].trim_end_matches("fr").parse().unwrap_or(1.0)
+                        } else if col_tokens[i].starts_with("minmax(") {
+                            let inner = &col_tokens[i][7..col_tokens[i].len() - 1];
+                            inner
+                                .split_once(',')
+                                .map(|(_, max_s)| {
+                                    if max_s.trim().ends_with("fr") {
+                                        max_s.trim().trim_end_matches("fr").parse().unwrap_or(1.0)
+                                    } else {
+                                        1.0
+                                    }
+                                })
+                                .unwrap_or(1.0)
+                        } else {
+                            1.0
+                        }
                     } else {
                         1.0
                     };
-                    col_widths[i] = remaining_w * (weight / fr_total);
+                    let base_min = if i < col_tokens.len() && col_tokens[i].starts_with("minmax(") {
+                        col_widths[i]
+                    } else {
+                        0.0
+                    };
+                    col_widths[i] = base_min + remaining_w * (weight / fr_total);
                 }
             }
         }

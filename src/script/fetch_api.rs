@@ -393,6 +393,9 @@ impl JsRuntime {
                 };
                 host_value(HostObject::URLSearchParams(Rc::new(RefCell::new(params))))
             }
+            Builtin::AudioContextCtor => {
+                host_value(HostObject::AudioContext(Rc::new(RefCell::new(crate::audio::AudioContext::new()))))
+            }
             other => {
                 self.throw_type_error(format!("{other:?} is not a constructor"));
                 JsValue::Undefined
@@ -495,6 +498,54 @@ impl JsRuntime {
                     _ => JsValue::Undefined,
                 }
             }
+            HostObject::AudioContext(ctx) => {
+                let c = ctx.borrow();
+                match prop {
+                    "sampleRate" => JsValue::Number(c.sample_rate),
+                    "state" => JsValue::Str(c.state.clone()),
+                    "destination" => host_value(HostObject::AudioNode(ctx.clone(), c.destination_id)),
+                    _ => JsValue::Undefined,
+                }
+            }
+            HostObject::AudioNode(ctx, node_id) => {
+                let c = ctx.borrow();
+                let Some(node) = c.get_node(*node_id) else {
+                    return JsValue::Undefined;
+                };
+                match &node.kind {
+                    crate::audio::AudioNodeKind::Oscillator { osc_type, .. } => match prop {
+                        "type" => JsValue::Str(osc_type.as_str().to_string()),
+                        "frequency" => host_value(HostObject::AudioParam(ctx.clone(), *node_id, "frequency".to_string())),
+                        _ => JsValue::Undefined,
+                    },
+                    crate::audio::AudioNodeKind::Gain { .. } => match prop {
+                        "gain" => host_value(HostObject::AudioParam(ctx.clone(), *node_id, "gain".to_string())),
+                        _ => JsValue::Undefined,
+                    },
+                    crate::audio::AudioNodeKind::Destination => match prop {
+                        "maxChannelCount" => JsValue::Number(2.0),
+                        _ => JsValue::Undefined,
+                    },
+                }
+            }
+            HostObject::AudioParam(ctx, node_id, param_name) => {
+                let c = ctx.borrow();
+                let Some(node) = c.get_node(*node_id) else {
+                    return JsValue::Undefined;
+                };
+                let param = match &node.kind {
+                    crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => frequency,
+                    crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => gain,
+                    _ => return JsValue::Undefined,
+                };
+                match prop {
+                    "value" => JsValue::Number(param.value),
+                    "defaultValue" => JsValue::Number(param.default_value),
+                    "minValue" => JsValue::Number(param.min_value),
+                    "maxValue" => JsValue::Number(param.max_value),
+                    _ => JsValue::Undefined,
+                }
+            }
         }
     }
 
@@ -585,6 +636,80 @@ impl JsRuntime {
             HostObject::CanvasRenderingContext2D(ctx) => {
                 self.canvas_context_method(ctx, prop, args)
             }
+            HostObject::AudioContext(ctx) => match prop {
+                "createOscillator" => {
+                    let id = ctx.borrow_mut().create_oscillator();
+                    host_value(HostObject::AudioNode(ctx.clone(), id))
+                }
+                "createGain" => {
+                    let id = ctx.borrow_mut().create_gain();
+                    host_value(HostObject::AudioNode(ctx.clone(), id))
+                }
+                "close" => {
+                    ctx.borrow_mut().state = "closed".to_string();
+                    JsValue::Undefined
+                }
+                "resume" => {
+                    ctx.borrow_mut().state = "running".to_string();
+                    JsValue::Undefined
+                }
+                "suspend" => {
+                    ctx.borrow_mut().state = "suspended".to_string();
+                    JsValue::Undefined
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::AudioNode(ctx, node_id) => match prop {
+                "connect" => {
+                    if let Some(dest_val) = args.first() {
+                        if let JsValue::Host(h) = dest_val {
+                            if let HostObject::AudioNode(_, dest_id) = h.as_ref() {
+                                ctx.borrow_mut().connect(*node_id, *dest_id);
+                            }
+                        }
+                    }
+                    JsValue::Undefined
+                }
+                "disconnect" => {
+                    ctx.borrow_mut().disconnect(*node_id);
+                    JsValue::Undefined
+                }
+                "start" => {
+                    if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
+                        if let crate::audio::AudioNodeKind::Oscillator { ref mut started, .. } = node.kind {
+                            *started = true;
+                        }
+                    }
+                    JsValue::Undefined
+                }
+                "stop" => {
+                    if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
+                        if let crate::audio::AudioNodeKind::Oscillator { ref mut stopped, .. } = node.kind {
+                            *stopped = true;
+                        }
+                    }
+                    JsValue::Undefined
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::AudioParam(ctx, node_id, param_name) => match prop {
+                "setValueAtTime" => {
+                    let val = args.first().map(to_number).unwrap_or(0.0);
+                    if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
+                        match &mut node.kind {
+                            crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => {
+                                frequency.set_value(val);
+                            }
+                            crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => {
+                                gain.set_value(val);
+                            }
+                            _ => {}
+                        }
+                    }
+                    JsValue::Undefined
+                }
+                _ => JsValue::Undefined,
+            },
         }
     }
 

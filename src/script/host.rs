@@ -331,6 +331,9 @@ pub enum HostObject {
     CanvasRenderingContext2D(Rc<RefCell<crate::canvas::CanvasContext2D>>),
     URL(Rc<RefCell<UrlData>>),
     URLSearchParams(Rc<RefCell<UrlSearchParamsData>>),
+    AudioContext(Rc<RefCell<crate::audio::AudioContext>>),
+    AudioNode(Rc<RefCell<crate::audio::AudioContext>>, usize),
+    AudioParam(Rc<RefCell<crate::audio::AudioContext>>, usize, String),
 }
 
 impl HostObject {
@@ -345,6 +348,9 @@ impl HostObject {
             HostObject::CanvasRenderingContext2D(_) => "CanvasRenderingContext2D",
             HostObject::URL(_) => "URL",
             HostObject::URLSearchParams(_) => "URLSearchParams",
+            HostObject::AudioContext(_) => "AudioContext",
+            HostObject::AudioNode(_, _) => "AudioNode",
+            HostObject::AudioParam(_, _, _) => "AudioParam",
         }
     }
 

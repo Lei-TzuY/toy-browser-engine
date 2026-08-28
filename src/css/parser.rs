@@ -1602,6 +1602,7 @@ impl Parser {
             let name = self.parse_ident().to_ascii_lowercase();
             return match name.as_str() {
                 "media" => self.parse_media_block(),
+                "supports" => self.parse_supports_block(),
                 "keyframes" | "-webkit-keyframes" => {
                     self.parse_keyframe_block();
                     Vec::new()
@@ -1673,6 +1674,35 @@ impl Parser {
             }
             inner_rules
         }
+    }
+
+    /// Parse the content of `@supports … { rules }`.
+    fn parse_supports_block(&mut self) -> Vec<Rule> {
+        let cond_str = self.consume_while(|c| c != '{').trim().to_string();
+        self.skip_ws_and_comments();
+        if self.peek() != '{' {
+            return Vec::new();
+        }
+
+        let is_supported = evaluate_supports_condition(&cond_str);
+        if !is_supported {
+            self.skip_brace_block();
+            return Vec::new();
+        }
+
+        self.consume(); // '{'
+        let mut inner_rules = Vec::new();
+        loop {
+            self.skip_ws_and_comments();
+            if self.peek() == '}' || self.eof() {
+                break;
+            }
+            inner_rules.extend(self.parse_rule_item());
+        }
+        if self.peek() == '}' {
+            self.consume();
+        }
+        inner_rules
     }
 
     /// Parse media conditions up to (but not including) the `{`.
@@ -1982,6 +2012,15 @@ fn expand_grid_placement_shorthand(name: &str, raw: &str) -> Vec<Declaration> {
 
 /// Expands `repeat(count, track...)` expressions and returns individual track definitions.
 pub fn expand_grid_template_tracks(spec: &str) -> Vec<String> {
+    expand_grid_template_tracks_with_width(spec, None, 0.0)
+}
+
+/// Expands `repeat(count | auto-fill | auto-fit, track...)` with optional container width & gap.
+pub fn expand_grid_template_tracks_with_width(
+    spec: &str,
+    container_width: Option<f32>,
+    gap: f32,
+) -> Vec<String> {
     let mut tracks = Vec::new();
     let chars: Vec<char> = spec.chars().collect();
     let mut i = 0;
@@ -2024,8 +2063,29 @@ pub fn expand_grid_template_tracks(spec: &str) -> Vec<String> {
         if token_trim.starts_with("repeat(") && token_trim.ends_with(')') {
             let inner = &token_trim[7..token_trim.len() - 1];
             if let Some((count_str, track_spec)) = inner.split_once(',') {
-                let count: usize = count_str.trim().parse().unwrap_or(1);
-                let sub_tracks = expand_grid_template_tracks(track_spec.trim());
+                let count_kw = count_str.trim().to_ascii_lowercase();
+                let sub_tracks = expand_grid_template_tracks_with_width(track_spec.trim(), container_width, gap);
+                let count = if count_kw == "auto-fill" || count_kw == "auto-fit" {
+                    if let Some(w) = container_width {
+                        let mut min_track_px = 0.0f32;
+                        for st in &sub_tracks {
+                            let min_px = parse_min_track_size(st);
+                            min_track_px += min_px;
+                        }
+                        if min_track_px > 0.0 {
+                            let total_per_repeat = min_track_px + gap * (sub_tracks.len() as f32);
+                            let repeat_count = ((w + gap) / total_per_repeat).floor() as usize;
+                            repeat_count.max(1)
+                        } else {
+                            1
+                        }
+                    } else {
+                        1
+                    }
+                } else {
+                    count_kw.parse().unwrap_or(1)
+                };
+
                 for _ in 0..count {
                     tracks.extend(sub_tracks.clone());
                 }
@@ -2041,6 +2101,84 @@ pub fn expand_grid_template_tracks(spec: &str) -> Vec<String> {
         tracks.push("1fr".to_string());
     }
     tracks
+}
+
+pub fn parse_min_track_size(token: &str) -> f32 {
+    let t = token.trim();
+    if t.starts_with("minmax(") && t.ends_with(')') {
+        let inner = &t[7..t.len() - 1];
+        if let Some((min_part, _)) = inner.split_once(',') {
+            return parse_min_track_size(min_part.trim());
+        }
+    }
+    if t.ends_with("px") {
+        t.trim_end_matches("px").parse().unwrap_or(0.0)
+    } else if let Ok(n) = t.parse::<f32>() {
+        n
+    } else {
+        0.0
+    }
+}
+
+pub fn evaluate_supports_condition(cond: &str) -> bool {
+    let s = cond.trim();
+    if s.is_empty() {
+        return true;
+    }
+
+    if let Some(rest) = s.strip_prefix("not") {
+        if rest.starts_with(char::is_whitespace) || rest.starts_with('(') {
+            return !evaluate_supports_condition(rest.trim());
+        }
+    }
+
+    // Check for ' or '
+    if s.contains(" or ") {
+        return s.split(" or ").any(|part| evaluate_supports_condition(part.trim()));
+    }
+
+    // Check for ' and '
+    if s.contains(" and ") {
+        return s.split(" and ").all(|part| evaluate_supports_condition(part.trim()));
+    }
+
+    // Single declaration: e.g. (display: grid)
+    let inner = if s.starts_with('(') && s.ends_with(')') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+
+    if let Some((prop, val)) = inner.split_once(':') {
+        is_property_supported(prop.trim(), val.trim())
+    } else {
+        false
+    }
+}
+
+pub fn is_property_supported(prop: &str, val: &str) -> bool {
+    let p = prop.to_ascii_lowercase();
+    let v = val.to_ascii_lowercase();
+    match p.as_str() {
+        "display" => matches!(
+            v.as_str(),
+            "none" | "block" | "inline" | "inline-block" | "flex" | "grid"
+        ),
+        "flex-direction" => matches!(v.as_str(), "row" | "row-reverse" | "column" | "column-reverse"),
+        "flex-wrap" => matches!(v.as_str(), "nowrap" | "wrap" | "wrap-reverse"),
+        "flex-flow" => true,
+        "justify-content" | "align-items" | "align-self" | "justify-items" | "justify-self" => true,
+        "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => true,
+        "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left" => true,
+        "padding" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => true,
+        "border" | "border-top" | "border-right" | "border-bottom" | "border-left" | "border-width" | "border-color" | "border-style" => true,
+        "border-radius" => true,
+        "color" | "background" | "background-color" => true,
+        "opacity" | "transform" | "transition" | "animation" | "box-shadow" | "filter" => true,
+        "grid-template-columns" | "grid-template-rows" | "grid-column" | "grid-row" | "gap" | "row-gap" | "column-gap" => true,
+        "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" => true,
+        _ => false,
+    }
 }
 
 // ── Border shorthand expansion ────────────────────────────────────────────────

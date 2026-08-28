@@ -8,6 +8,7 @@
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
 pub mod animation;
+pub mod audio;
 pub mod browser;
 pub mod canvas;
 pub mod cookie;

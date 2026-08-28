@@ -142,6 +142,7 @@ pub enum Builtin {
     AbortControllerCtor,
     URLCtor,
     URLSearchParamsCtor,
+    AudioContextCtor,
     LocalStorage,
     SessionStorage,
     StorageCtor,
@@ -660,7 +661,8 @@ impl JsRuntime {
                 | Builtin::ResponseCtor
                 | Builtin::AbortControllerCtor
                 | Builtin::URLCtor
-                | Builtin::URLSearchParamsCtor),
+                | Builtin::URLSearchParamsCtor
+                | Builtin::AudioContextCtor),
             ) => self.construct_host(*builtin, args),
             other => {
                 let description = to_string(other);
@@ -2375,6 +2377,32 @@ impl JsRuntime {
                         "port" => u.url.set_port(val_str.parse().ok()),
                         _ => {}
                     }
+                } else if let HostObject::AudioParam(ctx, node_id, param_name) = host.as_ref() {
+                    if prop == "value" {
+                        let num = to_number(&value);
+                        if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
+                            match &mut node.kind {
+                                crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => {
+                                    frequency.set_value(num);
+                                }
+                                crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => {
+                                    gain.set_value(num);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                } else if let HostObject::AudioNode(ctx, node_id) = host.as_ref() {
+                    if prop == "type" {
+                        let type_str = to_string(&value);
+                        if let Some(osc_type) = crate::audio::OscillatorType::from_str(&type_str) {
+                            if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
+                                if let crate::audio::AudioNodeKind::Oscillator { osc_type: ref mut ot, .. } = node.kind {
+                                    *ot = osc_type;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -3685,6 +3713,7 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "AbortController" => Builtin::AbortControllerCtor,
         "URL" => Builtin::URLCtor,
         "URLSearchParams" => Builtin::URLSearchParamsCtor,
+        "AudioContext" | "webkitAudioContext" => Builtin::AudioContextCtor,
         "localStorage" => Builtin::LocalStorage,
         "sessionStorage" => Builtin::SessionStorage,
         "Storage" => Builtin::StorageCtor,
