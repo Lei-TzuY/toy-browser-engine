@@ -91,6 +91,7 @@ pub mod layout;
 mod net_base;
 #[path = "net_final.rs"]
 pub mod net;
+pub mod page_icon;
 pub mod paint;
 pub mod script;
 pub mod select_state;
