@@ -231,9 +231,6 @@ impl CookieJar {
                     .unwrap_or(attr_val)
                     .to_ascii_lowercase();
 
-                // An empty effective Domain behaves as no Domain attribute in
-                // this simplified store. A non-empty value must match the
-                // response host. A trailing dot naturally fails this test.
                 if candidate.is_empty() {
                     continue;
                 }
@@ -271,9 +268,6 @@ impl CookieJar {
                 } else if attr_val.eq_ignore_ascii_case("Strict") {
                     SameSite::Strict
                 } else {
-                    // The engine currently folds the specification's Default
-                    // enforcement state into Lax until request-site context is
-                    // modeled separately.
                     SameSite::Lax
                 };
             }
@@ -286,9 +280,6 @@ impl CookieJar {
             return None;
         }
 
-        // User agents deliberately match these reserved prefixes
-        // case-insensitively, even though the server-side grammar describes
-        // the canonical spellings case-sensitively.
         if starts_with_ascii_case_insensitive(&name, "__Secure-") && !secure {
             return None;
         }
@@ -317,12 +308,49 @@ impl CookieJar {
         })
     }
 
+    /// Parse and store one Set-Cookie value received from HTTP transport.
+    /// Returns false when parsing or RFC secure-cookie integrity policy rejects
+    /// the state. Callers that already parsed the Cookie can use
+    /// [`CookieJar::store_from_http`] directly.
+    pub fn store_set_cookie(&mut self, header: &str, source_url: &Url, now_ms: u64) -> bool {
+        let now_ms = self.effective_now_ms(now_ms);
+        let Some(cookie) = Self::parse_set_cookie(header, source_url, now_ms) else {
+            return false;
+        };
+        self.store_from_http(cookie, source_url, now_ms)
+    }
+
+    /// Store an HTTP-received cookie with request-URI context.
+    ///
+    /// RFC6265bis prevents an insecure origin from overlaying a Secure cookie
+    /// with a non-Secure cookie of the same name when their domains overlap and
+    /// the new cookie path path-matches the existing Secure cookie path. The
+    /// path comparison is deliberately non-symmetric.
+    pub fn store_from_http(&mut self, cookie: Cookie, source_url: &Url, now_ms: u64) -> bool {
+        if !matches!(source_url.scheme(), "http" | "https") {
+            return false;
+        }
+        let now_ms = self.effective_now_ms(now_ms);
+        let source_is_secure = source_url.scheme() == "https";
+
+        // Defensive check for callers of this lower-level method that did not
+        // obtain `cookie` from parse_set_cookie.
+        if cookie.secure && !source_is_secure {
+            return false;
+        }
+        if !source_is_secure && !cookie.secure && self.would_overlay_secure(&cookie, now_ms) {
+            return false;
+        }
+
+        self.store(cookie, now_ms);
+        true
+    }
+
     /// Low-level storage primitive for an already-accepted Cookie.
     ///
-    /// Expired state is purged on mutation. Replacements use the RFC6265bis
-    /// identity `(name, domain, host-only, path)` and preserve the existing
-    /// vector slot, approximating creation-time preservation without widening
-    /// the public [`Cookie`] type.
+    /// This method intentionally has no source-URL policy. Network and
+    /// document-cookie paths should use `store_from_http` / `set_document_cookie`;
+    /// tests and trusted embedders may use this primitive to seed a jar.
     pub fn store(&mut self, cookie: Cookie, now_ms: u64) {
         let now_ms = self.effective_now_ms(now_ms);
         self.cookies.retain(|stored| !stored.is_expired(now_ms));
@@ -352,7 +380,6 @@ impl CookieJar {
             .count()
             >= MAX_COOKIES_PER_DOMAIN
         {
-            // RFC6265bis prefers non-Secure cookies under per-domain pressure.
             let oldest = self
                 .cookies
                 .iter()
@@ -383,14 +410,18 @@ impl CookieJar {
 
     /// `document.cookie = "..."` setter from JavaScript / a non-HTTP API.
     ///
-    /// A script cannot create HttpOnly state and cannot overwrite an existing
-    /// HttpOnly cookie with the same RFC identity.
+    /// A script cannot create HttpOnly state, cannot overwrite an existing
+    /// HttpOnly cookie with the same RFC identity, and an insecure document
+    /// cannot overlay existing Secure state.
     pub fn set_document_cookie(&mut self, cookie_str: &str, url: &Url, now_ms: u64) {
         let now_ms = self.effective_now_ms(now_ms);
         let Some(cookie) = Self::parse_set_cookie(cookie_str, url, now_ms) else {
             return;
         };
         if cookie.http_only || self.has_http_only_collision(&cookie, now_ms) {
+            return;
+        }
+        if url.scheme() != "https" && !cookie.secure && self.would_overlay_secure(&cookie, now_ms) {
             return;
         }
         self.store(cookie, now_ms);
@@ -424,7 +455,6 @@ impl CookieJar {
             .filter(|cookie| cookie.matches_path(path))
             .collect();
 
-        // Stable sort: equal path lengths retain creation/vector order.
         matching.sort_by_key(|cookie| Reverse(cookie.path.len()));
         matching
             .into_iter()
@@ -441,6 +471,18 @@ impl CookieJar {
                 && stored.domain.eq_ignore_ascii_case(&cookie.domain)
                 && stored.host_only == cookie.host_only
                 && stored.path == cookie.path
+        })
+    }
+
+    fn would_overlay_secure(&self, cookie: &Cookie, now_ms: u64) -> bool {
+        self.cookies.iter().any(|stored| {
+            !stored.is_expired(now_ms)
+                && stored.secure
+                && stored.name == cookie.name
+                && domains_overlap(&stored.domain, &cookie.domain)
+                // Non-symmetric by specification: the new cookie path must
+                // path-match the existing Secure cookie path.
+                && path_matches(&cookie.path, &stored.path)
         })
     }
 
@@ -464,9 +506,9 @@ fn trim_wsp(value: &str) -> &str {
 }
 
 fn has_forbidden_cookie_ctl(value: &str) -> bool {
-    value.bytes().any(|byte| {
-        matches!(byte, 0x00..=0x08 | 0x0a..=0x1f | 0x7f)
-    })
+    value
+        .bytes()
+        .any(|byte| matches!(byte, 0x00..=0x08 | 0x0a..=0x1f | 0x7f))
 }
 
 fn parse_max_age(value: &str) -> Option<i64> {
@@ -525,6 +567,10 @@ fn starts_with_ascii_case_insensitive(value: &str, prefix: &str) -> bool {
     value
         .get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn domains_overlap(first: &str, second: &str) -> bool {
+    domain_matches(first, second) || domain_matches(second, first)
 }
 
 fn domain_matches(host: &str, domain: &str) -> bool {
