@@ -139,10 +139,11 @@ impl CursorResolver {
 /// silently approximated here.
 pub fn parse_cursor_url(value: &str) -> Option<String> {
     let value = value.trim();
-    if value.len() < 5 || !value[..4].eq_ignore_ascii_case("url(") || !value.ends_with(')') {
+    let prefix = value.get(..4)?;
+    if !prefix.eq_ignore_ascii_case("url(") || !value.ends_with(')') {
         return None;
     }
-    let mut inner = value[4..value.len() - 1].trim();
+    let mut inner = value.get(4..value.len().checked_sub(1)?)?.trim();
     if inner.len() >= 2 {
         let first = inner.as_bytes()[0];
         let last = inner.as_bytes()[inner.len() - 1];
@@ -212,6 +213,12 @@ mod tests {
         assert_eq!(parse_cursor_url("url('icons/p.cur')"), Some("icons/p.cur".into()));
         assert_eq!(parse_cursor_url("pointer"), None);
         assert_eq!(parse_cursor_url("url()"), None);
+    }
+
+    #[test]
+    fn rejects_non_url_unicode_without_panicking() {
+        assert_eq!(parse_cursor_url("游標"), None);
+        assert_eq!(parse_cursor_url("🙂cursor"), None);
     }
 
     #[test]
