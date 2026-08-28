@@ -105,8 +105,12 @@ impl HstsCache {
         if response_url.scheme() != "https" {
             return false;
         }
-        let host = canonical_dns_host(response_url.host())?;
-        let policy = HstsPolicy::parse(header)?;
+        let Some(host) = canonical_dns_host(response_url.host()) else {
+            return false;
+        };
+        let Some(policy) = HstsPolicy::parse(header) else {
+            return false;
+        };
         self.purge_expired(now_ms);
 
         if policy.max_age_seconds == 0 {
