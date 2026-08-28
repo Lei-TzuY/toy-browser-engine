@@ -62,12 +62,22 @@ impl Url {
             return Err(UrlError::InvalidScheme(scheme.to_string()));
         }
 
-        // A scheme-specific part that starts with neither `//` nor `/` is an
-        // opaque path. Keeping this bit explicitly avoids guessing later from
-        // an empty host (which is also valid for hierarchical `file:` URLs).
-        let opaque = !rest.starts_with("//") && !rest.starts_with('/');
+        let scheme = scheme.to_ascii_lowercase();
+        // Some schemes have well-defined path semantics independent of the
+        // spelling after `:`. Preserve those invariants explicitly rather than
+        // inferring everything from a leading slash. For unknown schemes,
+        // `foo:bar` remains opaque while `foo:/bar` and `foo://host/bar` are
+        // treated as hierarchical, which is the least surprising RFC-3986
+        // fallback for an embedder-defined scheme.
+        let opaque = if scheme_has_opaque_path(&scheme) {
+            true
+        } else if scheme_is_hierarchical(&scheme) {
+            false
+        } else {
+            !rest.starts_with("//") && !rest.starts_with('/')
+        };
         let mut url = Url {
-            scheme: scheme.to_ascii_lowercase(),
+            scheme,
             host: String::new(),
             port: None,
             path: String::new(),
@@ -76,13 +86,19 @@ impl Url {
             opaque,
         };
 
-        let after_authority = match rest.strip_prefix("//") {
-            Some(rest) => {
-                let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-                url.set_authority(&rest[..end])?;
-                &rest[end..]
+        // `//` only introduces an authority for hierarchical URLs. For an
+        // intrinsically opaque scheme it is ordinary scheme-specific data.
+        let after_authority = if !url.opaque {
+            match rest.strip_prefix("//") {
+                Some(rest) => {
+                    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                    url.set_authority(&rest[..end])?;
+                    &rest[end..]
+                }
+                None => rest,
             }
-            None => rest,
+        } else {
+            rest
         };
 
         let (path, query, fragment) = split_path_parts(after_authority);
@@ -361,4 +377,18 @@ impl Url {
         }
         self.path = path;
     }
+}
+
+/// Schemes whose post-colon text is intrinsically opaque in the subset this
+/// engine models. A leading slash or `//` inside these schemes is data, not a
+/// signal to reinterpret the URL as hierarchical.
+fn scheme_has_opaque_path(scheme: &str) -> bool {
+    matches!(scheme, "data" | "about" | "mailto" | "urn")
+}
+
+/// Schemes already routed by the engine as hierarchical resource locations.
+/// Preserve their historical path behavior even for uncommon rootless
+/// spellings such as `http:foo` or `file:relative.txt`.
+fn scheme_is_hierarchical(scheme: &str) -> bool {
+    matches!(scheme, "http" | "https" | "file" | "demo")
 }
