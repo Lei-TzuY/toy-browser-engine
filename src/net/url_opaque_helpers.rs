@@ -92,3 +92,53 @@ fn percent_encode_path(input: &str) -> String {
     }
     out
 }
+
+impl Url {
+    /// Serialize this URL's network origin when it has a tuple origin.
+    ///
+    /// The browser engine currently exposes network tuple origins only for
+    /// HTTP(S). Opaque URLs (`data:`, `about:`, `mailto:`, `urn:`), local
+    /// `file:` URLs, and the engine-internal `demo:` scheme intentionally
+    /// return `None` rather than inventing an origin that could later weaken a
+    /// same-origin security check.
+    ///
+    /// Explicit default ports are normalized away, matching browser origin
+    /// serialization: `http://example.test:80/` has origin
+    /// `http://example.test` while a non-default port remains visible.
+    pub fn origin(&self) -> Option<String> {
+        if self.opaque || !matches!(self.scheme.as_str(), "http" | "https") || self.host.is_empty() {
+            return None;
+        }
+
+        let default_port = match self.scheme.as_str() {
+            "http" => 80,
+            "https" => 443,
+            _ => unreachable!(),
+        };
+
+        let mut serialized = format!("{}://{}", self.scheme, self.host);
+        if let Some(port) = self.port {
+            if port != default_port {
+                serialized.push(':');
+                serialized.push_str(&port.to_string());
+            }
+        }
+        Some(serialized)
+    }
+
+    /// Whether two URLs share the same HTTP(S) tuple origin.
+    ///
+    /// Query strings, fragments, and paths do not participate in origin
+    /// comparison. Explicit and implicit default ports are equivalent. URLs
+    /// without a tuple origin deliberately compare as non-same-origin, even
+    /// with themselves; this prevents accidental trust of opaque/local URLs.
+    pub fn same_origin(&self, other: &Url) -> bool {
+        if self.origin().is_none() || other.origin().is_none() {
+            return false;
+        }
+
+        self.scheme == other.scheme
+            && self.host == other.host
+            && self.port_or_default() == other.port_or_default()
+    }
+}
