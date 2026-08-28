@@ -55,7 +55,10 @@ mod image_prev11;
 #[allow(dead_code)]
 #[path = "image_bmp_os2_v2_final.rs"]
 mod image_prev12;
+#[allow(dead_code)]
 #[path = "image_bmp_os2_v2_rle_final.rs"]
+mod image_prev13;
+#[path = "image_bmp_os2_array_final.rs"]
 pub mod image;
 pub mod input;
 pub mod layout;
