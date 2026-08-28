@@ -3,8 +3,8 @@
 //! Pipeline:
 //!  HTML string
 //!   → `html::parse_html`      → DOM tree  (`dom::Node`)
-//!   → `style::style_tree`     → Styled tree  (`style::StyledNode`)
-//!   → `layout::layout_tree`   → Layout tree  (`layout::LayoutBox`)
+//!   → `style::style_tree`     → Styled tree (`style::StyledNode`)
+//!   → `layout::layout_tree`   → Layout tree (`layout::LayoutBox`)
 //!   → `paint::paint`          → Pixel canvas (`paint::Canvas`) → PPM file
 
 pub mod animation;
@@ -12,6 +12,7 @@ pub mod audio;
 pub mod browser;
 pub mod canvas;
 pub mod cookie;
+pub mod cookie_network;
 pub mod css;
 pub mod document;
 pub mod dom;
@@ -35,6 +36,7 @@ pub mod validation;
 
 pub use animation::AnimationManager;
 pub use browser::Browser;
+pub use cookie_network::{CookieJarRef, CookieNetwork};
 pub use document::{Document, PointerState};
 pub use html::extract_inline_styles;
 pub use net::{MemoryLoader, ResourceLoader, Url};
