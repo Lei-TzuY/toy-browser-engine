@@ -74,6 +74,57 @@ impl NetworkBackend for SameOriginRedirectNetwork {
     }
 }
 
+/// Enforces the transport contract of redirect-orchestrating sessions.
+///
+/// A redirecting SessionNetwork must see every 3xx response itself so Cookie,
+/// HSTS, origin, and redirect policy can run between hops. A transport that
+/// already followed redirects would skip those browser-policy boundaries. The
+/// guard sits *inside* CookieNetwork/HstsNetwork so a pre-followed response is
+/// rejected before its final Set-Cookie or STS headers can mutate session state.
+struct SingleHopTransportGuard {
+    inner: Rc<dyn NetworkBackend>,
+}
+
+impl SingleHopTransportGuard {
+    fn new(inner: Rc<dyn NetworkBackend>) -> Self {
+        Self { inner }
+    }
+}
+
+impl NetworkBackend for SingleHopTransportGuard {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        self.inner.start(id, request);
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        let mut completions = self.inner.poll();
+        for completion in &mut completions {
+            let Ok(response) = &completion.result else {
+                continue;
+            };
+            if response.redirected {
+                completion.result = Err(FetchError::MalformedResponse(format!(
+                    "redirecting session requires a single-hop transport; {} was already redirected",
+                    response.url
+                )));
+            }
+        }
+        completions
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.inner.cancel(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.inner.is_busy()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        self.inner.wait(timeout)
+    }
+}
+
 /// Canonical composition of browser-owned request policies around a transport.
 ///
 /// The existing constructors preserve the historical redirect-following
@@ -132,8 +183,10 @@ impl SessionNetwork {
         clock: Rc<dyn Clock>,
     ) -> SessionNetwork {
         let cookie_policies = CookiePolicyRegistry::new();
+        let guarded_transport: Rc<dyn NetworkBackend> =
+            Rc::new(SingleHopTransportGuard::new(transport));
         let cookie: Rc<dyn NetworkBackend> = Rc::new(CookieNetwork::with_policy_registry(
-            transport,
+            guarded_transport,
             cookie_jar.clone(),
             clock.clone(),
             cookie_policies.clone(),
