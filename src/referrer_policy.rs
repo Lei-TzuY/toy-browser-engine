@@ -2,7 +2,7 @@
 //  referrer_policy.rs — Referrer-Policy parsing and computation
 // ============================================================
 
-use crate::net::{FetchResponse, Url};
+use crate::net::{FetchRequest, FetchResponse, Url};
 
 /// The Referrer Policy values implemented by the browser engine.
 ///
@@ -24,6 +24,68 @@ pub enum ReferrerPolicy {
 impl Default for ReferrerPolicy {
     fn default() -> Self {
         Self::StrictOriginWhenCrossOrigin
+    }
+}
+
+/// Referrer state carried across an HTTP redirect chain.
+///
+/// Fetch conceptually keeps the original referrer source separate from the
+/// serialized `Referer` header. That distinction matters when a redirect
+/// response changes `Referrer-Policy`: rebuilding the next hop from the
+/// previous header can permanently lose path/query information (or, worse,
+/// accidentally treat an origin-only serialization as the real source URL).
+///
+/// This helper owns the stable source URL and the policy that is allowed to
+/// change at each redirect response. Call [`prepare_request`] immediately
+/// before dispatching each hop and [`observe_redirect_response`] before
+/// preparing the following one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedirectReferrerState {
+    source: Option<Url>,
+    policy: ReferrerPolicy,
+}
+
+impl RedirectReferrerState {
+    pub fn new(source: Option<Url>, policy: ReferrerPolicy) -> Self {
+        Self { source, policy }
+    }
+
+    pub fn from_source(source: Url) -> Self {
+        Self::new(Some(source), ReferrerPolicy::default())
+    }
+
+    pub fn no_referrer() -> Self {
+        Self::new(None, ReferrerPolicy::default())
+    }
+
+    pub fn source(&self) -> Option<&Url> {
+        self.source.as_ref()
+    }
+
+    pub fn policy(&self) -> ReferrerPolicy {
+        self.policy
+    }
+
+    /// Apply a redirect response's Referrer-Policy update in wire order.
+    pub fn observe_redirect_response(&mut self, response: &FetchResponse) {
+        self.policy = self.policy.updated_on_redirect(response);
+    }
+
+    /// Replace any stale/caller-supplied Referer with the value appropriate for
+    /// this request's target under the current redirect-chain policy.
+    ///
+    /// RedirectPlanner also strips the previous hop's Referer. Keeping the
+    /// deletion here makes the state object safe when used by another
+    /// orchestrator or when the first request already contains an authored
+    /// value.
+    pub fn prepare_request(&self, request: &mut FetchRequest) {
+        request.headers.delete("referer");
+        let Some(source) = self.source.as_ref() else {
+            return;
+        };
+        if let Some(value) = self.policy.compute(source, &request.url) {
+            request.headers.insert_raw("referer", &value);
+        }
     }
 }
 
@@ -209,6 +271,44 @@ mod tests {
             response.headers.append_raw("referrer-policy", value);
         }
         response
+    }
+
+    #[test]
+    fn redirect_state_recomputes_from_stable_source_after_policy_change() {
+        let source = url("https://source.test/private/page?q=1#secret");
+        let mut state = RedirectReferrerState::new(
+            Some(source),
+            ReferrerPolicy::StrictOriginWhenCrossOrigin,
+        );
+        let mut first = FetchRequest::get(url("https://source.test/first"));
+        state.prepare_request(&mut first);
+        assert_eq!(
+            first.headers.get("referer"),
+            Some("https://source.test/private/page?q=1".to_string())
+        );
+
+        let response = response_with_policies(&["unsafe-url", "origin"]);
+        state.observe_redirect_response(&response);
+        let mut next = FetchRequest::get(url("https://other.test/next"));
+        state.prepare_request(&mut next);
+        assert_eq!(
+            next.headers.get("referer"),
+            Some("https://source.test/".to_string())
+        );
+    }
+
+    #[test]
+    fn redirect_state_removes_stale_referer_when_policy_becomes_no_referrer() {
+        let mut state = RedirectReferrerState::from_source(url(
+            "https://source.test/private/page?q=1#secret",
+        ));
+        let response = response_with_policies(&["no-referrer"]);
+        state.observe_redirect_response(&response);
+
+        let mut next = FetchRequest::get(url("https://target.test/next"));
+        next.headers.insert_raw("referer", "https://stale.invalid/leak");
+        state.prepare_request(&mut next);
+        assert!(!next.headers.has("referer"));
     }
 
     #[test]
