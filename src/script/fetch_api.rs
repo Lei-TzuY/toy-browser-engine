@@ -22,6 +22,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::cookie_network::{
+    policy_registry_for_jar, CookieCredentials, CookieRequestPolicy,
+};
+use crate::cookie_same_site::SameSiteRequestContext;
 use crate::net::fetch::{FetchError, FetchResponse, HeaderMap, Method, Origin};
 use crate::net::Url;
 
@@ -74,18 +78,36 @@ impl JsRuntime {
 
         match self.prepare_request(&args) {
             Err(error) => self.reject_with(&promise, &error),
-            Ok(request) => {
+            Ok((request, credentials)) => {
                 let signal = request.signal.clone();
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     // Already aborted before it began.
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
+                    let method = request.method;
                     let pending = PendingFetch {
                         promise: promise.clone(),
                         signal,
                     };
-                    if let Err(error) = self.fetches.start(request.to_wire(), pending) {
-                        self.reject_with(&promise, &error);
+                    match self.fetches.start(request.to_wire(), pending) {
+                        Ok(id) => {
+                            // Cookie policy is keyed by the exact FetchId that
+                            // will later reach CookieNetwork::start. Browser
+                            // bootstrap publishes this registry before authored
+                            // scripts execute, while standalone Documents simply
+                            // have no cookie-policy endpoint to configure.
+                            if credentials == CookieCredentials::Omit {
+                                if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
+                                    registry.set(
+                                        id,
+                                        CookieRequestPolicy::omit(
+                                            SameSiteRequestContext::same_site(method),
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => self.reject_with(&promise, &error),
                     }
                 }
             }
@@ -135,10 +157,15 @@ impl JsRuntime {
 
     // ── Building a request ────────────────────────────────────────────────
 
-    /// Turn `(input, init)` into a request, or explain why it cannot be one.
-    fn prepare_request(&mut self, args: &[JsValue]) -> Result<RequestData, FetchError> {
+    /// Turn `(input, init)` into a request plus browser-only cookie policy, or
+    /// explain why it cannot be one.
+    fn prepare_request(
+        &mut self,
+        args: &[JsValue],
+    ) -> Result<(RequestData, CookieCredentials), FetchError> {
         let input = args.first().cloned().unwrap_or(JsValue::Undefined);
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+        let credentials = credentials_from_init(&init)?;
         let request = self.build_request(input, init)?;
 
         // Policy, applied once, on the URL that will actually be requested.
@@ -153,7 +180,7 @@ impl JsRuntime {
                 request.url
             )));
         }
-        Ok(request)
+        Ok((request, credentials))
     }
 
     /// The `Request` constructor, shared with `fetch`'s first argument.
@@ -208,7 +235,9 @@ impl JsRuntime {
                     }
                     // Accepted, with the subset this engine actually enforces.
                     "mode" => check_mode(&to_string(value))?,
-                    "credentials" => check_credentials(&to_string(value))?,
+                    "credentials" => {
+                        check_credentials(&to_string(value))?;
+                    }
                     // `url` on an init object is not a thing; anything else is
                     // ignored the way an unknown init member is in Fetch.
                     _ => {}
@@ -1339,12 +1368,29 @@ fn check_mode(mode: &str) -> Result<(), FetchError> {
     }
 }
 
-/// `credentials`: there is no cookie jar, so anything that needs one fails.
-fn check_credentials(credentials: &str) -> Result<(), FetchError> {
+/// Parse Fetch credentials into the cookie participation policy understood by
+/// the browser-owned CookieNetwork layer. The engine still blocks cross-origin
+/// fetches, so `same-origin` is equivalent to cookie participation here.
+fn check_credentials(credentials: &str) -> Result<CookieCredentials, FetchError> {
     match credentials {
-        "same-origin" | "omit" | "" => Ok(()),
+        "same-origin" | "" => Ok(CookieCredentials::Include),
+        "omit" => Ok(CookieCredentials::Omit),
         other => Err(FetchError::BadRequest(format!(
-            "unsupported credentials mode {other:?}: this engine sends no cookies or auth"
+            "unsupported credentials mode {other:?}: this engine supports same-origin and omit"
         ))),
     }
+}
+
+fn credentials_from_init(init: &JsValue) -> Result<CookieCredentials, FetchError> {
+    let JsValue::Object(props) = init else {
+        return Ok(CookieCredentials::Include);
+    };
+
+    let mut credentials = CookieCredentials::Include;
+    for (key, value) in props.borrow().iter() {
+        if key == "credentials" {
+            credentials = check_credentials(&to_string(value))?;
+        }
+    }
+    Ok(credentials)
 }
