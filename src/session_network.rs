@@ -13,11 +13,11 @@ use crate::eventloop::Clock;
 use crate::hsts::HstsCache;
 use crate::hsts_network::{HstsCacheRef, HstsNetwork};
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin};
+use crate::session_redirect::SessionRedirectNetwork;
 
-/// Async Fetch currently implements same-origin mode only. Keep redirect-origin
-/// enforcement below CookieNetwork so a blocked final cross-origin response is
-/// rejected before its Set-Cookie can enter the session jar, and below
-/// HstsNetwork so its STS field cannot update session HSTS state either.
+/// Async Fetch currently implements same-origin mode only. The legacy session
+/// constructor keeps its existing final-response redirect guard so embedders
+/// that still provide redirect-following transports retain the same behavior.
 struct SameOriginRedirectNetwork {
     inner: Rc<dyn NetworkBackend>,
     request_origins: RefCell<HashMap<FetchId, Origin>>,
@@ -76,19 +76,21 @@ impl NetworkBackend for SameOriginRedirectNetwork {
 
 /// Canonical composition of browser-owned request policies around a transport.
 ///
-/// HSTS intentionally sits *outside* CookieNetwork. That ordering matters:
-/// an HTTP URL upgraded by HSTS must become HTTPS before cookie selection so
-/// Secure cookies are eligible for the request that actually reaches transport.
-/// The redirect-origin guard sits below CookieNetwork so a same-origin Fetch
-/// cannot smuggle a cross-origin final response into cookie/HSTS state.
+/// The existing constructors preserve the historical redirect-following
+/// transport contract. The explicit redirecting constructors instead expect a
+/// one-hop transport (for example `ThreadedNetwork::new_single_hop`) and move
+/// redirect orchestration above HSTS/Cookie policy, so every accepted Location
+/// becomes a fresh policy-processed request.
 pub struct SessionNetwork {
-    hsts: HstsNetwork,
+    network: Rc<dyn NetworkBackend>,
     cookie_jar: CookieJarRef,
     hsts_cache: HstsCacheRef,
     cookie_policies: CookiePolicyRegistry,
 }
 
 impl SessionNetwork {
+    /// Build the backward-compatible session stack around a transport that may
+    /// already follow redirects internally.
     pub fn new(
         transport: Rc<dyn NetworkBackend>,
         cookie_jar: CookieJarRef,
@@ -104,16 +106,59 @@ impl SessionNetwork {
             clock.clone(),
             cookie_policies.clone(),
         ));
-        let hsts = HstsNetwork::new(cookie, hsts_cache.clone(), clock);
+        let network: Rc<dyn NetworkBackend> =
+            Rc::new(HstsNetwork::new(cookie, hsts_cache.clone(), clock));
         SessionNetwork {
-            hsts,
+            network,
             cookie_jar,
             hsts_cache,
             cookie_policies,
         }
     }
 
-    /// Build an isolated browser-session stack with fresh cookie and HSTS state.
+    /// Build a session stack whose transport exposes exactly one response per
+    /// request. Redirects are followed here, above HSTS and Cookie policy.
+    ///
+    /// Per-hop ordering is:
+    ///
+    /// `redirect orchestration → HSTS upgrade → Cookie selection → transport`
+    ///
+    /// On completion the order reverses, so Set-Cookie and STS from an
+    /// intermediate response are absorbed before the next Location is planned.
+    pub fn new_redirecting(
+        transport: Rc<dyn NetworkBackend>,
+        cookie_jar: CookieJarRef,
+        hsts_cache: HstsCacheRef,
+        clock: Rc<dyn Clock>,
+    ) -> SessionNetwork {
+        let cookie_policies = CookiePolicyRegistry::new();
+        let cookie: Rc<dyn NetworkBackend> = Rc::new(CookieNetwork::with_policy_registry(
+            transport,
+            cookie_jar.clone(),
+            clock.clone(),
+            cookie_policies.clone(),
+        ));
+        let per_hop: Rc<dyn NetworkBackend> = Rc::new(HstsNetwork::new(
+            cookie,
+            hsts_cache.clone(),
+            clock.clone(),
+        ));
+        let network: Rc<dyn NetworkBackend> = Rc::new(SessionRedirectNetwork::new(
+            per_hop,
+            cookie_policies.clone(),
+            hsts_cache.clone(),
+            clock,
+        ));
+        SessionNetwork {
+            network,
+            cookie_jar,
+            hsts_cache,
+            cookie_policies,
+        }
+    }
+
+    /// Build an isolated backward-compatible browser-session stack with fresh
+    /// cookie and HSTS state.
     pub fn with_new_state(
         transport: Rc<dyn NetworkBackend>,
         clock: Rc<dyn Clock>,
@@ -121,6 +166,17 @@ impl SessionNetwork {
         let cookie_jar = Rc::new(RefCell::new(CookieJar::with_clock(clock.clone())));
         let hsts_cache = Rc::new(RefCell::new(HstsCache::new()));
         SessionNetwork::new(transport, cookie_jar, hsts_cache, clock)
+    }
+
+    /// Build an isolated redirect-orchestrating session around a one-hop
+    /// transport, with fresh cookie and HSTS state.
+    pub fn with_new_state_redirecting(
+        transport: Rc<dyn NetworkBackend>,
+        clock: Rc<dyn Clock>,
+    ) -> SessionNetwork {
+        let cookie_jar = Rc::new(RefCell::new(CookieJar::with_clock(clock.clone())));
+        let hsts_cache = Rc::new(RefCell::new(HstsCache::new()));
+        SessionNetwork::new_redirecting(transport, cookie_jar, hsts_cache, clock)
     }
 
     pub fn cookie_jar(&self) -> CookieJarRef {
@@ -138,22 +194,22 @@ impl SessionNetwork {
 
 impl NetworkBackend for SessionNetwork {
     fn start(&self, id: FetchId, request: FetchRequest) {
-        self.hsts.start(id, request);
+        self.network.start(id, request);
     }
 
     fn poll(&self) -> Vec<FetchCompletion> {
-        self.hsts.poll()
+        self.network.poll()
     }
 
     fn cancel(&self, id: FetchId) {
-        self.hsts.cancel(id);
+        self.network.cancel(id);
     }
 
     fn is_busy(&self) -> bool {
-        self.hsts.is_busy()
+        self.network.is_busy()
     }
 
     fn wait(&self, timeout: Duration) -> bool {
-        self.hsts.wait(timeout)
+        self.network.wait(timeout)
     }
 }

@@ -38,6 +38,7 @@ pub mod redirect_policy;
 pub mod referrer_policy;
 pub mod script;
 pub mod select_state;
+mod session_redirect;
 pub mod session_network;
 pub mod style;
 pub mod svg;
