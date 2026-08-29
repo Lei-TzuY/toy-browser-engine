@@ -13,6 +13,7 @@ use crate::navigation_network::NavigationNetwork;
 use crate::net::{FetchError, FetchRequest, FetchResponse, Url};
 use crate::referrer_meta::apply_meta_referrer_policies;
 use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
+use crate::subresource_referrer::subresource_redirect_state;
 
 /// Referrer state owned by one committed document.
 ///
@@ -102,6 +103,20 @@ impl DocumentReferrerContext {
         )
     }
 
+    /// Produce redirect-aware state for one element-initiated subresource fetch.
+    ///
+    /// A recognized element `referrerpolicy` overrides the committed document
+    /// policy for this request only. Missing or invalid values inherit the
+    /// document policy. The stable document URL remains available across the
+    /// redirect chain so later response policies can recompute `Referer`
+    /// correctly rather than inheriting a serialized previous-hop header.
+    pub fn subresource_redirect_state(
+        &self,
+        referrerpolicy: Option<&str>,
+    ) -> RedirectReferrerState {
+        subresource_redirect_state(self.source.as_ref(), self.policy, referrerpolicy)
+    }
+
     /// Run one top-level navigation and return both its final response and the
     /// referrer context that should belong to that response if the caller
     /// commits it as the next document.
@@ -147,6 +162,26 @@ impl DocumentReferrerContext {
         )?;
         let next = Self::from_response(&response);
         Ok((response, next))
+    }
+
+    /// Fetch a non-document resource with the owning document's referrer state.
+    ///
+    /// Unlike navigation, a successful image/script/stylesheet-style fetch does
+    /// not produce a new committed document context. The source document stays
+    /// unchanged while the element-selected policy is carried through every
+    /// redirect hop by the shared network orchestrator.
+    pub fn fetch_subresource(
+        &self,
+        network: &NavigationNetwork,
+        request: &FetchRequest,
+        context: SameSiteRequestContext,
+        referrerpolicy: Option<&str>,
+    ) -> Result<FetchResponse, FetchError> {
+        network.fetch_with_referrer(
+            request,
+            context,
+            Some(self.subresource_redirect_state(referrerpolicy)),
+        )
     }
 }
 
@@ -223,5 +258,17 @@ mod tests {
         let state = context.hyperlink_redirect_state(Some("unsafe-url"), Some("noreferrer"));
         assert_eq!(state.policy(), ReferrerPolicy::NoReferrer);
         assert_eq!(context.policy(), ReferrerPolicy::UnsafeUrl);
+    }
+
+    #[test]
+    fn subresource_state_applies_element_override_without_mutating_document_policy() {
+        let context = DocumentReferrerContext::new(
+            Some(url("https://source.test/private")),
+            ReferrerPolicy::NoReferrer,
+        );
+
+        let state = context.subresource_redirect_state(Some("unsafe-url"));
+        assert_eq!(state.policy(), ReferrerPolicy::UnsafeUrl);
+        assert_eq!(context.policy(), ReferrerPolicy::NoReferrer);
     }
 }
