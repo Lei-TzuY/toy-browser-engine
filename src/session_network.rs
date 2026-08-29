@@ -3,6 +3,7 @@
 // ============================================================
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -11,13 +12,75 @@ use crate::cookie_network::{CookieJarRef, CookieNetwork, CookiePolicyRegistry};
 use crate::eventloop::Clock;
 use crate::hsts::HstsCache;
 use crate::hsts_network::{HstsCacheRef, HstsNetwork};
-use crate::net::{FetchCompletion, FetchId, FetchRequest, NetworkBackend};
+use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin};
+
+/// Async Fetch currently implements same-origin mode only. Keep redirect-origin
+/// enforcement below CookieNetwork so a blocked final cross-origin response is
+/// rejected before its Set-Cookie can enter the session jar, and below
+/// HstsNetwork so its STS field cannot update session HSTS state either.
+struct SameOriginRedirectNetwork {
+    inner: Rc<dyn NetworkBackend>,
+    request_origins: RefCell<HashMap<FetchId, Origin>>,
+}
+
+impl SameOriginRedirectNetwork {
+    fn new(inner: Rc<dyn NetworkBackend>) -> SameOriginRedirectNetwork {
+        SameOriginRedirectNetwork {
+            inner,
+            request_origins: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl NetworkBackend for SameOriginRedirectNetwork {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        self.request_origins
+            .borrow_mut()
+            .insert(id, Origin::of(&request.url));
+        self.inner.start(id, request);
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        let mut completions = self.inner.poll();
+        for completion in &mut completions {
+            let Some(origin) = self.request_origins.borrow_mut().remove(&completion.id) else {
+                continue;
+            };
+            let Ok(response) = &completion.result else {
+                continue;
+            };
+            if response.redirected && origin != Origin::of(&response.url) {
+                completion.result = Err(FetchError::Blocked(format!(
+                    "redirect from {} to {} crossed origin",
+                    origin.header_value(),
+                    response.url
+                )));
+            }
+        }
+        completions
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.request_origins.borrow_mut().remove(&id);
+        self.inner.cancel(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.inner.is_busy()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        self.inner.wait(timeout)
+    }
+}
 
 /// Canonical composition of browser-owned request policies around a transport.
 ///
 /// HSTS intentionally sits *outside* CookieNetwork. That ordering matters:
 /// an HTTP URL upgraded by HSTS must become HTTPS before cookie selection so
 /// Secure cookies are eligible for the request that actually reaches transport.
+/// The redirect-origin guard sits below CookieNetwork so a same-origin Fetch
+/// cannot smuggle a cross-origin final response into cookie/HSTS state.
 pub struct SessionNetwork {
     hsts: HstsNetwork,
     cookie_jar: CookieJarRef,
@@ -33,8 +96,10 @@ impl SessionNetwork {
         clock: Rc<dyn Clock>,
     ) -> SessionNetwork {
         let cookie_policies = CookiePolicyRegistry::new();
+        let redirect_guard: Rc<dyn NetworkBackend> =
+            Rc::new(SameOriginRedirectNetwork::new(transport));
         let cookie: Rc<dyn NetworkBackend> = Rc::new(CookieNetwork::with_policy_registry(
-            transport,
+            redirect_guard,
             cookie_jar.clone(),
             clock.clone(),
             cookie_policies.clone(),
