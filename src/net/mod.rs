@@ -155,6 +155,19 @@ pub trait ResourceLoader: Send + Sync {
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         static_fetch(|url| self.load(url), request)
     }
+
+    /// Perform exactly one transport request when the source can expose that
+    /// distinction. Redirect orchestration layers use this to observe a 3xx
+    /// response before deciding whether and how to issue the next hop.
+    ///
+    /// The default deliberately delegates to `fetch()`. Existing custom
+    /// loaders therefore preserve their current request semantics and are not
+    /// required to implement a new method merely because the trait grew an
+    /// additive capability. Protocol loaders with internal redirect handling
+    /// can override this to expose their true single-hop primitive.
+    fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        self.fetch(request)
+    }
 }
 
 fn response_from_resource(resource: Resource) -> FetchResponse {
@@ -384,6 +397,13 @@ impl ResourceLoader for HttpLoader {
             other => Err(FetchError::UnsupportedScheme(other.to_string())),
         }
     }
+
+    fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        match request.url.scheme() {
+            "http" => http::send_once(request, &self.config),
+            other => Err(FetchError::UnsupportedScheme(other.to_string())),
+        }
+    }
 }
 
 // ── Dispatching loader ────────────────────────────────────────────────────────
@@ -459,6 +479,17 @@ impl ResourceLoader for DefaultLoader {
             "file" => self.file.fetch(request),
             "http" | "https" => self.http.fetch(request),
             _ => self.memory.fetch(request),
+        }
+    }
+
+    fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        if self.memory.contains(&request.url) {
+            return self.memory.fetch_once(request);
+        }
+        match request.url.scheme() {
+            "file" => self.file.fetch_once(request),
+            "http" | "https" => self.http.fetch_once(request),
+            _ => self.memory.fetch_once(request),
         }
     }
 }
