@@ -31,8 +31,8 @@ use crate::net::Url;
 
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
-    IntersectionObserverTarget, IntersectionObserverEntryData, ResizeObserverData, ResizeObserverEntryData,
-    RequestData, ResponseData, UrlData, UrlSearchParamsData,
+    IntersectionObserverEntryData, IntersectionObserverTarget, RequestCredentials, RequestData,
+    ResizeObserverData, ResizeObserverEntryData, ResponseData, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
@@ -165,8 +165,11 @@ impl JsRuntime {
     ) -> Result<(RequestData, CookieCredentials), FetchError> {
         let input = args.first().cloned().unwrap_or(JsValue::Undefined);
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-        let credentials = credentials_from_init(&init)?;
         let request = self.build_request(input, init)?;
+        let credentials = match request.credentials {
+            RequestCredentials::SameOrigin => CookieCredentials::Include,
+            RequestCredentials::Omit => CookieCredentials::Omit,
+        };
 
         // Policy, applied once, on the URL that will actually be requested.
         let scheme = request.url.scheme();
@@ -186,27 +189,30 @@ impl JsRuntime {
     /// The `Request` constructor, shared with `fetch`'s first argument.
     fn build_request(&mut self, input: JsValue, init: JsValue) -> Result<RequestData, FetchError> {
         // A Request as input supplies the defaults; a string supplies only a URL.
-        let (mut url, mut method, mut headers, mut body, mut signal) = match &input {
-            JsValue::Host(host) => match host.as_request() {
-                Some(existing) => (
-                    existing.url.clone(),
-                    existing.method,
-                    existing.headers.borrow().clone(),
-                    existing.body.peek(),
-                    existing.signal.clone(),
+        let (mut url, mut method, mut headers, mut body, mut signal, mut credentials) =
+            match &input {
+                JsValue::Host(host) => match host.as_request() {
+                    Some(existing) => (
+                        existing.url.clone(),
+                        existing.method,
+                        existing.headers.borrow().clone(),
+                        existing.body.peek(),
+                        existing.signal.clone(),
+                        existing.credentials,
+                    ),
+                    None => {
+                        return Err(FetchError::InvalidUrl(to_string(&input)));
+                    }
+                },
+                other => (
+                    self.resolve_fetch_url(&to_string(other))?,
+                    Method::Get,
+                    HeaderMap::new(),
+                    None,
+                    None,
+                    RequestCredentials::SameOrigin,
                 ),
-                None => {
-                    return Err(FetchError::InvalidUrl(to_string(&input)));
-                }
-            },
-            other => (
-                self.resolve_fetch_url(&to_string(other))?,
-                Method::Get,
-                HeaderMap::new(),
-                None,
-                None,
-            ),
-        };
+            };
 
         if let JsValue::Object(props) = &init {
             for (key, value) in props.borrow().iter() {
@@ -236,7 +242,10 @@ impl JsRuntime {
                     // Accepted, with the subset this engine actually enforces.
                     "mode" => check_mode(&to_string(value))?,
                     "credentials" => {
-                        check_credentials(&to_string(value))?;
+                        credentials = match check_credentials(&to_string(value))? {
+                            CookieCredentials::Include => RequestCredentials::SameOrigin,
+                            CookieCredentials::Omit => RequestCredentials::Omit,
+                        };
                     }
                     // `url` on an init object is not a thing; anything else is
                     // ignored the way an unknown init member is in Fetch.
@@ -265,6 +274,7 @@ impl JsRuntime {
                 None => Body::empty(),
             },
             signal,
+            credentials,
         })
     }
 
@@ -511,6 +521,7 @@ impl JsRuntime {
                 "method" => JsValue::Str(request.method.as_str().to_string()),
                 "headers" => host_value(HostObject::Headers(request.headers.clone())),
                 "bodyUsed" => JsValue::Bool(request.body.used()),
+                "credentials" => JsValue::Str(request.credentials.as_str().to_string()),
                 "signal" => match &request.signal {
                     Some(state) => host_value(HostObject::AbortSignal(state.clone())),
                     None => JsValue::Null,
@@ -1379,18 +1390,4 @@ fn check_credentials(credentials: &str) -> Result<CookieCredentials, FetchError>
             "unsupported credentials mode {other:?}: this engine supports same-origin and omit"
         ))),
     }
-}
-
-fn credentials_from_init(init: &JsValue) -> Result<CookieCredentials, FetchError> {
-    let JsValue::Object(props) = init else {
-        return Ok(CookieCredentials::Include);
-    };
-
-    let mut credentials = CookieCredentials::Include;
-    for (key, value) in props.borrow().iter() {
-        if key == "credentials" {
-            credentials = check_credentials(&to_string(value))?;
-        }
-    }
-    Ok(credentials)
 }
