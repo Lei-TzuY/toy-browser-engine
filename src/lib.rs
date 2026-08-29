@@ -34,6 +34,7 @@ pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
 pub mod layout;
+#[path = "navigation_network_with_credentials.rs"]
 pub mod navigation_network;
 pub mod net;
 pub mod paint;
@@ -46,6 +47,7 @@ mod session_redirect;
 pub mod session_network;
 pub mod style;
 pub mod subresource_cors;
+pub mod subresource_cors_credentials;
 pub mod subresource_referrer;
 pub mod svg;
 pub mod text;
