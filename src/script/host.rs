@@ -432,6 +432,30 @@ impl MutationObserverData {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct MessagePortData {
+    pub closed: Rc<Cell<bool>>,
+    pub onmessage: Rc<RefCell<Option<crate::script::interp::JsValue>>>,
+    pub peer: Rc<RefCell<Option<Rc<MessagePortData>>>>,
+}
+
+impl MessagePortData {
+    pub fn new_pair() -> (Rc<Self>, Rc<Self>) {
+        let p1 = Rc::new(Self {
+            closed: Rc::new(Cell::new(false)),
+            onmessage: Rc::new(RefCell::new(None)),
+            peer: Rc::new(RefCell::new(None)),
+        });
+        let p2 = Rc::new(Self {
+            closed: Rc::new(Cell::new(false)),
+            onmessage: Rc::new(RefCell::new(None)),
+            peer: Rc::new(RefCell::new(Some(p1.clone()))),
+        });
+        *p1.peer.borrow_mut() = Some(p2.clone());
+        (p1, p2)
+    }
+}
+
 // ── The value the interpreter sees ────────────────────────────────────────────
 
 /// A Web-platform object.
@@ -458,6 +482,8 @@ pub enum HostObject {
     ResizeObserverEntry(ResizeObserverEntryData),
     MutationObserver(Rc<RefCell<MutationObserverData>>),
     MutationRecord(MutationRecordData),
+    MessageChannel(Rc<MessagePortData>, Rc<MessagePortData>),
+    MessagePort(Rc<MessagePortData>),
     JsMap(Rc<RefCell<Vec<(String, crate::script::interp::JsValue)>>>),
     JsSet(Rc<RefCell<Vec<String>>>),
     Crypto,
@@ -484,6 +510,8 @@ impl HostObject {
             HostObject::ResizeObserverEntry(_) => "ResizeObserverEntry",
             HostObject::MutationObserver(_) => "MutationObserver",
             HostObject::MutationRecord(_) => "MutationRecord",
+            HostObject::MessageChannel(_, _) => "MessageChannel",
+            HostObject::MessagePort(_) => "MessagePort",
             HostObject::JsMap(_) => "Map",
             HostObject::JsSet(_) => "Set",
             HostObject::Crypto => "Crypto",

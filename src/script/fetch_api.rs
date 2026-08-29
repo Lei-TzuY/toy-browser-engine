@@ -29,6 +29,7 @@ use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
     IntersectionObserverTarget, IntersectionObserverEntryData, ResizeObserverData, ResizeObserverEntryData,
     MutationObserverData, MutationObserverTarget, MutationRecordData,
+    MessagePortData,
     RequestData, ResponseData, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
@@ -472,6 +473,18 @@ impl JsRuntime {
                 };
                 host_value(HostObject::JsSet(Rc::new(RefCell::new(items))))
             }
+            Builtin::MessageChannelCtor => {
+                let (p1, p2) = MessagePortData::new_pair();
+                host_value(HostObject::MessageChannel(p1, p2))
+            }
+            Builtin::MessagePortCtor => {
+                let p1 = Rc::new(MessagePortData {
+                    closed: Rc::new(std::cell::Cell::new(false)),
+                    onmessage: Rc::new(RefCell::new(None)),
+                    peer: Rc::new(RefCell::new(None)),
+                });
+                host_value(HostObject::MessagePort(p1))
+            }
             other => {
                 self.throw_type_error(format!("{other:?} is not a constructor"));
                 JsValue::Undefined
@@ -665,6 +678,15 @@ impl JsRuntime {
                     let arr: Vec<JsValue> = record.removed_nodes.iter().map(|n| JsValue::Str(n.clone())).collect();
                     JsValue::Array(Rc::new(RefCell::new(arr)))
                 }
+                _ => JsValue::Undefined,
+            },
+            HostObject::MessageChannel(p1, p2) => match prop {
+                "port1" => host_value(HostObject::MessagePort(p1.clone())),
+                "port2" => host_value(HostObject::MessagePort(p2.clone())),
+                _ => JsValue::Undefined,
+            },
+            HostObject::MessagePort(port) => match prop {
+                "onmessage" => port.onmessage.borrow().clone().unwrap_or(JsValue::Null),
                 _ => JsValue::Undefined,
             },
             HostObject::JsMap(entries) => match prop {
@@ -1072,6 +1094,7 @@ impl JsRuntime {
                 }
                 _ => JsValue::Undefined,
             },
+            HostObject::MessageChannel(_, _) | HostObject::MessagePort(_) => JsValue::Undefined,
         }
     }
 

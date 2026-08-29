@@ -256,6 +256,43 @@ impl<'a> StyledNode<'a> {
             _ => None,
         }
     }
+
+    pub fn border_spacing(&self) -> f32 {
+        match self.value("border-spacing") {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            _ => 0.0,
+        }
+    }
+
+    pub fn border_collapse(&self) -> &str {
+        match self.value("border-collapse") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "separate",
+        }
+    }
+
+    pub fn scroll_behavior(&self) -> &str {
+        match self.value("scroll-behavior") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "auto",
+        }
+    }
+
+    pub fn scroll_snap_type(&self) -> &str {
+        match self.value("scroll-snap-type") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "none",
+        }
+    }
+
+    pub fn scroll_snap_align(&self) -> &str {
+        match self.value("scroll-snap-align") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "none",
+        }
+    }
 }
 
 fn default_display(node_type: &NodeType) -> Display {

@@ -2142,15 +2142,21 @@ impl<'a> LayoutBox<'a> {
         self.calc_position(containing);
 
         let table_w = self.dimensions.content.width;
+        let spacing = if self.style().map(|s| s.border_collapse()).unwrap_or("separate") == "collapse" {
+            0.0
+        } else {
+            self.style().map(|s| s.border_spacing()).unwrap_or(0.0)
+        };
 
-        // 1. Preferred column widths: the widest max-content cell in each column.
-        //    Laying cells out to measure them would be wrong here — an auto-width
-        //    cell fills its containing block, which would make every column as
-        //    wide as the whole table.
+        // 1. Preferred column widths: specified width or widest max-content cell.
         let mut col_widths = Vec::<f32>::new();
         for row in &self.children {
             for (col_idx, cell) in row.children.iter().enumerate() {
-                let w = cell.max_content_width();
+                let w = if let Some(Value::Length(px, Unit::Px)) = cell.style().and_then(|s| s.value("width")) {
+                    *px
+                } else {
+                    cell.max_content_width()
+                };
                 if col_idx >= col_widths.len() {
                     col_widths.push(w);
                 } else {
@@ -2159,10 +2165,18 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
+        let num_cols = col_widths.len();
+        let total_col_spacing = if num_cols > 1 {
+            (num_cols - 1) as f32 * spacing
+        } else {
+            0.0
+        };
+
         // 2. Scale the columns to the table's width, keeping their proportions.
         let preferred_total: f32 = col_widths.iter().sum();
-        if preferred_total > 0.0 && table_w > 0.0 {
-            let scale = table_w / preferred_total;
+        let available_for_cols = (table_w - total_col_spacing).max(0.0);
+        if preferred_total > 0.0 && available_for_cols > 0.0 {
+            let scale = available_for_cols / preferred_total;
             for w in &mut col_widths {
                 *w *= scale;
             }
@@ -2172,7 +2186,8 @@ impl<'a> LayoutBox<'a> {
         let mut cursor_y = self.dimensions.content.y;
         let mut total_table_h = 0.0f32;
 
-        for row in &mut self.children {
+        let num_rows = self.children.len();
+        for (row_idx, row) in self.children.iter_mut().enumerate() {
             row.dimensions.content.x = table_x;
             row.dimensions.content.y = cursor_y;
             row.dimensions.content.width = self.dimensions.content.width;
@@ -2194,7 +2209,7 @@ impl<'a> LayoutBox<'a> {
                 cell.layout(cell_containing);
                 let h = cell.dimensions.margin_box().height;
                 row_h = row_h.max(h);
-                cell_x += cell_w;
+                cell_x += cell_w + spacing;
             }
 
             // Cells stretch to the tallest cell in the row, so their backgrounds
@@ -2212,7 +2227,12 @@ impl<'a> LayoutBox<'a> {
 
             row.dimensions.content.height = row_h;
             cursor_y += row_h;
-            total_table_h += row_h;
+            if row_idx + 1 < num_rows {
+                cursor_y += spacing;
+                total_table_h += row_h + spacing;
+            } else {
+                total_table_h += row_h;
+            }
         }
 
         self.dimensions.content.height = total_table_h;

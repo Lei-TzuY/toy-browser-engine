@@ -1976,6 +1976,18 @@ impl Parser {
                     vec![Declaration::new(name, first_value)]
                 }
             }
+            "scroll-snap-type" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                if !rest.trim().is_empty() {
+                    raw.push(' ');
+                    raw.push_str(rest.trim());
+                }
+                vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
+            }
             "mask-image" | "-webkit-mask-image" => {
                 vec![Declaration::new("mask-image", first_value)]
             }
@@ -2624,7 +2636,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
     match p.as_str() {
         "display" => matches!(
             v.as_str(),
-            "none" | "block" | "inline" | "inline-block" | "flex" | "grid"
+            "none" | "block" | "inline" | "inline-block" | "flex" | "grid" | "table" | "table-row" | "table-cell" | "table-header-group" | "table-row-group" | "table-footer-group"
         ),
         "flex-direction" => matches!(v.as_str(), "row" | "row-reverse" | "column" | "column-reverse"),
         "flex-wrap" => matches!(v.as_str(), "nowrap" | "wrap" | "wrap-reverse"),
@@ -2635,6 +2647,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "padding" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => true,
         "border" | "border-top" | "border-right" | "border-bottom" | "border-left" | "border-width" | "border-color" | "border-style" => true,
         "border-radius" => true,
+        "border-collapse" | "border-spacing" => true,
         "color" | "background" | "background-color" => true,
         "opacity" | "transform" | "transition" | "animation" | "box-shadow" | "filter" => true,
         "grid-template-columns" | "grid-template-rows" | "grid-column" | "grid-row" | "gap" | "row-gap" | "column-gap" => true,
@@ -2644,6 +2657,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
         "aspect-ratio" | "backdrop-filter" | "columns" | "column-count" | "column-width" | "clip-path" | "mix-blend-mode" | "background-blend-mode" | "user-select" | "caret-color" => true,
         "outline" | "outline-width" | "outline-style" | "outline-color" | "outline-offset" | "mask-image" | "-webkit-mask-image" | "mask-size" | "mask-repeat" => true,
+        "scroll-behavior" | "scroll-snap-type" | "scroll-snap-align" => true,
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }
