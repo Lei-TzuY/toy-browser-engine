@@ -2,7 +2,7 @@
 //  referrer_policy.rs — Referrer-Policy parsing and computation
 // ============================================================
 
-use crate::net::Url;
+use crate::net::{FetchResponse, Url};
 
 /// The Referrer Policy values implemented by the browser engine.
 ///
@@ -51,6 +51,34 @@ impl ReferrerPolicy {
     /// policy.
     pub fn from_header(value: &str) -> Option<Self> {
         value.split(',').filter_map(Self::parse_token).last()
+    }
+
+    /// Parse Referrer-Policy from a response's raw header fields.
+    ///
+    /// Referrer Policy's response algorithm first extracts the complete header
+    /// list and then walks every comma-separated token in wire order. Keeping
+    /// raw fields separate here matters because HeaderMap::get() is a combined
+    /// representation and redirect responses may legally repeat the header.
+    /// The last recognized non-empty policy wins; extension/unknown tokens are
+    /// ignored so servers can deploy new values with older fallbacks.
+    pub fn from_response(response: &FetchResponse) -> Option<Self> {
+        response
+            .headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("referrer-policy"))
+            .flat_map(|(_, value)| value.split(','))
+            .filter_map(Self::parse_token)
+            .last()
+    }
+
+    /// Apply Referrer Policy's redirect-update step to an existing policy.
+    ///
+    /// A redirect response with no recognized Referrer-Policy value leaves the
+    /// request policy unchanged. A recognized value replaces it for the next
+    /// hop. This small state transition is intentionally transport-neutral so
+    /// redirect orchestrators can update policy before recomputing Referer.
+    pub fn updated_on_redirect(self, response: &FetchResponse) -> Self {
+        Self::from_response(response).unwrap_or(self)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -170,6 +198,19 @@ mod tests {
         Url::parse(text).unwrap()
     }
 
+    fn response_with_policies(fields: &[&str]) -> FetchResponse {
+        let mut response = FetchResponse::synthetic(
+            url("https://redirect.test/hop"),
+            302,
+            None,
+            Vec::new(),
+        );
+        for value in fields {
+            response.headers.append_raw("referrer-policy", value);
+        }
+        response
+    }
+
     #[test]
     fn header_uses_last_recognized_policy() {
         assert_eq!(
@@ -177,6 +218,39 @@ mod tests {
             Some(ReferrerPolicy::Origin)
         );
         assert_eq!(ReferrerPolicy::from_header("future-policy"), None);
+    }
+
+    #[test]
+    fn response_parser_uses_all_fields_in_wire_order() {
+        let response = response_with_policies(&[
+            "no-referrer, future-policy",
+            "origin-when-cross-origin, strict-origin",
+        ]);
+        assert_eq!(
+            ReferrerPolicy::from_response(&response),
+            Some(ReferrerPolicy::StrictOrigin)
+        );
+    }
+
+    #[test]
+    fn redirect_policy_update_keeps_current_policy_when_response_has_no_known_token() {
+        let response = response_with_policies(&["future-policy", "another-extension"]);
+        assert_eq!(
+            ReferrerPolicy::Origin.updated_on_redirect(&response),
+            ReferrerPolicy::Origin
+        );
+    }
+
+    #[test]
+    fn redirect_policy_update_adopts_last_known_response_token() {
+        let response = response_with_policies(&[
+            "unsafe-url, future-policy",
+            "strict-origin-when-cross-origin",
+        ]);
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.updated_on_redirect(&response),
+            ReferrerPolicy::StrictOriginWhenCrossOrigin
+        );
     }
 
     #[test]
