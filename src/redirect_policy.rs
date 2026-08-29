@@ -20,7 +20,7 @@ pub const FETCH_MAX_REDIRECTS: u8 = 20;
 /// Error produced while constructing a redirect hop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedirectError {
-    /// `Location` could not be resolved against the current request URL.
+    /// `Location` could not be extracted or resolved against the current request URL.
     InvalidLocation(String),
     /// A network HTTP redirect attempted to leave the HTTP(S) fetch schemes.
     UnsupportedScheme(String),
@@ -93,8 +93,8 @@ impl RedirectPlanner {
     /// Fetch redirect response with a `Location` header.
     ///
     /// This mutates the redirect count only after a valid HTTP(S) next URL has
-    /// been constructed, so malformed or unsupported `Location` values do not
-    /// consume the budget.
+    /// been constructed, so malformed, ambiguous, or unsupported `Location`
+    /// values do not consume the budget.
     pub fn next_request(
         &mut self,
         request: &FetchRequest,
@@ -103,7 +103,7 @@ impl RedirectPlanner {
         if !is_redirect_status(response.status) {
             return Ok(None);
         }
-        let Some(location) = response.headers.get("location") else {
+        let Some(location) = extract_location(response)? else {
             return Ok(None);
         };
 
@@ -126,7 +126,7 @@ impl RedirectPlanner {
         }
 
         // Fetch's "location URL" algorithm carries the current request
-        // fragment forward when Location itself does not provide one.  A
+        // fragment forward when Location itself does not provide one. A
         // redirect may replace it explicitly, including with an empty `#`.
         if !location_has_fragment(&location) {
             next_url.set_fragment(request.url.fragment().map(str::to_string));
@@ -175,6 +175,31 @@ pub fn is_redirect_status(status: u16) -> bool {
 pub fn redirects_to_get(status: u16, method: Method) -> bool {
     matches!(status, 301 | 302) && method == Method::Post
         || status == 303 && !matches!(method, Method::Get | Method::Head)
+}
+
+/// Extract a single raw Location field without using `HeaderMap::get()`.
+///
+/// Fetch's location-URL algorithm uses "extract header list values". Location
+/// has single-value HTTP syntax, so more than one field is extraction failure;
+/// combining duplicate fields with a comma can accidentally turn an invalid
+/// response into a different relative URL. A comma inside one authored
+/// Location value remains valid data and is deliberately not split here.
+fn extract_location(response: &FetchResponse) -> Result<Option<String>, RedirectError> {
+    let mut values = response
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("location"))
+        .map(|(_, value)| value.to_string());
+
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(RedirectError::InvalidLocation(
+            "multiple Location header fields".to_string(),
+        ));
+    }
+    Ok(Some(first))
 }
 
 fn location_has_fragment(location: &str) -> bool {
@@ -313,6 +338,43 @@ mod tests {
             Err(RedirectError::UnsupportedScheme("file".to_string()))
         );
         assert_eq!(planner.followed(), 0);
+    }
+
+    #[test]
+    fn duplicate_location_fields_are_extraction_failure_before_budget() {
+        let original = FetchRequest::get(Url::parse("https://example.test/a").unwrap());
+        let mut redirect = response("https://example.test/a", 302, None);
+        redirect.headers.append_raw("location", "/one");
+        redirect.headers.append_raw("location", "/two");
+        let mut planner = RedirectPlanner::new(0);
+
+        assert_eq!(
+            planner.next_request(&original, &redirect),
+            Err(RedirectError::InvalidLocation(
+                "multiple Location header fields".to_string()
+            ))
+        );
+        assert_eq!(planner.followed(), 0);
+    }
+
+    #[test]
+    fn comma_inside_one_location_field_is_not_split_as_multiple_values() {
+        let original = FetchRequest::get(Url::parse("https://example.test/a").unwrap());
+        let redirect = response(
+            "https://example.test/a",
+            302,
+            Some("/next?tags=alpha,beta"),
+        );
+        let mut planner = RedirectPlanner::new(1);
+        let next = planner
+            .next_request(&original, &redirect)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            next.url.to_string(),
+            "https://example.test/next?tags=alpha,beta"
+        );
     }
 
     #[test]
