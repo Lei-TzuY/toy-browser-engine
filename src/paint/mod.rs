@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{ClipPath, Color, ColorStop, ConicGradient, FilterFunction, LinearGradient, RadialGradient, Unit, Value};
+use crate::css::parser::{BlendMode, ClipPath, Color, ColorStop, ConicGradient, FilterFunction, LinearGradient, RadialGradient, Unit, Value};
 use crate::dom::NodeType;
 use crate::image::RasterImage;
 use crate::layout::{BoxType, LayoutBox, ObjectFit, Rect, TextFragment};
@@ -36,6 +36,10 @@ pub enum DisplayCommand {
     PushClipPath(ClipPath, Rect),
     /// Restore the previous clip-path mask.
     PopClipPath,
+    /// Push a CSS mix-blend-mode.
+    PushBlendMode(BlendMode),
+    /// Restore the previous blend-mode.
+    PopBlendMode,
     /// Linear gradient background: (gradient spec, rect, opacity).
     LinearGradient(LinearGradient, Rect, f32),
     /// Radial gradient background: (gradient spec, rect, opacity).
@@ -107,6 +111,7 @@ impl DisplayCommand {
                 rect.y += dy;
             }
             DisplayCommand::PopClipPath => {}
+            DisplayCommand::PushBlendMode(_) | DisplayCommand::PopBlendMode => {}
             DisplayCommand::BoxShadow { rect, .. } => {
                 rect.x += dx;
                 rect.y += dy;
@@ -175,6 +180,17 @@ fn render_stacking_context_with_opacity(list: &mut DisplayList, root: &LayoutBox
         .positive
         .sort_by_key(|(z_index, order, _)| (*z_index, *order));
 
+    let clip_path = styled_node(root).and_then(|s| s.clip_path());
+    if let Some(ref cp) = clip_path {
+        list.push(DisplayCommand::PushClipPath(cp.clone(), root.dimensions.border_box()));
+    }
+
+    let blend_mode = styled_node(root).map(|s| s.mix_blend_mode()).unwrap_or(BlendMode::Normal);
+    let has_blend = blend_mode != BlendMode::Normal;
+    if has_blend {
+        list.push(DisplayCommand::PushBlendMode(blend_mode));
+    }
+
     render_box_decorations_with_opacity(list, root, opacity);
 
     for (_, _, context) in layers.negative {
@@ -200,6 +216,14 @@ fn render_stacking_context_with_opacity(list: &mut DisplayList, root: &LayoutBox
     for (_, _, context) in layers.positive {
         let child_opacity = opacity * node_opacity(context);
         render_stacking_context_with_opacity(list, context, child_opacity);
+    }
+
+    if has_blend {
+        list.push(DisplayCommand::PopBlendMode);
+    }
+
+    if clip_path.is_some() {
+        list.push(DisplayCommand::PopClipPath);
     }
 }
 
@@ -263,6 +287,12 @@ fn render_in_flow_subtree_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
         list.push(DisplayCommand::PushClipPath(cp.clone(), lb.dimensions.border_box()));
     }
 
+    let blend_mode = styled_node(lb).map(|s| s.mix_blend_mode()).unwrap_or(BlendMode::Normal);
+    let has_blend = blend_mode != BlendMode::Normal;
+    if has_blend {
+        list.push(DisplayCommand::PushBlendMode(blend_mode));
+    }
+
     render_box_decorations_with_opacity(list, lb, opacity);
     render_list_marker(list, lb, opacity);
 
@@ -278,6 +308,10 @@ fn render_in_flow_subtree_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
 
     if clip {
         list.push(DisplayCommand::PopClip);
+    }
+
+    if has_blend {
+        list.push(DisplayCommand::PopBlendMode);
     }
 
     if clip_path.is_some() {
@@ -355,6 +389,18 @@ fn render_subtree_without_contexts_with_opacity(
     if establishes_stacking_context(lb) {
         return;
     }
+
+    let clip_path = styled_node(lb).and_then(|s| s.clip_path());
+    if let Some(ref cp) = clip_path {
+        list.push(DisplayCommand::PushClipPath(cp.clone(), lb.dimensions.border_box()));
+    }
+
+    let blend_mode = styled_node(lb).map(|s| s.mix_blend_mode()).unwrap_or(BlendMode::Normal);
+    let has_blend = blend_mode != BlendMode::Normal;
+    if has_blend {
+        list.push(DisplayCommand::PushBlendMode(blend_mode));
+    }
+
     render_box_decorations_with_opacity(list, lb, opacity);
     render_list_marker(list, lb, opacity);
 
@@ -370,6 +416,14 @@ fn render_subtree_without_contexts_with_opacity(
 
     if clip {
         list.push(DisplayCommand::PopClip);
+    }
+
+    if has_blend {
+        list.push(DisplayCommand::PopBlendMode);
+    }
+
+    if clip_path.is_some() {
+        list.push(DisplayCommand::PopClipPath);
     }
 }
 
@@ -530,11 +584,12 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
             .collect();
         let x = content.x + measure_text(&line_text, font_size);
         let y = content.y + line as f32 * metrics.new_line_size;
+        let caret_color = styled.caret_color().unwrap_or(CONTROL_TEXT);
         list.push(DisplayCommand::SolidColor(
-            apply_opacity(CONTROL_TEXT, opacity),
+            apply_opacity(caret_color, opacity),
             Rect {
                 x,
-                y: y + 1.0,
+                y,
                 width: 1.0,
                 height: metrics.new_line_size - 2.0,
             },
@@ -947,6 +1002,8 @@ pub struct Canvas {
     clip_stack: Vec<(i32, i32, i32, i32)>,
     /// Active clip-path masks.
     clip_path_stack: Vec<(ClipPath, Rect)>,
+    /// Active mix-blend-mode stack.
+    blend_mode_stack: Vec<BlendMode>,
 }
 
 impl Canvas {
@@ -963,6 +1020,7 @@ impl Canvas {
             height,
             clip_stack: Vec::new(),
             clip_path_stack: Vec::new(),
+            blend_mode_stack: Vec::new(),
         }
     }
 
@@ -1030,6 +1088,12 @@ impl Canvas {
             }
             DisplayCommand::PopClipPath => {
                 self.clip_path_stack.pop();
+            }
+            DisplayCommand::PushBlendMode(bm) => {
+                self.blend_mode_stack.push(*bm);
+            }
+            DisplayCommand::PopBlendMode => {
+                self.blend_mode_stack.pop();
             }
             DisplayCommand::BoxShadow {
                 rect,
@@ -1449,9 +1513,34 @@ impl Canvas {
         let idx = (y as usize * self.width + x as usize) * 3;
         let alpha = color.a as f32 / 255.0 * coverage as f32 / 255.0;
         let ia = 1.0 - alpha;
-        self.pixels[idx] = (color.r as f32 * alpha + self.pixels[idx] as f32 * ia) as u8;
-        self.pixels[idx + 1] = (color.g as f32 * alpha + self.pixels[idx + 1] as f32 * ia) as u8;
-        self.pixels[idx + 2] = (color.b as f32 * alpha + self.pixels[idx + 2] as f32 * ia) as u8;
+
+        let mode = self.blend_mode_stack.last().copied().unwrap_or(BlendMode::Normal);
+        let blended_r = blend_channel(mode, color.r as f32, self.pixels[idx] as f32);
+        let blended_g = blend_channel(mode, color.g as f32, self.pixels[idx + 1] as f32);
+        let blended_b = blend_channel(mode, color.b as f32, self.pixels[idx + 2] as f32);
+
+        self.pixels[idx] = (blended_r * alpha + self.pixels[idx] as f32 * ia).round().clamp(0.0, 255.0) as u8;
+        self.pixels[idx + 1] = (blended_g * alpha + self.pixels[idx + 1] as f32 * ia).round().clamp(0.0, 255.0) as u8;
+        self.pixels[idx + 2] = (blended_b * alpha + self.pixels[idx + 2] as f32 * ia).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_channel(mode: BlendMode, src: f32, dst: f32) -> f32 {
+    match mode {
+        BlendMode::Normal => src,
+        BlendMode::Multiply => (src * dst) / 255.0,
+        BlendMode::Screen => 255.0 - ((255.0 - src) * (255.0 - dst)) / 255.0,
+        BlendMode::Darken => src.min(dst),
+        BlendMode::Lighten => src.max(dst),
+        BlendMode::Difference => (src - dst).abs(),
+        BlendMode::Exclusion => src + dst - 2.0 * src * dst / 255.0,
+        BlendMode::Overlay => {
+            if dst < 128.0 {
+                (2.0 * src * dst) / 255.0
+            } else {
+                255.0 - (2.0 * (255.0 - src) * (255.0 - dst)) / 255.0
+            }
+        }
     }
 }
 

@@ -94,11 +94,30 @@ pub fn decode_text(bytes: &[u8]) -> String {
 #[derive(Debug, Default)]
 pub struct AbortState {
     aborted: Cell<bool>,
+    timeout_at: Cell<Option<f64>>,
 }
 
 impl AbortState {
     pub fn new() -> Rc<AbortState> {
         Rc::new(AbortState::default())
+    }
+
+    pub fn with_timeout(timeout_ms: f64, now_ms: f64) -> Rc<AbortState> {
+        let state = AbortState::default();
+        if timeout_ms <= 0.0 {
+            state.aborted.set(true);
+        } else {
+            state.timeout_at.set(Some(now_ms + timeout_ms));
+        }
+        Rc::new(state)
+    }
+
+    pub fn check_timeout(&self, now_ms: f64) {
+        if let Some(t) = self.timeout_at.get() {
+            if now_ms >= t {
+                self.aborted.set(true);
+            }
+        }
     }
 
     pub fn aborted(&self) -> bool {

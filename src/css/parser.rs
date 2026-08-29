@@ -234,6 +234,33 @@ pub fn parse_clip_path(input: &str) -> Option<ClipPath> {
     None
 }
 
+/// A parsed CSS blend-mode value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    Difference,
+    Exclusion,
+}
+
+pub fn parse_blend_mode(input: &str) -> Option<BlendMode> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(BlendMode::Normal),
+        "multiply" => Some(BlendMode::Multiply),
+        "screen" => Some(BlendMode::Screen),
+        "overlay" => Some(BlendMode::Overlay),
+        "darken" => Some(BlendMode::Darken),
+        "lighten" => Some(BlendMode::Lighten),
+        "difference" => Some(BlendMode::Difference),
+        "exclusion" => Some(BlendMode::Exclusion),
+        _ => None,
+    }
+}
+
 // ── Pseudo-class types ────────────────────────────────────────────────────────
 
 /// The `An+B` expression used in `:nth-child(An+B)` and related selectors.
@@ -568,6 +595,7 @@ pub enum Value {
     BoxShadow(BoxShadow),
     TextShadow(TextShadow),
     ClipPath(ClipPath),
+    BlendMode(BlendMode),
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
     Animation(Vec<AnimationSpec>),
@@ -616,6 +644,7 @@ impl Value {
             Value::BoxShadow(_) => "box-shadow(...)".to_string(),
             Value::TextShadow(_) => "text-shadow(...)".to_string(),
             Value::ClipPath(_) => "clip-path(...)".to_string(),
+            Value::BlendMode(b) => format!("{:?}", b).to_ascii_lowercase(),
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
             Value::Animation(_) => "animation(...)".to_string(),
@@ -1918,6 +1947,17 @@ impl Parser {
                     vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
                 }
             }
+            "mix-blend-mode" | "background-blend-mode" => {
+                let raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    _ => String::new(),
+                };
+                if let Some(bm) = parse_blend_mode(&raw) {
+                    vec![Declaration::new(name, Value::BlendMode(bm))]
+                } else {
+                    vec![Declaration::new(name, first_value)]
+                }
+            }
             _ => vec![Declaration::new(name, first_value)],
         };
 
@@ -2553,7 +2593,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
         "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
-        "aspect-ratio" | "backdrop-filter" | "columns" | "column-count" | "column-width" | "clip-path" => true,
+        "aspect-ratio" | "backdrop-filter" | "columns" | "column-count" | "column-width" | "clip-path" | "mix-blend-mode" | "background-blend-mode" | "user-select" | "caret-color" => true,
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }

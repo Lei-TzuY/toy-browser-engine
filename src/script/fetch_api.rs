@@ -349,6 +349,9 @@ impl JsRuntime {
             Builtin::AbortControllerCtor => {
                 host_value(HostObject::AbortController(AbortState::new()))
             }
+            Builtin::AbortSignalCtor => {
+                host_value(HostObject::AbortSignal(AbortState::new()))
+            }
             Builtin::URLCtor => {
                 let url_str = to_string(args.first().unwrap_or(&JsValue::Undefined));
                 let base_str = args.get(1).map(to_string);
@@ -510,10 +513,13 @@ impl JsRuntime {
                 "signal" => host_value(HostObject::AbortSignal(state.clone())),
                 _ => JsValue::Undefined,
             },
-            HostObject::AbortSignal(state) => match prop {
-                "aborted" => JsValue::Bool(state.aborted()),
-                _ => JsValue::Undefined,
-            },
+            HostObject::AbortSignal(state) => {
+                state.check_timeout(self.now_ms);
+                match prop {
+                    "aborted" => JsValue::Bool(state.aborted()),
+                    _ => JsValue::Undefined,
+                }
+            }
             HostObject::URL(u_rc) => {
                 let u = u_rc.borrow();
                 match prop {

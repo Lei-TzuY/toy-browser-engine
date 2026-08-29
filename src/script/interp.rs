@@ -25,7 +25,7 @@ use crate::net::fetch::FetchRegistry;
 
 use super::ast::*;
 use super::dom_api::{self, NodePath};
-use super::host::HostObject;
+use super::host::{AbortState, HostObject};
 use super::parser::Parser;
 use super::promise::{self, Microtask, PromiseRef, ReactionKind};
 
@@ -140,6 +140,7 @@ pub enum Builtin {
     RequestCtor,
     ResponseCtor,
     AbortControllerCtor,
+    AbortSignalCtor,
     URLCtor,
     URLSearchParamsCtor,
     AudioContextCtor,
@@ -666,6 +667,7 @@ impl JsRuntime {
                 | Builtin::RequestCtor
                 | Builtin::ResponseCtor
                 | Builtin::AbortControllerCtor
+                | Builtin::AbortSignalCtor
                 | Builtin::URLCtor
                 | Builtin::URLSearchParamsCtor
                 | Builtin::AudioContextCtor
@@ -2523,6 +2525,39 @@ impl JsRuntime {
                 "now" => JsValue::Number(self.now_ms as f32),
                 _ => JsValue::Undefined,
             },
+            JsValue::Builtin(Builtin::AbortSignalCtor) => match prop {
+                "timeout" => {
+                    let delay = args.first().map(to_number).unwrap_or(0.0) as f64;
+                    let state = AbortState::with_timeout(delay, self.now_ms);
+                    JsValue::Host(Rc::new(HostObject::AbortSignal(state)))
+                }
+                "abort" => {
+                    let state = AbortState::new();
+                    state.abort();
+                    JsValue::Host(Rc::new(HostObject::AbortSignal(state)))
+                }
+                "any" => {
+                    let state = AbortState::new();
+                    if let Some(JsValue::Array(arr)) = args.first() {
+                        let signals: Vec<Rc<AbortState>> = arr
+                            .borrow()
+                            .iter()
+                            .filter_map(|val| match val {
+                                JsValue::Host(h) => h.as_abort_state().cloned(),
+                                _ => None,
+                            })
+                            .collect();
+                        for s in &signals {
+                            s.check_timeout(self.now_ms);
+                        }
+                        if signals.iter().any(|s| s.aborted()) {
+                            state.abort();
+                        }
+                    }
+                    JsValue::Host(Rc::new(HostObject::AbortSignal(state)))
+                }
+                _ => JsValue::Undefined,
+            },
             JsValue::Builtin(Builtin::Crypto) => crypto_method(prop, &args),
             JsValue::Builtin(Builtin::ObjectMeta) => match prop {
                 "keys" => match args.first() {
@@ -3723,6 +3758,7 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "Request" => Builtin::RequestCtor,
         "Response" => Builtin::ResponseCtor,
         "AbortController" => Builtin::AbortControllerCtor,
+        "AbortSignal" => Builtin::AbortSignalCtor,
         "URL" => Builtin::URLCtor,
         "URLSearchParams" => Builtin::URLSearchParamsCtor,
         "AudioContext" | "webkitAudioContext" => Builtin::AudioContextCtor,

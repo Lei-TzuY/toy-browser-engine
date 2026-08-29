@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 
 use crate::css::parser::{
-    parse_declaration_block, parse_single_value, ClipPath, Combinator, Declaration, PseudoClass, Selector,
-    SelectorPart, Stylesheet, TextShadow, Unit, Value,
+    parse_blend_mode, parse_declaration_block, parse_single_value, BlendMode, ClipPath, Color, Combinator,
+    Declaration, PseudoClass, Selector, SelectorPart, Stylesheet, TextShadow, Unit, Value,
 };
 use crate::dom::{ElementData, Node, NodeType};
 
@@ -186,6 +186,28 @@ impl<'a> StyledNode<'a> {
     pub fn clip_path(&self) -> Option<ClipPath> {
         match self.value("clip-path") {
             Some(Value::ClipPath(cp)) => Some(cp.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn mix_blend_mode(&self) -> BlendMode {
+        match self.value("mix-blend-mode") {
+            Some(Value::BlendMode(bm)) => *bm,
+            Some(Value::Keyword(s)) => parse_blend_mode(s).unwrap_or(BlendMode::Normal),
+            _ => BlendMode::Normal,
+        }
+    }
+
+    pub fn caret_color(&self) -> Option<Color> {
+        match self.value("caret-color") {
+            Some(Value::Color(c)) => Some(*c),
+            _ => None,
+        }
+    }
+
+    pub fn user_select(&self) -> Option<&str> {
+        match self.value("user-select") {
+            Some(Value::Keyword(s)) => Some(s.as_str()),
             _ => None,
         }
     }
