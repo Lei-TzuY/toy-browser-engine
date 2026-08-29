@@ -214,8 +214,13 @@ impl Browser {
     fn load_navigation_document(
         &self,
         url: &Url,
-        context: SameSiteRequestContext,
+        method: Method,
     ) -> Result<(Document, Url), LoadError> {
+        // HSTS runs before cookie selection. SameSite is schemeful, so classify
+        // the target that will actually be dispatched rather than the authored
+        // pre-upgrade HTTP spelling.
+        let effective_target = self.navigation.effective_url(url);
+        let context = top_level_context(&self.document.url, &effective_target, method);
         let response = self
             .navigation
             .get(url, context)
@@ -246,8 +251,7 @@ impl Browser {
     /// same way a real browser jumps within the current page.
     pub fn navigate(&mut self, url: &Url) -> Result<(), LoadError> {
         let history_url = if !url.same_document(self.url()) {
-            let context = top_level_context(&self.document.url, url, Method::Get);
-            let (document, final_url) = self.load_navigation_document(url, context)?;
+            let (document, final_url) = self.load_navigation_document(url, Method::Get)?;
             self.replace_document(document);
             final_url
         } else {
@@ -271,8 +275,7 @@ impl Browser {
     /// Reload the current entry from its source.
     pub fn reload(&mut self) -> Result<(), LoadError> {
         let url = self.url().clone();
-        let context = SameSiteRequestContext::new(true, true, Method::Get);
-        let (document, _final_url) = self.load_navigation_document(&url, context)?;
+        let (document, _final_url) = self.load_navigation_document(&url, Method::Get)?;
         self.replace_document(document);
         Ok(())
     }
@@ -323,8 +326,7 @@ impl Browser {
         if url.same_document(&self.document.url) {
             return;
         }
-        let context = top_level_context(&self.document.url, &url, Method::Get);
-        match self.load_navigation_document(&url, context) {
+        match self.load_navigation_document(&url, Method::Get) {
             Ok((document, _final_url)) => self.replace_document(document),
             Err(error) => self.document.diagnostics.push(crate::document::Diagnostic {
                 url: url.to_string(),
@@ -737,7 +739,8 @@ impl Browser {
             headers,
             Some(body),
         );
-        let context = top_level_context(&self.document.url, &submission.url, Method::Post);
+        let effective_target = self.navigation.effective_url(&submission.url);
+        let context = top_level_context(&self.document.url, &effective_target, Method::Post);
 
         match self.navigation.fetch(&request, context) {
             Ok(response) if response.ok() => {
