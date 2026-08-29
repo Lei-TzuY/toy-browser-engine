@@ -101,7 +101,7 @@ impl Document {
                 });
                 continue;
             };
-            if self.images.get(&url).is_some() {
+            if self.images.get(&url).is_some() || self.images.error(&url).is_some() {
                 continue;
             }
 
@@ -114,15 +114,22 @@ impl Document {
             ) {
                 Ok(response) => match crate::image::decode(&response.body) {
                     Ok(image) => self.images.insert(&url, image),
-                    Err(error) => self.diagnostics.push(Diagnostic {
-                        url: url.to_string(),
-                        message: format!("{url}: {error}"),
-                    }),
+                    Err(error) => {
+                        let message = format!("{url}: {error}");
+                        self.images.insert_error(&url, message.clone());
+                        self.diagnostics.push(Diagnostic {
+                            url: url.to_string(),
+                            message,
+                        });
+                    }
                 },
-                Err(message) => self.diagnostics.push(Diagnostic {
-                    url: url.to_string(),
-                    message,
-                }),
+                Err(message) => {
+                    self.images.insert_error(&url, message.clone());
+                    self.diagnostics.push(Diagnostic {
+                        url: url.to_string(),
+                        message,
+                    });
+                }
             }
         }
     }
