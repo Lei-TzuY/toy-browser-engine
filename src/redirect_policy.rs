@@ -16,6 +16,8 @@ use crate::net::{FetchRequest, FetchResponse, Method, Url};
 pub enum RedirectError {
     /// `Location` could not be resolved against the current request URL.
     InvalidLocation(String),
+    /// A network HTTP redirect attempted to leave the HTTP(S) fetch schemes.
+    UnsupportedScheme(String),
     /// Following this response would exceed the configured redirect budget.
     TooManyRedirects(String),
 }
@@ -25,6 +27,9 @@ impl fmt::Display for RedirectError {
         match self {
             RedirectError::InvalidLocation(location) => {
                 write!(f, "invalid redirect location: {location}")
+            }
+            RedirectError::UnsupportedScheme(scheme) => {
+                write!(f, "unsupported redirect scheme: {scheme}")
             }
             RedirectError::TooManyRedirects(url) => write!(f, "too many redirects: {url}"),
         }
@@ -60,8 +65,9 @@ impl RedirectPlanner {
     /// Return the request for the next hop, or `None` when `response` is not a
     /// Fetch redirect response with a `Location` header.
     ///
-    /// This mutates the redirect count only after a valid next URL has been
-    /// constructed, so malformed `Location` values do not consume the budget.
+    /// This mutates the redirect count only after a valid HTTP(S) next URL has
+    /// been constructed, so malformed or unsupported `Location` values do not
+    /// consume the budget.
     pub fn next_request(
         &mut self,
         request: &FetchRequest,
@@ -74,14 +80,23 @@ impl RedirectPlanner {
             return Ok(None);
         };
 
-        if self.followed >= self.max_redirects {
-            return Err(RedirectError::TooManyRedirects(request.url.to_string()));
-        }
-
         let mut next_url = request
             .url
             .join(&location)
             .map_err(|_| RedirectError::InvalidLocation(location.clone()))?;
+
+        // Fetch HTTP-redirect fetch only follows HTTP(S) location URLs. Other
+        // fetch/local schemes (for example file:, data:, blob:, or about:)
+        // become a network error rather than crossing transport boundaries.
+        if !matches!(next_url.scheme(), "http" | "https") {
+            return Err(RedirectError::UnsupportedScheme(
+                next_url.scheme().to_string(),
+            ));
+        }
+
+        if self.followed >= self.max_redirects {
+            return Err(RedirectError::TooManyRedirects(request.url.to_string()));
+        }
 
         // Fetch's "location URL" algorithm carries the current request
         // fragment forward when Location itself does not provide one.  A
@@ -248,6 +263,20 @@ mod tests {
             planner.next_request(&next, &redirect),
             Err(RedirectError::TooManyRedirects(next.url.to_string()))
         );
+    }
+
+    #[test]
+    fn unsupported_scheme_is_rejected_before_budget_and_does_not_consume_it() {
+        let original = FetchRequest::get(Url::parse("https://example.test/a").unwrap());
+        let mut planner = RedirectPlanner::new(0);
+        assert_eq!(
+            planner.next_request(
+                &original,
+                &response("https://example.test/a", 302, Some("file:///tmp/next")),
+            ),
+            Err(RedirectError::UnsupportedScheme("file".to_string()))
+        );
+        assert_eq!(planner.followed(), 0);
     }
 
     #[test]
