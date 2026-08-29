@@ -57,6 +57,6 @@ pub use html::extract_inline_styles;
 pub use navigation_network::NavigationNetwork;
 pub use net::{MemoryLoader, ResourceLoader, Url};
 pub use redirect_policy::{RedirectError, RedirectPlanner, FETCH_MAX_REDIRECTS};
-pub use referrer_policy::ReferrerPolicy;
+pub use referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 pub use session_network::SessionNetwork;
 pub use transition::TransitionManager;
