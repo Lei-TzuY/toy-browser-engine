@@ -123,6 +123,40 @@ pub fn send(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse
     Err(FetchError::TooManyRedirects(request.url.to_string()))
 }
 
+/// Perform exactly one HTTP request/response exchange.
+///
+/// Unlike [`send`], this does not inspect `Location` and never follows a
+/// redirect. A 3xx response is returned exactly like any other response with
+/// `redirected == false`, preserving its headers for a higher policy layer to
+/// process. This is the transport primitive needed to move redirect
+/// orchestration above HSTS/cookie policy without changing today's public
+/// redirect-following API yet.
+pub fn send_once(
+    request: &FetchRequest,
+    config: &HttpConfig,
+) -> Result<FetchResponse, FetchError> {
+    let raw = exchange(
+        &request.url,
+        request.method,
+        &request.headers,
+        request.body.as_deref(),
+        config,
+    )?;
+    let body = if request.method.wants_body() {
+        raw.body
+    } else {
+        Vec::new()
+    };
+    Ok(FetchResponse {
+        url: request.url.clone(),
+        status: raw.status,
+        status_text: raw.status_text,
+        headers: raw.headers,
+        body,
+        redirected: false,
+    })
+}
+
 /// The `Location` of a Fetch redirect response, if this is one.
 fn redirect_target(raw: &RawResponse) -> Option<String> {
     if !matches!(raw.status, 301 | 302 | 303 | 307 | 308) {
