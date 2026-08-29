@@ -2,9 +2,9 @@
 //!
 //! The HTTP `Referrer-Policy` header establishes a document's initial policy,
 //! but HTML may update the policy container as referrer meta elements are
-//! inserted. During initial parsing, processing elements in document order
-//! models that insertion order: each recognized meta policy replaces the
-//! current policy and invalid values leave it unchanged.
+//! inserted. During initial parsing, processing elements in document insertion
+//! order models those updates, while template contents stay outside the
+//! document tree until explicitly instantiated.
 
 use crate::dom::Node;
 use crate::referrer_policy::ReferrerPolicy;
@@ -14,13 +14,19 @@ use crate::referrer_policy::ReferrerPolicy;
 /// HTML's referrer metadata processing is deliberately stricter than the HTTP
 /// header grammar: the `content` value is ASCII-lowercased but not trimmed or
 /// split on commas. Legacy HTML spellings are supported for compatibility.
+///
+/// `<template>` descendants are deliberately skipped. Their template contents
+/// are not part of the document tree, and HTML only runs referrer metadata
+/// processing for a meta element that is actually inserted into a document
+/// tree. Treating a template's inert descendants as live metadata would let a
+/// reusable fragment silently change the containing document's policy.
 pub fn apply_meta_referrer_policies(root: &Node, initial: ReferrerPolicy) -> ReferrerPolicy {
     let mut policy = initial;
-    visit(root, &mut policy);
+    visit_document_tree(root, &mut policy);
     policy
 }
 
-fn visit(node: &Node, policy: &mut ReferrerPolicy) {
+fn visit_document_tree(node: &Node, policy: &mut ReferrerPolicy) {
     if let Some(element) = node.as_element() {
         if element.tag_name.eq_ignore_ascii_case("meta")
             && element
@@ -33,10 +39,18 @@ fn visit(node: &Node, policy: &mut ReferrerPolicy) {
                 }
             }
         }
+
+        // HTML template contents live in a separate DocumentFragment rather
+        // than in the template element's document tree. This toy DOM stores
+        // parsed template descendants as ordinary children, so enforce that
+        // standards boundary explicitly while deriving document policy.
+        if element.tag_name.eq_ignore_ascii_case("template") {
+            return;
+        }
     }
 
     for child in &node.children {
-        visit(child, policy);
+        visit_document_tree(child, policy);
     }
 }
 
@@ -129,6 +143,41 @@ mod tests {
         assert_eq!(
             apply_meta_referrer_policies(&dom, ReferrerPolicy::SameOrigin),
             ReferrerPolicy::SameOrigin
+        );
+    }
+
+    #[test]
+    fn referrer_meta_inside_template_is_inert() {
+        let dom = parse_html(
+            r#"<html><head>
+                <meta name="referrer" content="origin">
+                <template>
+                    <meta name="referrer" content="no-referrer">
+                </template>
+            </head></html>"#,
+        );
+
+        assert_eq!(
+            apply_meta_referrer_policies(&dom, ReferrerPolicy::UnsafeUrl),
+            ReferrerPolicy::Origin
+        );
+    }
+
+    #[test]
+    fn live_meta_after_template_still_updates_policy() {
+        let dom = parse_html(
+            r#"<html><head>
+                <meta name="referrer" content="origin">
+                <template>
+                    <meta name="referrer" content="no-referrer">
+                </template>
+                <meta name="referrer" content="strict-origin">
+            </head></html>"#,
+        );
+
+        assert_eq!(
+            apply_meta_referrer_policies(&dom, ReferrerPolicy::UnsafeUrl),
+            ReferrerPolicy::StrictOrigin
         );
     }
 }
