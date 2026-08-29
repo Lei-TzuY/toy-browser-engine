@@ -1,5 +1,6 @@
-use browser_engine::{DocumentReferrerContext, FetchResponse, ReferrerPolicy, Url};
 use browser_engine::html::parse_html;
+use browser_engine::net::FetchResponse;
+use browser_engine::{DocumentReferrerContext, ReferrerPolicy, Url};
 
 fn response(url: &str, policy: Option<&str>) -> FetchResponse {
     let mut response = FetchResponse::synthetic(
