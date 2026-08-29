@@ -29,7 +29,7 @@ fn planner_exposes_fetch_redirect_status_set_only() {
 }
 
 #[test]
-fn 303_preserves_head_but_rewrites_put_to_get() {
+fn status_303_preserves_head_but_rewrites_put_to_get() {
     let head = FetchRequest::new(
         Url::parse("http://example.test/a").unwrap(),
         Method::Head,
@@ -63,7 +63,7 @@ fn 303_preserves_head_but_rewrites_put_to_get() {
 }
 
 #[test]
-fn 301_and_302_only_rewrite_post() {
+fn status_301_and_302_only_rewrite_post() {
     for status in [301, 302] {
         let put = FetchRequest::new(
             Url::parse("http://example.test/a").unwrap(),
