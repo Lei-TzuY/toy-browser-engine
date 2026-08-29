@@ -7,8 +7,10 @@
 //! browser policy from a serialized `Referer` header.
 
 use crate::cookie_same_site::SameSiteRequestContext;
+use crate::dom::Node;
 use crate::navigation_network::NavigationNetwork;
 use crate::net::{FetchError, FetchRequest, FetchResponse, Url};
+use crate::referrer_meta::apply_meta_referrer_policies;
 use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 
 /// Referrer state owned by one committed document.
@@ -53,6 +55,20 @@ impl DocumentReferrerContext {
         )
     }
 
+    /// Build committed-document state after the response body has been parsed.
+    ///
+    /// The response header establishes the document's initial policy container
+    /// value. Parsed `<meta name="referrer">` elements then update that policy
+    /// in document insertion order, matching HTML's metadata processing model.
+    /// Invalid or empty meta values leave the current policy unchanged.
+    pub fn from_response_and_document(response: &FetchResponse, document: &Node) -> Self {
+        let header_policy = ReferrerPolicy::from_response(response).unwrap_or_default();
+        Self::new(
+            Some(response.url.clone()),
+            apply_meta_referrer_policies(document, header_policy),
+        )
+    }
+
     pub fn source(&self) -> Option<&Url> {
         self.source.as_ref()
     }
@@ -92,6 +108,7 @@ impl DocumentReferrerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::html::parse_html;
     use crate::net::FetchResponse;
 
     fn url(input: &str) -> Url {
@@ -132,5 +149,22 @@ mod tests {
 
         let context = DocumentReferrerContext::from_response(&response);
         assert_eq!(context.policy(), ReferrerPolicy::default());
+    }
+
+    #[test]
+    fn parsed_meta_policy_overrides_response_header_for_committed_document() {
+        let mut response = FetchResponse::synthetic(
+            url("https://example.test/final"),
+            200,
+            Some("text/html"),
+            Vec::new(),
+        );
+        response.headers.append_raw("referrer-policy", "origin");
+        let dom = parse_html(
+            r#"<html><head><meta name="referrer" content="no-referrer"></head></html>"#,
+        );
+
+        let context = DocumentReferrerContext::from_response_and_document(&response, &dom);
+        assert_eq!(context.policy(), ReferrerPolicy::NoReferrer);
     }
 }
