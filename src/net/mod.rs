@@ -8,7 +8,26 @@
 //  [`MemoryLoader`], the CLI hands it a [`DefaultLoader`], and an embedder
 //  could add caching or a TLS transport without touching the pipeline.
 
-pub mod fetch;
+#[path = "fetch.rs"]
+mod fetch_core;
+mod readiness;
+
+/// Public Fetch/network surface.
+///
+/// The protocol/runtime vocabulary comes directly from the private core, while
+/// the worker-backed network types are exported through completion-aware
+/// wrappers. Keeping the raw worker implementation private prevents callers of
+/// either `net::ThreadedNetwork` or `net::fetch::ThreadedNetwork` from bypassing
+/// the readiness invariant.
+pub mod fetch {
+    pub use super::fetch_core::{
+        reason_phrase, FetchCompletion, FetchError, FetchId, FetchRegistry, FetchRequest,
+        FetchResponse, HeaderError, HeaderMap, LocalNetwork, ManualNetwork, Method,
+        NetworkBackend, OfflineNetwork, Origin, MAX_IN_FLIGHT_FETCHES,
+    };
+    pub use super::readiness::{DefaultNetwork, ThreadedNetwork};
+}
+
 pub mod http;
 pub mod url;
 
