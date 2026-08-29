@@ -86,23 +86,85 @@ impl NavigationNetwork {
     }
 
     /// Load the first document in a fresh Browser session while retaining
-    /// protocol response metadata.
+    /// protocol response metadata and, when the loader opts in, following each
+    /// redirect above Cookie/HSTS policy.
     ///
-    /// There is no initiator/request-site context or preexisting session cookie
-    /// at this point, so this path deliberately does not synthesize a Cookie
-    /// header. It does apply any supplied HSTS cache state and, crucially,
-    /// absorbs Set-Cookie/STS before the returned HTML can run bootstrap script.
-    /// `ResourceLoader::load_response` keeps legacy `load()` semantics for
-    /// embedders that do not opt in to response metadata.
+    /// The first request deliberately carries no Cookie header: a Browser
+    /// session is created immediately before this call and therefore has no
+    /// initiator/request-site cookie context. An intermediate response may,
+    /// however, set a cookie or teach HSTS; those effects are absorbed before
+    /// the next Location is dispatched.
     ///
-    /// Initial-load redirect orchestration remains separate because preserving
-    /// the legacy `load()` error contract requires a one-hop load-response
-    /// primitive in addition to `fetch_once()`.
+    /// Arbitrary embedders remain source-compatible. If the loader does not
+    /// advertise [`ResourceLoader::load_response_once`], this method falls back
+    /// to the established `load_response()` behavior exactly as before.
     pub fn load_initial(&self, url: &Url) -> Result<FetchResponse, LoadError> {
         let effective_url = self.effective_url(url);
-        let mut response = self.loader.load_response(&effective_url)?;
-        self.absorb_response(&mut response);
-        Ok(response)
+        let first_request = FetchRequest::get(effective_url.clone());
+
+        let Some(first_response) = self.loader.load_response_once(&first_request)? else {
+            let mut response = self.loader.load_response(&effective_url)?;
+            self.absorb_response(&mut response);
+            return Ok(response);
+        };
+
+        self.follow_initial_redirects(first_request, first_response)
+    }
+
+    fn follow_initial_redirects(
+        &self,
+        mut current: FetchRequest,
+        mut response: FetchResponse,
+    ) -> Result<FetchResponse, LoadError> {
+        let mut planner = RedirectPlanner::default();
+        let mut chain_same_site = true;
+
+        loop {
+            // Initial response state must become browser-visible before Location
+            // is acted upon. A redirect-set cookie or STS rule can therefore
+            // affect the immediately-following request.
+            self.absorb_response(&mut response);
+
+            let next = planner
+                .next_request(&current, &response)
+                .map_err(load_error_from_redirect)?;
+            let Some(mut next) = next else {
+                if !response.ok() {
+                    return Err(LoadError::HttpStatus {
+                        url: response.url.to_string(),
+                        status: response.status,
+                    });
+                }
+                if planner.followed() > 0 {
+                    response.redirected = true;
+                }
+                return Ok(response);
+            };
+
+            let next_effective = self.effective_url(&next.url);
+            chain_same_site = chain_same_site
+                && conservative_same_site(&current.url, &next_effective);
+            next.url = next_effective;
+
+            let context = SameSiteRequestContext::new(chain_same_site, true, next.method);
+            let effective = self.prepare_request(&next, context);
+            let request_url = effective.url.clone();
+            current = effective;
+
+            response = match self.loader.load_response_once(&current)? {
+                Some(response) => response,
+                None => {
+                    // Once a loader has opted into a one-hop chain, silently
+                    // dropping back to an internally-following path would skip
+                    // Cookie/HSTS policy on any later redirects. Fail closed
+                    // instead of weakening the browser policy boundary.
+                    return Err(LoadError::Io {
+                        url: request_url.to_string(),
+                        message: "loader stopped advertising single-hop document responses during redirect chain".to_string(),
+                    });
+                }
+            };
+        }
     }
 
     /// Perform a synchronous top-level request through browser session policy,
@@ -240,6 +302,14 @@ fn fetch_error_from_redirect(error: RedirectError) -> FetchError {
         RedirectError::InvalidLocation(location) => FetchError::InvalidUrl(location),
         RedirectError::UnsupportedScheme(scheme) => FetchError::UnsupportedScheme(scheme),
         RedirectError::TooManyRedirects(url) => FetchError::TooManyRedirects(url),
+    }
+}
+
+fn load_error_from_redirect(error: RedirectError) -> LoadError {
+    match error {
+        RedirectError::InvalidLocation(location) => LoadError::InvalidUrl(location),
+        RedirectError::UnsupportedScheme(scheme) => LoadError::UnsupportedScheme(scheme),
+        RedirectError::TooManyRedirects(url) => LoadError::TooManyRedirects(url),
     }
 }
 
