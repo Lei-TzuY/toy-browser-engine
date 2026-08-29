@@ -126,13 +126,9 @@ impl Browser {
     ) -> Result<Browser, LoadError> {
         let pool: Rc<RefCell<HashMap<String, StorageRef>>> =
             Rc::new(RefCell::new(HashMap::new()));
-        let origin = format!("{}://{}", url.scheme(), url.host());
-        let storage = pool
-            .borrow_mut()
-            .entry(origin)
-            .or_insert_with(|| Rc::new(RefCell::new(Vec::new())))
-            .clone();
 
+        // Session policy must exist before the first HTTP response arrives so
+        // Set-Cookie/HSTS are visible to bootstrap scripts on the first page.
         let session_network = SessionNetwork::with_new_state(transport, clock.clone());
         let cookie_jar = session_network.cookie_jar();
         let hsts_cache = session_network.hsts_cache();
@@ -142,13 +138,24 @@ impl Browser {
             hsts_cache,
             clock.clone(),
         );
+        let initial = navigation.load_initial(url)?;
+        let final_url = initial.url.clone();
+        let origin = format!("{}://{}", final_url.scheme(), final_url.host());
+        let storage = pool
+            .borrow_mut()
+            .entry(origin)
+            .or_insert_with(|| Rc::new(RefCell::new(Vec::new())))
+            .clone();
+
         let network: Rc<dyn NetworkBackend> = Rc::new(session_network);
-        let mut document = Document::load_with_session_state(
-            url,
+        let html = String::from_utf8_lossy(&initial.body);
+        let mut document = Document::from_html_with_session_state(
+            &html,
+            &final_url,
             loader.as_ref(),
             Some(storage),
             Some(cookie_jar.clone()),
-        )?;
+        );
         document.set_network(network.clone());
         let epoch = clock.now_ms();
         Ok(Browser {
