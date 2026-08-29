@@ -28,7 +28,10 @@ fn redirect_state_survives_origin_only_serialization_and_can_recompute_from_sour
 
     let mut first = FetchRequest::get(url("https://redirect.test/start"));
     state.prepare_request(&mut first);
-    assert_eq!(first.headers.get("referer"), Some("https://source.test/"));
+    assert_eq!(
+        first.headers.get("referer"),
+        Some("https://source.test/".to_string())
+    );
 
     // First redirect keeps only the origin. The state must not replace its
     // stable source URL with that serialized header value.
@@ -44,7 +47,7 @@ fn redirect_state_survives_origin_only_serialization_and_can_recompute_from_sour
     // source URL is available again under same-origin policy.
     assert_eq!(
         second.headers.get("referer"),
-        Some("https://source.test/private/path?q=secret")
+        Some("https://source.test/private/path?q=secret".to_string())
     );
 }
 
@@ -85,5 +88,8 @@ fn unknown_policy_tokens_do_not_destroy_existing_redirect_policy() {
 
     let mut request = FetchRequest::get(url("https://target.test/next"));
     state.prepare_request(&mut request);
-    assert_eq!(request.headers.get("referer"), Some("https://source.test/"));
+    assert_eq!(
+        request.headers.get("referer"),
+        Some("https://source.test/".to_string())
+    );
 }
