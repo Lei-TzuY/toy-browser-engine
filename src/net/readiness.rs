@@ -9,7 +9,10 @@
 // network.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::fetch_core::{FetchCompletion, FetchId, FetchRequest, NetworkBackend};
@@ -33,6 +36,10 @@ impl<N: NetworkBackend> CompletionAware<N> {
             inner,
             ready: RefCell::new(Vec::new()),
         }
+    }
+
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        self.inner.start(id, request);
     }
 
     fn poll(&self) -> Vec<FetchCompletion> {
@@ -73,22 +80,157 @@ impl<N: NetworkBackend> CompletionAware<N> {
     }
 }
 
+/// Worker backend that deliberately performs one `ResourceLoader::fetch_once`
+/// exchange per started request.
+///
+/// This is kept separate from the legacy redirect-following core so adding the
+/// single-hop capability cannot silently change existing `ThreadedNetwork::new`
+/// callers. Redirect orchestration can opt in explicitly and observe 3xx
+/// responses while keeping blocking I/O off the browser thread.
+struct SingleHopCore {
+    loader: Arc<dyn ResourceLoader>,
+    sender: Sender<FetchCompletion>,
+    receiver: Receiver<FetchCompletion>,
+    ready: RefCell<Vec<FetchCompletion>>,
+    cancelled: RefCell<HashSet<FetchId>>,
+    workers: RefCell<Vec<JoinHandle<()>>>,
+}
+
+impl SingleHopCore {
+    fn new(loader: Arc<dyn ResourceLoader>) -> Self {
+        let (sender, receiver) = channel();
+        Self {
+            loader,
+            sender,
+            receiver,
+            ready: RefCell::new(Vec::new()),
+            cancelled: RefCell::new(HashSet::new()),
+            workers: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn reap(&self) {
+        self.workers
+            .borrow_mut()
+            .retain(|handle| !handle.is_finished());
+    }
+}
+
+impl NetworkBackend for SingleHopCore {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        let loader = self.loader.clone();
+        let sender = self.sender.clone();
+        let worker = std::thread::spawn(move || {
+            let result = loader.fetch_once(&request);
+            let _ = sender.send(FetchCompletion { id, result });
+        });
+        self.workers.borrow_mut().push(worker);
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        self.reap();
+        let mut arrived = std::mem::take(&mut *self.ready.borrow_mut());
+        arrived.extend(self.receiver.try_iter());
+        let mut cancelled = self.cancelled.borrow_mut();
+        arrived
+            .into_iter()
+            .filter(|completion| !cancelled.remove(&completion.id))
+            .collect()
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.cancelled.borrow_mut().insert(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.reap();
+        !self.workers.borrow().is_empty() || !self.ready.borrow().is_empty()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        match self.receiver.recv_timeout(timeout) {
+            Ok(completion) => {
+                self.ready.borrow_mut().push(completion);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+enum ThreadedBackend {
+    Follow(CompletionAware<fetch_core::ThreadedNetwork>),
+    SingleHop(CompletionAware<SingleHopCore>),
+}
+
+impl ThreadedBackend {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        match self {
+            ThreadedBackend::Follow(backend) => backend.start(id, request),
+            ThreadedBackend::SingleHop(backend) => backend.start(id, request),
+        }
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        match self {
+            ThreadedBackend::Follow(backend) => backend.poll(),
+            ThreadedBackend::SingleHop(backend) => backend.poll(),
+        }
+    }
+
+    fn cancel(&self, id: FetchId) {
+        match self {
+            ThreadedBackend::Follow(backend) => backend.cancel(id),
+            ThreadedBackend::SingleHop(backend) => backend.cancel(id),
+        }
+    }
+
+    fn is_busy(&self) -> bool {
+        match self {
+            ThreadedBackend::Follow(backend) => backend.is_busy(),
+            ThreadedBackend::SingleHop(backend) => backend.is_busy(),
+        }
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        match self {
+            ThreadedBackend::Follow(backend) => backend.wait(timeout),
+            ThreadedBackend::SingleHop(backend) => backend.wait(timeout),
+        }
+    }
+}
+
 /// Public threaded backend with race-free ready/busy observation.
 pub struct ThreadedNetwork {
-    backend: CompletionAware<fetch_core::ThreadedNetwork>,
+    backend: ThreadedBackend,
 }
 
 impl ThreadedNetwork {
+    /// Create the legacy redirect-following threaded backend.
     pub fn new(loader: Arc<dyn ResourceLoader>) -> Self {
         Self {
-            backend: CompletionAware::new(fetch_core::ThreadedNetwork::new(loader)),
+            backend: ThreadedBackend::Follow(CompletionAware::new(
+                fetch_core::ThreadedNetwork::new(loader),
+            )),
+        }
+    }
+
+    /// Create a threaded backend that performs exactly one loader exchange.
+    ///
+    /// HTTP 301/302/303/307/308 responses remain visible to the caller instead
+    /// of being consumed inside the loader. This is the asynchronous primitive
+    /// used by higher redirect layers that need to run Cookie/HSTS/referrer
+    /// policy between hops.
+    pub fn new_single_hop(loader: Arc<dyn ResourceLoader>) -> Self {
+        Self {
+            backend: ThreadedBackend::SingleHop(CompletionAware::new(SingleHopCore::new(loader))),
         }
     }
 }
 
 impl NetworkBackend for ThreadedNetwork {
     fn start(&self, id: FetchId, request: FetchRequest) {
-        self.backend.inner.start(id, request);
+        self.backend.start(id, request);
     }
 
     fn poll(&self) -> Vec<FetchCompletion> {
@@ -126,7 +268,7 @@ impl DefaultNetwork {
 
 impl NetworkBackend for DefaultNetwork {
     fn start(&self, id: FetchId, request: FetchRequest) {
-        self.backend.inner.start(id, request);
+        self.backend.start(id, request);
     }
 
     fn poll(&self) -> Vec<FetchCompletion> {
