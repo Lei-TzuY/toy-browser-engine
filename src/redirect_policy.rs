@@ -11,6 +11,12 @@ use std::fmt;
 
 use crate::net::{FetchRequest, FetchResponse, Method, Url};
 
+/// Fetch's normative maximum number of followed HTTP redirects for one request.
+///
+/// The Fetch Standard's HTTP-redirect fetch algorithm returns a network error
+/// when the redirect count is already 20 before accepting another redirect.
+pub const FETCH_MAX_REDIRECTS: u8 = 20;
+
 /// Error produced while constructing a redirect hop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedirectError {
@@ -40,6 +46,10 @@ impl std::error::Error for RedirectError {}
 
 /// Stateful planner for one redirect chain.
 ///
+/// `Default` uses Fetch's normative 20-redirect limit. `new` remains available
+/// for deterministic tests and embedders that intentionally impose a tighter
+/// policy.
+///
 /// The planner deliberately does not preserve browser-derived `Cookie` or
 /// `Referer` headers across hops. Both values depend on the destination URL and
 /// must be recomputed by the browser policy layer before the next dispatch.
@@ -47,6 +57,12 @@ impl std::error::Error for RedirectError {}
 pub struct RedirectPlanner {
     max_redirects: u8,
     followed: u8,
+}
+
+impl Default for RedirectPlanner {
+    fn default() -> Self {
+        Self::new(FETCH_MAX_REDIRECTS)
+    }
 }
 
 impl RedirectPlanner {
@@ -57,9 +73,20 @@ impl RedirectPlanner {
         }
     }
 
+    /// Configured redirect limit for this chain.
+    pub fn max_redirects(&self) -> u8 {
+        self.max_redirects
+    }
+
     /// Number of redirects already accepted in this chain.
     pub fn followed(&self) -> u8 {
         self.followed
+    }
+
+    /// Number of redirects that can still be accepted before the next redirect
+    /// becomes `TooManyRedirects`.
+    pub fn remaining(&self) -> u8 {
+        self.max_redirects.saturating_sub(self.followed)
     }
 
     /// Return the request for the next hop, or `None` when `response` is not a
@@ -206,6 +233,14 @@ mod tests {
     }
 
     #[test]
+    fn default_planner_uses_fetch_twenty_redirect_limit() {
+        let planner = RedirectPlanner::default();
+        assert_eq!(planner.max_redirects(), FETCH_MAX_REDIRECTS);
+        assert_eq!(planner.followed(), 0);
+        assert_eq!(planner.remaining(), FETCH_MAX_REDIRECTS);
+    }
+
+    #[test]
     fn post_302_becomes_get_and_drops_body_metadata() {
         let original = request("http://example.test/start", Method::Post);
         let mut planner = RedirectPlanner::new(5);
@@ -259,6 +294,7 @@ mod tests {
         let mut planner = RedirectPlanner::new(1);
         let next = planner.next_request(&original, &redirect).unwrap().unwrap();
         assert_eq!(planner.followed(), 1);
+        assert_eq!(planner.remaining(), 0);
         assert_eq!(
             planner.next_request(&next, &redirect),
             Err(RedirectError::TooManyRedirects(next.url.to_string()))
