@@ -12,6 +12,7 @@ pub mod core {
 
 pub use core::{Diagnostic, LoopReport, PageAction, PointerState, UA_STYLESHEET};
 
+use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 
 use crate::cookie_network::CookieJarRef;
@@ -21,7 +22,8 @@ use crate::navigation_network::NavigationNetwork;
 use crate::net::{FetchRequest, FetchResponse, LoadError, Method, ResourceLoader, Url};
 use crate::referrer_meta::apply_meta_referrer_policies;
 use crate::referrer_policy::ReferrerPolicy;
-use crate::script::interp::StorageRef;
+use crate::script::interp::{EventInit, EventOutcome, StorageRef};
+use crate::script::NodePath;
 
 /// One loaded page plus policy state that survives beyond bootstrap.
 ///
@@ -32,6 +34,11 @@ use crate::script::interp::StorageRef;
 pub struct Document {
     inner: core::Document,
     referrer_context: DocumentReferrerContext,
+    /// Failed policy-aware image fetches are remembered independently of the
+    /// legacy ImageCache internals, whose public insertion API accepts only
+    /// successful decodes. This keeps dynamic refresh from retrying a known
+    /// CORS/network/decode failure every time an event mutates the DOM.
+    failed_policy_images: HashSet<String>,
 }
 
 impl Deref for Document {
@@ -56,6 +63,14 @@ impl Document {
         let dom = crate::html::parse_html(html);
         let policy = apply_meta_referrer_policies(&dom, ReferrerPolicy::default());
         DocumentReferrerContext::new(Some(url.clone()), policy)
+    }
+
+    fn wrap(inner: core::Document, referrer_context: DocumentReferrerContext) -> Document {
+        Document {
+            inner,
+            referrer_context,
+            failed_policy_images: HashSet::new(),
+        }
     }
 
     /// Fetch `url` and everything it references.
@@ -92,10 +107,7 @@ impl Document {
     ) -> Document {
         let referrer_context = Self::context_from_html(html, url);
         let inner = core::Document::from_html_with_storage(html, url, loader, storage);
-        Document {
-            inner,
-            referrer_context,
-        }
+        Self::wrap(inner, referrer_context)
     }
 
     /// Fetch a document while installing caller-owned session state before
@@ -133,10 +145,7 @@ impl Document {
             storage,
             cookie_jar,
         );
-        Document {
-            inner,
-            referrer_context,
-        }
+        Self::wrap(inner, referrer_context)
     }
 
     /// Build a browser-session document from the final navigation response.
@@ -161,15 +170,40 @@ impl Document {
             storage,
             cookie_jar,
         );
-        Document {
-            inner,
-            referrer_context,
-        }
+        Self::wrap(inner, referrer_context)
     }
 
     /// Referrer source and policy owned by this committed document.
     pub fn referrer_context(&self) -> &DocumentReferrerContext {
         &self.referrer_context
+    }
+
+    /// Dispatch through the runtime while borrowing `runtime` and `dom` as
+    /// disjoint fields of the inner core document.
+    ///
+    /// Callers that only see the facade cannot express this split borrow via
+    /// DerefMut: the dereference itself borrows the entire facade. Keeping the
+    /// operation here preserves the safe field-level borrow the core type had.
+    pub(crate) fn dispatch_runtime_event(
+        &mut self,
+        path: &NodePath,
+        event_type: &str,
+    ) -> EventOutcome {
+        self.inner
+            .runtime
+            .dispatch_event(&mut self.inner.dom, path, event_type)
+    }
+
+    /// Event-dispatch variant with an explicit event initializer.
+    pub(crate) fn dispatch_runtime_event_init(
+        &mut self,
+        path: &NodePath,
+        event_type: &str,
+        init: EventInit,
+    ) -> EventOutcome {
+        self.inner
+            .runtime
+            .dispatch_event_init(&mut self.inner.dom, path, event_type, init)
     }
 
     /// Refresh images added after bootstrap using the committed document policy.
@@ -187,7 +221,11 @@ impl Document {
                 });
                 continue;
             };
-            if self.inner.images.get(&url).is_some() || self.inner.images.error(&url).is_some() {
+            let key = url.without_fragment().to_string();
+            if self.inner.images.get(&url).is_some()
+                || self.inner.images.error(&url).is_some()
+                || self.failed_policy_images.contains(&key)
+            {
                 continue;
             }
 
@@ -220,7 +258,7 @@ impl Document {
             match outcome {
                 Ok(image) => self.inner.images.insert(&url, image),
                 Err(message) => {
-                    self.inner.images.insert_failure(&url, message.clone());
+                    self.failed_policy_images.insert(key);
                     self.inner.diagnostics.push(Diagnostic {
                         url: url.to_string(),
                         message,
