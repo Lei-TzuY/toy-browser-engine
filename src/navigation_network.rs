@@ -17,22 +17,25 @@ use crate::hsts_network::HstsCacheRef;
 use crate::net::{
     FetchError, FetchRequest, FetchResponse, LoadError, Method, ResourceLoader, Url,
 };
+use crate::redirect_policy::{RedirectError, RedirectPlanner};
 
 /// Synchronous navigation-side companion to [`crate::session_network::SessionNetwork`].
 ///
-/// Both layers can share the same CookieJar and HSTS cache. The ordering is
-/// deliberately identical to the asynchronous stack:
+/// Both layers can share the same CookieJar and HSTS cache. Each visible
+/// top-level request — including every accepted redirect hop — is processed in
+/// this order:
 ///
 /// 1. apply learned HSTS to the outgoing URL;
-/// 2. select cookies against that effective URL and the caller-supplied
-///    SameSite/top-level context;
-/// 3. dispatch through ResourceLoader::fetch;
+/// 2. select cookies against that effective URL and the caller/chain SameSite
+///    top-level context;
+/// 3. dispatch one [`ResourceLoader::fetch_once`] exchange;
 /// 4. absorb response Set-Cookie fields;
-/// 5. learn the first Strict-Transport-Security response field.
+/// 5. learn the first Strict-Transport-Security response field;
+/// 6. plan the next redirect request, if any, and repeat policy from step 1.
 ///
-/// The caller owns request classification. This module does not guess whether
-/// two URLs are same-site, which keeps public-suffix/site policy out of the
-/// transport primitive.
+/// The caller owns initial request classification. Redirects then preserve a
+/// conservative chain status: once any hop leaves the initial exact
+/// scheme+host site, later hops remain cross-site for SameSite enforcement.
 pub struct NavigationNetwork {
     loader: Arc<dyn ResourceLoader>,
     cookie_jar: CookieJarRef,
@@ -91,6 +94,10 @@ impl NavigationNetwork {
     /// absorbs Set-Cookie/STS before the returned HTML can run bootstrap script.
     /// `ResourceLoader::load_response` keeps legacy `load()` semantics for
     /// embedders that do not opt in to response metadata.
+    ///
+    /// Initial-load redirect orchestration remains separate because preserving
+    /// the legacy `load()` error contract requires a one-hop load-response
+    /// primitive in addition to `fetch_once()`.
     pub fn load_initial(&self, url: &Url) -> Result<FetchResponse, LoadError> {
         let effective_url = self.effective_url(url);
         let mut response = self.loader.load_response(&effective_url)?;
@@ -98,12 +105,70 @@ impl NavigationNetwork {
         Ok(response)
     }
 
-    /// Perform one synchronous top-level request through browser session policy.
+    /// Perform a synchronous top-level request through browser session policy,
+    /// following HTTP redirects above Cookie/HSTS policy rather than inside the
+    /// transport.
     pub fn fetch(
         &self,
         request: &FetchRequest,
         context: SameSiteRequestContext,
     ) -> Result<FetchResponse, FetchError> {
+        let mut planner = RedirectPlanner::default();
+        let mut current = request.clone();
+        let mut hop_context = SameSiteRequestContext::new(
+            context.same_site,
+            context.top_level_navigation,
+            current.method,
+        );
+
+        loop {
+            let effective = self.prepare_request(&current, hop_context);
+            let mut response = self.loader.fetch_once(&effective)?;
+
+            // Response state becomes browser-visible before Location is acted
+            // upon, so an intermediate Set-Cookie/STS field can influence the
+            // very next hop.
+            self.absorb_response(&mut response);
+
+            let next = planner
+                .next_request(&effective, &response)
+                .map_err(fetch_error_from_redirect)?;
+            let Some(mut next) = next else {
+                if planner.followed() > 0 {
+                    response.redirected = true;
+                }
+                return Ok(response);
+            };
+
+            // SameSite is schemeful. Classify the URL after learned HSTS has
+            // transformed it, matching Browser's first-hop classification.
+            let next_effective = self.effective_url(&next.url);
+            let chain_same_site = hop_context.same_site
+                && conservative_same_site(&effective.url, &next_effective);
+            next.url = next_effective;
+            hop_context = SameSiteRequestContext::new(
+                chain_same_site,
+                hop_context.top_level_navigation,
+                next.method,
+            );
+            current = next;
+        }
+    }
+
+    /// Convenience GET used by ordinary navigation/reload/history loads.
+    pub fn get(
+        &self,
+        url: &Url,
+        context: SameSiteRequestContext,
+    ) -> Result<FetchResponse, FetchError> {
+        self.fetch(&FetchRequest::get(url.clone()), context)
+    }
+
+    fn prepare_request(
+        &self,
+        request: &FetchRequest,
+        context: SameSiteRequestContext,
+    ) -> FetchRequest {
         let mut effective = request.clone();
         effective.url = self.effective_url(&effective.url);
 
@@ -114,24 +179,17 @@ impl NavigationNetwork {
             if let Some(value) = self.cookie_jar.borrow().get_http_cookie_header_for_context(
                 &effective.url,
                 self.now_ms(),
-                context,
+                SameSiteRequestContext::new(
+                    context.same_site,
+                    context.top_level_navigation,
+                    effective.method,
+                ),
             ) {
                 effective.headers.insert_raw("cookie", &value);
             }
         }
 
-        let mut response = self.loader.fetch(&effective)?;
-        self.absorb_response(&mut response);
-        Ok(response)
-    }
-
-    /// Convenience GET used by ordinary navigation/reload/history loads.
-    pub fn get(
-        &self,
-        url: &Url,
-        context: SameSiteRequestContext,
-    ) -> Result<FetchResponse, FetchError> {
-        self.fetch(&FetchRequest::get(url.clone()), context)
+        effective
     }
 
     fn absorb_response(&self, response: &mut FetchResponse) {
@@ -170,6 +228,18 @@ impl NavigationNetwork {
                 .borrow_mut()
                 .observe_response(&response.url, &value, now_ms);
         }
+    }
+}
+
+fn conservative_same_site(source: &Url, target: &Url) -> bool {
+    source.scheme() == target.scheme() && source.host().eq_ignore_ascii_case(target.host())
+}
+
+fn fetch_error_from_redirect(error: RedirectError) -> FetchError {
+    match error {
+        RedirectError::InvalidLocation(location) => FetchError::InvalidUrl(location),
+        RedirectError::UnsupportedScheme(scheme) => FetchError::UnsupportedScheme(scheme),
+        RedirectError::TooManyRedirects(url) => FetchError::TooManyRedirects(url),
     }
 }
 
