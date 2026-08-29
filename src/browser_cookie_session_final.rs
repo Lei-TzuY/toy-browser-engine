@@ -148,11 +148,9 @@ impl Browser {
             .clone();
 
         let network: Rc<dyn NetworkBackend> = Rc::new(session_network);
-        let html = String::from_utf8_lossy(&initial.body);
-        let mut document = Document::from_html_with_session_state(
-            &html,
-            &final_url,
-            loader.as_ref(),
+        let mut document = Document::from_response_with_session_subresources(
+            &initial,
+            &navigation,
             Some(storage),
             Some(cookie_jar.clone()),
         );
@@ -233,12 +231,10 @@ impl Browser {
         }
 
         let final_url = response.url.clone();
-        let html = String::from_utf8_lossy(&response.body);
         let storage = self.storage_for_url(&final_url);
-        let document = Document::from_html_with_session_state(
-            &html,
-            &final_url,
-            self.loader.as_ref(),
+        let document = Document::from_response_with_session_subresources(
+            &response,
+            &self.navigation,
             Some(storage),
             Some(self.cookie_jar.clone()),
         );
@@ -355,9 +351,11 @@ impl Browser {
         // rather than waiting for the next turn of the loop: a promise
         // resolved in a click handler settles before the click returns.
         self.document.run_microtask_checkpoint();
-        // Handlers may have added images or rewritten the page.
+        // Handlers may have added images or rewritten the page. Keep those
+        // loads above the same CORS/credential boundary as parser-time images.
         if outcome.dispatched {
-            self.document.refresh_images(self.loader.as_ref());
+            self.document
+                .refresh_images_with_subresource_policy(&self.navigation);
         }
         if let Some(submission) = submitted {
             // `form.submit()` is the programmatic path: by design it bypasses
@@ -745,12 +743,10 @@ impl Browser {
         match self.navigation.fetch(&request, context) {
             Ok(response) if response.ok() => {
                 let final_url = response.url.clone();
-                let html = String::from_utf8_lossy(&response.body);
                 let storage = self.storage_for_url(&final_url);
-                let document = Document::from_html_with_session_state(
-                    &html,
-                    &final_url,
-                    self.loader.as_ref(),
+                let document = Document::from_response_with_session_subresources(
+                    &response,
+                    &self.navigation,
                     Some(storage),
                     Some(self.cookie_jar.clone()),
                 );
