@@ -5,22 +5,24 @@
 //! the browser owns `Origin`, anonymous CORS uses same-origin credentials, and
 //! `use-credentials` permits cross-origin credentials subject to cookie policy.
 
+use crate::cookie_same_site::SameSiteRequestContext;
 use crate::cors_settings::{
     parse_cors_settings_attribute, CorsCredentialsMode, CorsSettingsAttribute,
 };
-use crate::cookie_same_site::SameSiteRequestContext;
+use crate::cross_origin_resource_policy::validate_cross_origin_resource_policy;
 use crate::document_referrer::DocumentReferrerContext;
 use crate::navigation_network::{NavigationNetwork, NetworkCredentialsMode};
 use crate::net::{FetchError, FetchRequest, FetchResponse, Origin};
 use crate::subresource_cors::validate_subresource_cors_response;
 
 impl DocumentReferrerContext {
-    /// Fetch a CORS-aware element subresource with request credential semantics.
+    /// Fetch an element subresource with CORS/CORP and request credential semantics.
     ///
     /// This is the credential-aware companion to
     /// [`DocumentReferrerContext::fetch_subresource_with_cors`]. A missing
-    /// `crossorigin` attribute preserves the established no-CORS path. When the
-    /// attribute is present:
+    /// `crossorigin` attribute preserves the established no-CORS request path,
+    /// then applies the response resource's Cross-Origin-Resource-Policy before
+    /// exposing its body. When `crossorigin` is present:
     ///
     /// - the browser replaces any authored `Origin` header with the committed
     ///   document origin;
@@ -31,6 +33,10 @@ impl DocumentReferrerContext {
     /// - cookie eligibility is recomputed for every redirect hop after HSTS;
     /// - `Set-Cookie` is ignored on hops where credentials are not eligible;
     /// - the final response must still pass the CORS response gate.
+    ///
+    /// CORP is intentionally checked only for the no-CORS branch. A successful
+    /// CORS protocol exchange is the resource's explicit cross-origin sharing
+    /// permission and is not rejected by this no-CORS response policy gate.
     pub fn fetch_subresource_with_cors_credentials(
         &self,
         network: &NavigationNetwork,
@@ -40,13 +46,15 @@ impl DocumentReferrerContext {
         crossorigin: Option<&str>,
     ) -> Result<FetchResponse, FetchError> {
         let Some(setting) = parse_cors_settings_attribute(crossorigin) else {
-            return self.fetch_subresource_with_cors(
+            let response = self.fetch_subresource_with_cors(
                 network,
                 request,
                 context,
                 referrerpolicy,
                 crossorigin,
-            );
+            )?;
+            validate_cross_origin_resource_policy(self.source(), context.same_site, &response)?;
+            return Ok(response);
         };
 
         let source = self.source().ok_or_else(|| {
