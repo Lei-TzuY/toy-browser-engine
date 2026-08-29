@@ -8,6 +8,7 @@
 
 use crate::cookie_same_site::SameSiteRequestContext;
 use crate::dom::Node;
+use crate::hyperlink_referrer::hyperlink_referrer_policy;
 use crate::navigation_network::NavigationNetwork;
 use crate::net::{FetchError, FetchRequest, FetchResponse, Url};
 use crate::referrer_meta::apply_meta_referrer_policies;
@@ -82,6 +83,25 @@ impl DocumentReferrerContext {
         RedirectReferrerState::new(self.source.clone(), self.policy)
     }
 
+    /// Produce per-navigation redirect state for one hyperlink activation.
+    ///
+    /// HTML hyperlink controls are resolved before the first request is
+    /// dispatched: a recognized `referrerpolicy` overrides the document's
+    /// policy, while `rel=noreferrer` suppresses the referrer regardless of
+    /// that attribute. The resulting policy then remains ordinary redirect
+    /// state, so an intermediate HTTP `Referrer-Policy` response may update it
+    /// again before the next hop.
+    pub fn hyperlink_redirect_state(
+        &self,
+        referrerpolicy: Option<&str>,
+        rel: Option<&str>,
+    ) -> RedirectReferrerState {
+        RedirectReferrerState::new(
+            self.source.clone(),
+            hyperlink_referrer_policy(self.policy, referrerpolicy, rel),
+        )
+    }
+
     /// Run one top-level navigation and return both its final response and the
     /// referrer context that should belong to that response if the caller
     /// commits it as the next document.
@@ -99,6 +119,31 @@ impl DocumentReferrerContext {
             request,
             context,
             Some(self.redirect_state()),
+        )?;
+        let next = Self::from_response(&response);
+        Ok((response, next))
+    }
+
+    /// Run one hyperlink navigation with HTML hyperlink referrer controls.
+    ///
+    /// This is the transport-facing companion to
+    /// [`crate::hyperlink_referrer::hyperlink_referrer_policy`]. It applies the
+    /// selected hyperlink policy to the first request and carries it through
+    /// redirect orchestration without mutating the committed source document.
+    /// The returned context belongs to the final response only if the caller
+    /// actually commits that response as the next document.
+    pub fn fetch_hyperlink_navigation(
+        &self,
+        network: &NavigationNetwork,
+        request: &FetchRequest,
+        context: SameSiteRequestContext,
+        referrerpolicy: Option<&str>,
+        rel: Option<&str>,
+    ) -> Result<(FetchResponse, DocumentReferrerContext), FetchError> {
+        let response = network.fetch_with_referrer(
+            request,
+            context,
+            Some(self.hyperlink_redirect_state(referrerpolicy, rel)),
         )?;
         let next = Self::from_response(&response);
         Ok((response, next))
@@ -166,5 +211,17 @@ mod tests {
 
         let context = DocumentReferrerContext::from_response_and_document(&response, &dom);
         assert_eq!(context.policy(), ReferrerPolicy::NoReferrer);
+    }
+
+    #[test]
+    fn hyperlink_state_applies_noreferrer_without_mutating_document_policy() {
+        let context = DocumentReferrerContext::new(
+            Some(url("https://source.test/private")),
+            ReferrerPolicy::UnsafeUrl,
+        );
+
+        let state = context.hyperlink_redirect_state(Some("unsafe-url"), Some("noreferrer"));
+        assert_eq!(state.policy(), ReferrerPolicy::NoReferrer);
+        assert_eq!(context.policy(), ReferrerPolicy::UnsafeUrl);
     }
 }
