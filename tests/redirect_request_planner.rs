@@ -151,3 +151,38 @@ fn zero_budget_rejects_first_real_redirect_but_not_ordinary_response() {
         ))
     );
 }
+
+#[test]
+fn location_without_fragment_inherits_current_request_fragment() {
+    let request = FetchRequest::get(
+        Url::parse("https://example.test/start#section-2").unwrap(),
+    );
+    let mut planner = RedirectPlanner::new(1);
+    let next = planner
+        .next_request(
+            &request,
+            &response("https://example.test/start", 302, Some("/next?q=1")),
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        next.url.to_string(),
+        "https://example.test/next?q=1#section-2"
+    );
+}
+
+#[test]
+fn explicit_location_fragment_replaces_inherited_fragment() {
+    let request = FetchRequest::get(Url::parse("https://example.test/start#old").unwrap());
+    let mut planner = RedirectPlanner::new(1);
+    let next = planner
+        .next_request(
+            &request,
+            &response("https://example.test/start", 302, Some("/next#new")),
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(next.url.to_string(), "https://example.test/next#new");
+}
