@@ -13,6 +13,7 @@ use crate::navigation_network::NavigationNetwork;
 use crate::net::{FetchError, FetchRequest, FetchResponse, Url};
 use crate::referrer_meta::apply_meta_referrer_policies;
 use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
+use crate::subresource_cors::validate_subresource_cors_response;
 use crate::subresource_referrer::subresource_redirect_state;
 
 /// Referrer state owned by one committed document.
@@ -182,6 +183,26 @@ impl DocumentReferrerContext {
             context,
             Some(self.subresource_redirect_state(referrerpolicy)),
         )
+    }
+
+    /// Fetch a non-document resource and apply the HTML `crossorigin` response
+    /// gate before exposing a CORS-enabled cross-origin response to the caller.
+    ///
+    /// A missing `crossorigin` attribute preserves the existing no-CORS path.
+    /// Present values use #156's HTML settings parser, while this method composes
+    /// that state with the actual network result. Referrer handling remains
+    /// independent and continues to run across every redirect hop.
+    pub fn fetch_subresource_with_cors(
+        &self,
+        network: &NavigationNetwork,
+        request: &FetchRequest,
+        context: SameSiteRequestContext,
+        referrerpolicy: Option<&str>,
+        crossorigin: Option<&str>,
+    ) -> Result<FetchResponse, FetchError> {
+        let response = self.fetch_subresource(network, request, context, referrerpolicy)?;
+        validate_subresource_cors_response(self.source.as_ref(), crossorigin, &response)?;
+        Ok(response)
     }
 }
 
