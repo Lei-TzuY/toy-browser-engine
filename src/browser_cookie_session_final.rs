@@ -246,7 +246,7 @@ impl Browser {
     /// same way a real browser jumps within the current page.
     pub fn navigate(&mut self, url: &Url) -> Result<(), LoadError> {
         let history_url = if !url.same_document(self.url()) {
-            let context = top_level_context(&self.document.url, url, Method::Get);
+            let context = top_level_context(&self.navigation, &self.document.url, url, Method::Get);
             let (document, final_url) = self.load_navigation_document(url, context)?;
             self.replace_document(document);
             final_url
@@ -323,7 +323,7 @@ impl Browser {
         if url.same_document(&self.document.url) {
             return;
         }
-        let context = top_level_context(&self.document.url, &url, Method::Get);
+        let context = top_level_context(&self.navigation, &self.document.url, &url, Method::Get);
         match self.load_navigation_document(&url, context) {
             Ok((document, _final_url)) => self.replace_document(document),
             Err(error) => self.document.diagnostics.push(crate::document::Diagnostic {
@@ -737,7 +737,12 @@ impl Browser {
             headers,
             Some(body),
         );
-        let context = top_level_context(&self.document.url, &submission.url, Method::Post);
+        let context = top_level_context(
+            &self.navigation,
+            &self.document.url,
+            &submission.url,
+            Method::Post,
+        );
 
         match self.navigation.fetch(&request, context) {
             Ok(response) if response.ok() => {
@@ -810,8 +815,18 @@ fn conservative_same_site(source: &Url, target: &Url) -> bool {
     source.scheme() == target.scheme() && source.host().eq_ignore_ascii_case(target.host())
 }
 
-fn top_level_context(source: &Url, target: &Url, method: Method) -> SameSiteRequestContext {
-    SameSiteRequestContext::new(conservative_same_site(source, target), true, method)
+fn top_level_context(
+    navigation: &NavigationNetwork,
+    source: &Url,
+    target: &Url,
+    method: Method,
+) -> SameSiteRequestContext {
+    let effective_target = navigation.effective_url(target);
+    SameSiteRequestContext::new(
+        conservative_same_site(source, &effective_target),
+        true,
+        method,
+    )
 }
 
 fn browser_key_event_init(event: &KeyEvent) -> EventInit {

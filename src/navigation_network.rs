@@ -71,6 +71,16 @@ impl NavigationNetwork {
         self.clock.now_ms().max(0.0) as u64
     }
 
+    /// The URL that browser-owned HSTS policy would dispatch right now.
+    ///
+    /// Browser uses this before constructing SameSite request context so the
+    /// site comparison observes an HSTS-upgraded scheme rather than the
+    /// authored clear-text spelling. The actual request path calls this again,
+    /// keeping transformation and dispatch policy in one place.
+    pub fn effective_url(&self, url: &Url) -> Url {
+        self.hsts_cache.borrow().upgrade_url(url, self.now_ms())
+    }
+
     /// Load the first document in a fresh Browser session while retaining
     /// protocol response metadata.
     ///
@@ -81,10 +91,7 @@ impl NavigationNetwork {
     /// `ResourceLoader::load_response` keeps legacy `load()` semantics for
     /// embedders that do not opt in to response metadata.
     pub fn load_initial(&self, url: &Url) -> Result<FetchResponse, LoadError> {
-        let effective_url = self
-            .hsts_cache
-            .borrow()
-            .upgrade_url(url, self.now_ms());
+        let effective_url = self.effective_url(url);
         let mut response = self.loader.load_response(&effective_url)?;
         self.absorb_response(&mut response);
         Ok(response)
@@ -97,10 +104,7 @@ impl NavigationNetwork {
         context: SameSiteRequestContext,
     ) -> Result<FetchResponse, FetchError> {
         let mut effective = request.clone();
-        effective.url = self
-            .hsts_cache
-            .borrow()
-            .upgrade_url(&effective.url, self.now_ms());
+        effective.url = self.effective_url(&effective.url);
 
         if matches!(effective.url.scheme(), "http" | "https") {
             // Cookie is browser-owned. A caller-supplied value must not bypass
@@ -202,6 +206,12 @@ mod tests {
         );
 
         let navigation = NavigationNetwork::new(loader, jar, hsts, clock);
+        assert_eq!(
+            navigation
+                .effective_url(&url("http://example.test/page"))
+                .to_string(),
+            "https://example.test/page"
+        );
         let response = navigation
             .get(
                 &url("http://example.test/page"),
