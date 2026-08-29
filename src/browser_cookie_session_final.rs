@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cookie_network::CookieJarRef;
+use crate::cookie_same_site::SameSiteRequestContext;
 use crate::document::{Document, LoopReport, PageAction, PointerState};
 use crate::eventloop::{Clock, RealClock};
 use crate::forms::{self, encode_form_entries, Submission, SubmissionMethod};
 use crate::input::{Key, KeyEvent};
+use crate::navigation_network::NavigationNetwork;
 use crate::net::{
     DefaultNetwork, FetchError, FetchRequest, HeaderMap, LoadError, Method, NetworkBackend,
     ResourceLoader, Url,
@@ -52,6 +54,9 @@ pub struct Browser {
     /// shows. `SessionNetwork` applies HSTS before cookie selection so Secure
     /// cookies observe the URL that actually reaches transport.
     network: Rc<dyn NetworkBackend>,
+    /// Synchronous top-level navigation policy sharing the exact CookieJar,
+    /// HSTS cache and clock used by `network`.
+    navigation: NavigationNetwork,
     /// The one cookie jar owned by this browsing session. Documents and Fetch
     /// receive the same Rc, so `document.cookie` and Set-Cookie converge.
     cookie_jar: CookieJarRef,
@@ -130,6 +135,13 @@ impl Browser {
 
         let session_network = SessionNetwork::with_new_state(transport, clock.clone());
         let cookie_jar = session_network.cookie_jar();
+        let hsts_cache = session_network.hsts_cache();
+        let navigation = NavigationNetwork::new(
+            loader.clone(),
+            cookie_jar.clone(),
+            hsts_cache,
+            clock.clone(),
+        );
         let network: Rc<dyn NetworkBackend> = Rc::new(session_network);
         let mut document = Document::load_with_session_state(
             url,
@@ -142,6 +154,7 @@ impl Browser {
         Ok(Browser {
             loader,
             network,
+            navigation,
             cookie_jar,
             history: vec![document.url.clone()],
             index: 0,
@@ -190,23 +203,51 @@ impl Browser {
         self.index + 1 < self.history.len()
     }
 
+    /// Fetch and construct one top-level HTML document through session policy.
+    fn load_navigation_document(
+        &self,
+        url: &Url,
+        context: SameSiteRequestContext,
+    ) -> Result<(Document, Url), LoadError> {
+        let response = self
+            .navigation
+            .get(url, context)
+            .map_err(|error| load_error_from_fetch(url, error))?;
+        if !response.ok() {
+            return Err(LoadError::HttpStatus {
+                url: response.url.to_string(),
+                status: response.status,
+            });
+        }
+
+        let final_url = response.url.clone();
+        let html = String::from_utf8_lossy(&response.body);
+        let storage = self.storage_for_url(&final_url);
+        let document = Document::from_html_with_session_state(
+            &html,
+            &final_url,
+            self.loader.as_ref(),
+            Some(storage),
+            Some(self.cookie_jar.clone()),
+        );
+        Ok((document, final_url))
+    }
+
     /// Navigate to `url`, pushing a history entry.
     ///
     /// A URL that differs only by fragment does not refetch the document, the
     /// same way a real browser jumps within the current page.
     pub fn navigate(&mut self, url: &Url) -> Result<(), LoadError> {
-        if !url.same_document(self.url()) {
-            let storage = self.storage_for_url(url);
-            let document = Document::load_with_session_state(
-                url,
-                self.loader.as_ref(),
-                Some(storage),
-                Some(self.cookie_jar.clone()),
-            )?;
+        let history_url = if !url.same_document(self.url()) {
+            let context = top_level_context(&self.document.url, url, Method::Get);
+            let (document, final_url) = self.load_navigation_document(url, context)?;
             self.replace_document(document);
-        }
+            final_url
+        } else {
+            url.clone()
+        };
         self.history.truncate(self.index + 1);
-        self.history.push(url.clone());
+        self.history.push(history_url);
         self.index = self.history.len() - 1;
         Ok(())
     }
@@ -223,13 +264,8 @@ impl Browser {
     /// Reload the current entry from its source.
     pub fn reload(&mut self) -> Result<(), LoadError> {
         let url = self.url().clone();
-        let storage = self.storage_for_url(&url);
-        let document = Document::load_with_session_state(
-            &url,
-            self.loader.as_ref(),
-            Some(storage),
-            Some(self.cookie_jar.clone()),
-        )?;
+        let context = SameSiteRequestContext::new(true, true, Method::Get);
+        let (document, _final_url) = self.load_navigation_document(&url, context)?;
         self.replace_document(document);
         Ok(())
     }
@@ -280,14 +316,9 @@ impl Browser {
         if url.same_document(&self.document.url) {
             return;
         }
-        let storage = self.storage_for_url(&url);
-        match Document::load_with_session_state(
-            &url,
-            self.loader.as_ref(),
-            Some(storage),
-            Some(self.cookie_jar.clone()),
-        ) {
-            Ok(document) => self.replace_document(document),
+        let context = top_level_context(&self.document.url, &url, Method::Get);
+        match self.load_navigation_document(&url, context) {
+            Ok((document, _final_url)) => self.replace_document(document),
             Err(error) => self.document.diagnostics.push(crate::document::Diagnostic {
                 url: url.to_string(),
                 message: error.to_string(),
@@ -686,11 +717,6 @@ impl Browser {
     }
 
     /// Submit a URL-encoded form body and navigate to the HTML response.
-    ///
-    /// The legacy synchronous top-level POST path still goes directly through
-    /// `ResourceLoader::fetch`; cookie-aware navigation transport is kept as a
-    /// separate follow-up. The resulting document nevertheless joins the same
-    /// session jar before any response-body script executes.
     fn perform_post_submission(&mut self, submission: Submission) -> ClickOutcome {
         let body = encode_form_entries(&submission.entries).into_bytes();
         let mut headers = HeaderMap::new();
@@ -704,8 +730,9 @@ impl Browser {
             headers,
             Some(body),
         );
+        let context = top_level_context(&self.document.url, &submission.url, Method::Post);
 
-        match self.loader.fetch(&request) {
+        match self.navigation.fetch(&request, context) {
             Ok(response) if response.ok() => {
                 let final_url = response.url.clone();
                 let html = String::from_utf8_lossy(&response.body);
@@ -764,6 +791,20 @@ impl Browser {
     ) -> crate::paint::Canvas {
         self.document.render(width, height, scroll_y, pointer)
     }
+}
+
+/// Conservative schemeful-site approximation used until the URL/security layer
+/// owns a Public Suffix List. Exact scheme+host equality is never more
+/// permissive than real schemeful same-site and therefore cannot expose a
+/// Strict/Lax cookie to a broader site than intended. Subdomains that would be
+/// same-site under registrable-domain rules are deliberately treated as
+/// cross-site for now.
+fn conservative_same_site(source: &Url, target: &Url) -> bool {
+    source.scheme() == target.scheme() && source.host().eq_ignore_ascii_case(target.host())
+}
+
+fn top_level_context(source: &Url, target: &Url, method: Method) -> SameSiteRequestContext {
+    SameSiteRequestContext::new(conservative_same_site(source, target), true, method)
 }
 
 fn browser_key_event_init(event: &KeyEvent) -> EventInit {
