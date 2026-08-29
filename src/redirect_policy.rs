@@ -35,9 +35,9 @@ impl std::error::Error for RedirectError {}
 
 /// Stateful planner for one redirect chain.
 ///
-/// The planner deliberately does not preserve `Cookie` across hops. Cookie
-/// selection depends on the destination URL's Domain/Path/Secure/SameSite
-/// context and must be re-run by the browser policy layer before dispatch.
+/// The planner deliberately does not preserve browser-derived `Cookie` or
+/// `Referer` headers across hops. Both values depend on the destination URL and
+/// must be recomputed by the browser policy layer before the next dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedirectPlanner {
     max_redirects: u8,
@@ -92,10 +92,12 @@ impl RedirectPlanner {
 
         let mut headers = request.headers.clone();
 
-        // This Cookie value was selected for `request.url`. Even a same-origin
-        // path redirect can change Path eligibility, so force the session layer
-        // to derive a fresh value for every hop.
+        // These values were selected/generated for `request.url`. Even a
+        // same-origin redirect can change Cookie Path eligibility or the
+        // referrer-policy result, so force browser policy to derive fresh
+        // values for every hop rather than replaying stale request metadata.
         headers.delete("cookie");
+        headers.delete("referer");
 
         // Origin-bound credentials must not be forwarded merely because a
         // server supplied a cross-origin Location.
@@ -162,6 +164,7 @@ mod tests {
     fn request(url: &str, method: Method) -> FetchRequest {
         let mut headers = HeaderMap::new();
         headers.insert_raw("cookie", "sid=old");
+        headers.insert_raw("referer", "https://source.test/private?q=1");
         headers.insert_raw("authorization", "Bearer secret");
         headers.insert_raw("proxy-authorization", "Basic proxy-secret");
         headers.insert_raw("content-type", "text/plain");
@@ -204,6 +207,7 @@ mod tests {
         assert_eq!(next.body, None);
         assert!(!next.headers.has("content-type"));
         assert!(!next.headers.has("cookie"));
+        assert!(!next.headers.has("referer"));
         assert!(next.headers.has("authorization"));
         assert_eq!(next.headers.get("x-keep").as_deref(), Some("yes"));
     }
@@ -228,6 +232,7 @@ mod tests {
         assert_eq!(next.body.as_deref(), Some(b"payload".as_slice()));
         assert!(next.headers.has("content-type"));
         assert!(!next.headers.has("cookie"));
+        assert!(!next.headers.has("referer"));
         assert!(!next.headers.has("authorization"));
         assert!(!next.headers.has("proxy-authorization"));
     }
