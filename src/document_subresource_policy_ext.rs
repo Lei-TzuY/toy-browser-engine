@@ -196,7 +196,7 @@ fn policy_style_sources(dom: &Node) -> Vec<PolicyStyleSource> {
         if let NodeType::Element(element) = &node.node_type {
             match element.tag_name.as_str() {
                 "style" => {
-                    let css = node
+                    let css: String = node
                         .children
                         .iter()
                         .filter_map(|child| match &child.node_type {
@@ -318,7 +318,7 @@ fn policy_script_sources(dom: &Node) -> Vec<PolicyScriptSource> {
                         });
                     }
                     _ => {
-                        let code = node
+                        let code: String = node
                             .children
                             .iter()
                             .filter_map(|child| match &child.node_type {
