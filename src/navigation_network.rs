@@ -18,6 +18,7 @@ use crate::net::{
     FetchError, FetchRequest, FetchResponse, LoadError, Method, ResourceLoader, Url,
 };
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
+use crate::referrer_policy::RedirectReferrerState;
 
 /// Synchronous navigation-side companion to [`crate::session_network::SessionNetwork`].
 ///
@@ -28,10 +29,11 @@ use crate::redirect_policy::{RedirectError, RedirectPlanner};
 /// 1. apply learned HSTS to the outgoing URL;
 /// 2. select cookies against that effective URL and the caller/chain SameSite
 ///    top-level context;
-/// 3. dispatch one [`ResourceLoader::fetch_once`] exchange;
-/// 4. absorb response Set-Cookie fields;
-/// 5. learn the first Strict-Transport-Security response field;
-/// 6. plan the next redirect request, if any, and repeat policy from step 1.
+/// 3. compute browser-owned Referer state, when the caller supplied it;
+/// 4. dispatch one [`ResourceLoader::fetch_once`] exchange;
+/// 5. absorb response Set-Cookie fields;
+/// 6. learn the first Strict-Transport-Security response field;
+/// 7. update redirect Referrer-Policy, plan the next request, and repeat.
 ///
 /// The caller owns initial request classification. Redirects then preserve a
 /// conservative chain status: once any hop leaves the initial exact
@@ -170,10 +172,32 @@ impl NavigationNetwork {
     /// Perform a synchronous top-level request through browser session policy,
     /// following HTTP redirects above Cookie/HSTS policy rather than inside the
     /// transport.
+    ///
+    /// This compatibility entry point does not invent a referrer source from a
+    /// wire header. Call [`NavigationNetwork::fetch_with_referrer`] when the
+    /// document/navigation layer owns the source URL and policy state.
     pub fn fetch(
         &self,
         request: &FetchRequest,
         context: SameSiteRequestContext,
+    ) -> Result<FetchResponse, FetchError> {
+        self.fetch_with_referrer(request, context, None)
+    }
+
+    /// Perform a synchronous top-level request while carrying browser-owned
+    /// referrer state through every redirect hop.
+    ///
+    /// The state keeps the original source URL separate from the serialized
+    /// `Referer` header. An intermediate redirect response can therefore change
+    /// `Referrer-Policy` and the next hop is recomputed from the stable source,
+    /// rather than from a truncated header produced for the previous target.
+    /// HSTS is applied before Referer computation so downgrade checks observe
+    /// the URL that is actually dispatched.
+    pub fn fetch_with_referrer(
+        &self,
+        request: &FetchRequest,
+        context: SameSiteRequestContext,
+        mut referrer: Option<RedirectReferrerState>,
     ) -> Result<FetchResponse, FetchError> {
         let mut planner = RedirectPlanner::default();
         let mut current = request.clone();
@@ -184,7 +208,10 @@ impl NavigationNetwork {
         );
 
         loop {
-            let effective = self.prepare_request(&current, hop_context);
+            let mut effective = self.prepare_request(&current, hop_context);
+            if let Some(state) = referrer.as_ref() {
+                state.prepare_request(&mut effective);
+            }
             let mut response = self.loader.fetch_once(&effective)?;
 
             // Response state becomes browser-visible before Location is acted
@@ -201,6 +228,14 @@ impl NavigationNetwork {
                 }
                 return Ok(response);
             };
+
+            // Fetch updates request referrer policy from the redirect response
+            // before constructing the following hop. Only accepted redirects
+            // update the chain; a final response's policy belongs to the new
+            // document rather than to a request that will never be dispatched.
+            if let Some(state) = referrer.as_mut() {
+                state.observe_redirect_response(&response);
+            }
 
             // SameSite is schemeful. Classify the URL after learned HSTS has
             // transformed it, matching Browser's first-hop classification.
@@ -224,6 +259,17 @@ impl NavigationNetwork {
         context: SameSiteRequestContext,
     ) -> Result<FetchResponse, FetchError> {
         self.fetch(&FetchRequest::get(url.clone()), context)
+    }
+
+    /// Convenience GET for callers that own the document's referrer source and
+    /// current policy state.
+    pub fn get_with_referrer(
+        &self,
+        url: &Url,
+        context: SameSiteRequestContext,
+        referrer: RedirectReferrerState,
+    ) -> Result<FetchResponse, FetchError> {
+        self.fetch_with_referrer(&FetchRequest::get(url.clone()), context, Some(referrer))
     }
 
     fn prepare_request(
