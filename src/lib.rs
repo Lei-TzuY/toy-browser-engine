@@ -29,6 +29,7 @@ pub mod forms;
 pub mod hsts;
 pub mod hsts_network;
 pub mod html;
+pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
 pub mod layout;
@@ -57,6 +58,9 @@ pub use document_referrer::DocumentReferrerContext;
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
+pub use hyperlink_referrer::{
+    hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
+};
 pub use navigation_network::NavigationNetwork;
 pub use net::{MemoryLoader, ResourceLoader, Url};
 pub use redirect_policy::{RedirectError, RedirectPlanner, FETCH_MAX_REDIRECTS};
