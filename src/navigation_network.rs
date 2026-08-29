@@ -14,7 +14,9 @@ use crate::cookie_network::CookieJarRef;
 use crate::cookie_same_site::SameSiteRequestContext;
 use crate::eventloop::Clock;
 use crate::hsts_network::HstsCacheRef;
-use crate::net::{FetchError, FetchRequest, FetchResponse, Method, ResourceLoader, Url};
+use crate::net::{
+    FetchError, FetchRequest, FetchResponse, LoadError, Method, ResourceLoader, Url,
+};
 
 /// Synchronous navigation-side companion to [`crate::session_network::SessionNetwork`].
 ///
@@ -67,6 +69,25 @@ impl NavigationNetwork {
 
     fn now_ms(&self) -> u64 {
         self.clock.now_ms().max(0.0) as u64
+    }
+
+    /// Load the first document in a fresh Browser session while retaining
+    /// protocol response metadata.
+    ///
+    /// There is no initiator/request-site context or preexisting session cookie
+    /// at this point, so this path deliberately does not synthesize a Cookie
+    /// header. It does apply any supplied HSTS cache state and, crucially,
+    /// absorbs Set-Cookie/STS before the returned HTML can run bootstrap script.
+    /// `ResourceLoader::load_response` keeps legacy `load()` semantics for
+    /// embedders that do not opt in to response metadata.
+    pub fn load_initial(&self, url: &Url) -> Result<FetchResponse, LoadError> {
+        let effective_url = self
+            .hsts_cache
+            .borrow()
+            .upgrade_url(url, self.now_ms());
+        let mut response = self.loader.load_response(&effective_url)?;
+        self.absorb_response(&mut response);
+        Ok(response)
     }
 
     /// Perform one synchronous top-level request through browser session policy.

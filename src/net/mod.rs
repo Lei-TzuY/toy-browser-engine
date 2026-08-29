@@ -113,6 +113,19 @@ impl Resource {
 pub trait ResourceLoader: Send + Sync {
     fn load(&self, url: &Url) -> Result<Resource, LoadError>;
 
+    /// Load one document-like resource while retaining response metadata when
+    /// the source can provide it.
+    ///
+    /// The default deliberately goes through `load()`, not `fetch()`. Existing
+    /// embedders therefore keep their exact load/error/side-effect semantics
+    /// without implementing anything new. Protocol loaders may override this
+    /// to preserve response headers such as Set-Cookie and STS for browser
+    /// navigation policy while still reporting non-success statuses as the same
+    /// `LoadError` variants that `load()` exposes.
+    fn load_response(&self, url: &Url) -> Result<FetchResponse, LoadError> {
+        Ok(response_from_resource(self.load(url)?))
+    }
+
     /// Perform a full request, the way `fetch()` needs it.
     ///
     /// The default serves `GET` and `HEAD` from [`load`](ResourceLoader::load)
@@ -122,6 +135,31 @@ pub trait ResourceLoader: Send + Sync {
     /// override this to send the method and body themselves.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         static_fetch(|url| self.load(url), request)
+    }
+}
+
+fn response_from_resource(resource: Resource) -> FetchResponse {
+    let mime = resource.effective_mime().to_string();
+    FetchResponse::synthetic(resource.url, 200, Some(&mime), resource.bytes)
+}
+
+fn load_response_from_fetch(
+    requested_url: &Url,
+    result: Result<FetchResponse, FetchError>,
+) -> Result<FetchResponse, LoadError> {
+    match result {
+        Ok(response) if response.ok() => Ok(response),
+        Ok(response) => Err(LoadError::HttpStatus {
+            url: response.url.to_string(),
+            status: response.status,
+        }),
+        Err(FetchError::InvalidUrl(text)) => Err(LoadError::InvalidUrl(text)),
+        Err(FetchError::UnsupportedScheme(scheme)) => Err(LoadError::UnsupportedScheme(scheme)),
+        Err(FetchError::TooManyRedirects(target)) => Err(LoadError::TooManyRedirects(target)),
+        Err(other) => Err(LoadError::Io {
+            url: requested_url.to_string(),
+            message: other.to_string(),
+        }),
     }
 }
 
@@ -309,6 +347,16 @@ impl ResourceLoader for HttpLoader {
         }
     }
 
+    fn load_response(&self, url: &Url) -> Result<FetchResponse, LoadError> {
+        match url.scheme() {
+            "http" => load_response_from_fetch(
+                url,
+                http::send(&FetchRequest::get(url.clone()), &self.config),
+            ),
+            other => Err(LoadError::UnsupportedScheme(other.to_string())),
+        }
+    }
+
     /// A real protocol, so every method and a request body go on the wire, and
     /// an error status comes back as a response.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
@@ -368,6 +416,17 @@ impl ResourceLoader for DefaultLoader {
             // Any other scheme can only be served from embedded resources, so
             // a miss there is a missing file rather than an unknown protocol.
             _ => self.memory.load(url),
+        }
+    }
+
+    fn load_response(&self, url: &Url) -> Result<FetchResponse, LoadError> {
+        if self.memory.contains(url) {
+            return self.memory.load_response(url);
+        }
+        match url.scheme() {
+            "file" => self.file.load_response(url),
+            "http" | "https" => self.http.load_response(url),
+            _ => self.memory.load_response(url),
         }
     }
 
