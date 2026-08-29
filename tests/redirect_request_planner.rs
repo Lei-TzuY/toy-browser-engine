@@ -131,6 +131,32 @@ fn cookie_is_dropped_even_for_same_origin_same_path_redirect() {
 }
 
 #[test]
+fn referer_is_dropped_on_every_redirect_for_policy_recomputation() {
+    for location in ["/same-origin", "https://other.test/cross-origin"] {
+        let mut headers = HeaderMap::new();
+        headers.insert_raw("referer", "https://source.test/private/path?q=secret");
+        headers.insert_raw("x-keep", "yes");
+        let request = FetchRequest::new(
+            Url::parse("https://example.test/start").unwrap(),
+            Method::Get,
+            headers,
+            None,
+        );
+        let mut planner = RedirectPlanner::new(1);
+        let next = planner
+            .next_request(
+                &request,
+                &response("https://example.test/start", 302, Some(location)),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert!(!next.headers.has("referer"));
+        assert_eq!(next.headers.get("x-keep").as_deref(), Some("yes"));
+    }
+}
+
+#[test]
 fn zero_budget_rejects_first_real_redirect_but_not_ordinary_response() {
     let request = FetchRequest::get(Url::parse("http://example.test/a").unwrap());
     let mut planner = RedirectPlanner::new(0);
