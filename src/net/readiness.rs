@@ -250,18 +250,121 @@ impl NetworkBackend for ThreadedNetwork {
     }
 }
 
-/// Public routing backend with the same completion visibility guarantee.
+/// Routing core for the opt-in one-hop mode.
 ///
-/// `fetch_core::DefaultNetwork` still owns local-vs-threaded routing. This
-/// wrapper changes only readiness observation at the Browser-facing boundary.
+/// Local/file/demo requests retain the established browser-thread path. Only
+/// HTTP(S) requests go to the one-hop worker, matching the routing contract of
+/// the legacy DefaultNetwork while making intermediate HTTP redirects visible.
+struct SingleHopDefaultCore {
+    local: fetch_core::LocalNetwork,
+    threaded: SingleHopCore,
+}
+
+impl SingleHopDefaultCore {
+    fn new(loader: Arc<dyn ResourceLoader>) -> Self {
+        Self {
+            local: fetch_core::LocalNetwork::new(loader.clone()),
+            threaded: SingleHopCore::new(loader),
+        }
+    }
+}
+
+impl NetworkBackend for SingleHopDefaultCore {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        match request.url.scheme() {
+            "http" | "https" => self.threaded.start(id, request),
+            _ => self.local.start(id, request),
+        }
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        let mut completions = self.local.poll();
+        completions.extend(self.threaded.poll());
+        completions
+    }
+
+    fn cancel(&self, id: FetchId) {
+        self.local.cancel(id);
+        self.threaded.cancel(id);
+    }
+
+    fn is_busy(&self) -> bool {
+        self.local.is_busy() || self.threaded.is_busy()
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        !self.local.is_busy() && self.threaded.wait(timeout)
+    }
+}
+
+enum DefaultBackend {
+    Follow(CompletionAware<fetch_core::DefaultNetwork>),
+    SingleHop(CompletionAware<SingleHopDefaultCore>),
+}
+
+impl DefaultBackend {
+    fn start(&self, id: FetchId, request: FetchRequest) {
+        match self {
+            DefaultBackend::Follow(backend) => backend.start(id, request),
+            DefaultBackend::SingleHop(backend) => backend.start(id, request),
+        }
+    }
+
+    fn poll(&self) -> Vec<FetchCompletion> {
+        match self {
+            DefaultBackend::Follow(backend) => backend.poll(),
+            DefaultBackend::SingleHop(backend) => backend.poll(),
+        }
+    }
+
+    fn cancel(&self, id: FetchId) {
+        match self {
+            DefaultBackend::Follow(backend) => backend.cancel(id),
+            DefaultBackend::SingleHop(backend) => backend.cancel(id),
+        }
+    }
+
+    fn is_busy(&self) -> bool {
+        match self {
+            DefaultBackend::Follow(backend) => backend.is_busy(),
+            DefaultBackend::SingleHop(backend) => backend.is_busy(),
+        }
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        match self {
+            DefaultBackend::Follow(backend) => backend.wait(timeout),
+            DefaultBackend::SingleHop(backend) => backend.wait(timeout),
+        }
+    }
+}
+
+/// Public routing backend with race-free completion visibility.
 pub struct DefaultNetwork {
-    backend: CompletionAware<fetch_core::DefaultNetwork>,
+    backend: DefaultBackend,
 }
 
 impl DefaultNetwork {
+    /// Create the backward-compatible routing backend. HTTP(S) requests use the
+    /// redirect-following worker implementation.
     pub fn new(loader: Arc<dyn ResourceLoader>) -> Self {
         Self {
-            backend: CompletionAware::new(fetch_core::DefaultNetwork::new(loader)),
+            backend: DefaultBackend::Follow(CompletionAware::new(
+                fetch_core::DefaultNetwork::new(loader),
+            )),
+        }
+    }
+
+    /// Create a routing backend whose HTTP(S) requests perform one loader hop.
+    ///
+    /// Non-network schemes keep the existing LocalNetwork behavior. This makes
+    /// the constructor a drop-in transport for session-level redirect
+    /// orchestration without moving fast local resources onto worker threads.
+    pub fn new_single_hop(loader: Arc<dyn ResourceLoader>) -> Self {
+        Self {
+            backend: DefaultBackend::SingleHop(CompletionAware::new(
+                SingleHopDefaultCore::new(loader),
+            )),
         }
     }
 }
