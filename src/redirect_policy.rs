@@ -78,10 +78,17 @@ impl RedirectPlanner {
             return Err(RedirectError::TooManyRedirects(request.url.to_string()));
         }
 
-        let next_url = request
+        let mut next_url = request
             .url
             .join(&location)
             .map_err(|_| RedirectError::InvalidLocation(location.clone()))?;
+
+        // Fetch's "location URL" algorithm carries the current request
+        // fragment forward when Location itself does not provide one.  A
+        // redirect may replace it explicitly, including with an empty `#`.
+        if !location_has_fragment(&location) {
+            next_url.set_fragment(request.url.fragment().map(str::to_string));
+        }
 
         let mut headers = request.headers.clone();
 
@@ -124,6 +131,10 @@ pub fn is_redirect_status(status: u16) -> bool {
 pub fn redirects_to_get(status: u16, method: Method) -> bool {
     matches!(status, 301 | 302) && method == Method::Post
         || status == 303 && !matches!(method, Method::Get | Method::Head)
+}
+
+fn location_has_fragment(location: &str) -> bool {
+    location.trim().contains('#')
 }
 
 fn remove_request_body_headers(headers: &mut crate::net::HeaderMap) {
@@ -261,5 +272,42 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(next.url.to_string(), "http://example.test/a/target?q=1");
+    }
+
+    #[test]
+    fn location_without_fragment_inherits_current_request_fragment() {
+        let original = FetchRequest::get(
+            Url::parse("https://example.test/start#section-2").unwrap(),
+        );
+        let mut planner = RedirectPlanner::new(1);
+        let next = planner
+            .next_request(
+                &original,
+                &response("https://example.test/start", 302, Some("/next?q=1")),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            next.url.to_string(),
+            "https://example.test/next?q=1#section-2"
+        );
+    }
+
+    #[test]
+    fn explicit_location_fragment_overrides_inherited_fragment() {
+        let original = FetchRequest::get(
+            Url::parse("https://example.test/start#old").unwrap(),
+        );
+        let mut planner = RedirectPlanner::new(1);
+        let next = planner
+            .next_request(
+                &original,
+                &response("https://example.test/start", 302, Some("/next#new")),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(next.url.to_string(), "https://example.test/next#new");
     }
 }
