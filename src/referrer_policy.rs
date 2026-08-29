@@ -284,14 +284,17 @@ mod tests {
         state.prepare_request(&mut first);
         assert_eq!(
             first.headers.get("referer"),
-            Some("https://source.test/private/page?q=1")
+            Some("https://source.test/private/page?q=1".to_string())
         );
 
         let response = response_with_policies(&["unsafe-url", "origin"]);
         state.observe_redirect_response(&response);
         let mut next = FetchRequest::get(url("https://other.test/next"));
         state.prepare_request(&mut next);
-        assert_eq!(next.headers.get("referer"), Some("https://source.test/"));
+        assert_eq!(
+            next.headers.get("referer"),
+            Some("https://source.test/".to_string())
+        );
     }
 
     #[test]
