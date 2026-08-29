@@ -1,101 +1,123 @@
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 
 use browser_engine::browser::Browser;
-use browser_engine::net::{HttpLoader, LoadError, Url};
+use browser_engine::net::{
+    FetchRequest, FetchResponse, LoadError, Resource, ResourceLoader, Url,
+};
 
 fn url(input: &str) -> Url {
     Url::parse(input).expect("valid URL")
 }
 
-fn read_request(stream: &mut std::net::TcpStream) -> String {
-    let mut request = [0u8; 4096];
-    let read = stream.read(&mut request).expect("read request");
-    String::from_utf8_lossy(&request[..read]).to_string()
+#[derive(Clone)]
+struct RedirectingDocumentLoader {
+    requests: Arc<Mutex<Vec<FetchRequest>>>,
+    final_status: u16,
+}
+
+impl RedirectingDocumentLoader {
+    fn new(final_status: u16) -> (Self, Arc<Mutex<Vec<FetchRequest>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                requests: requests.clone(),
+                final_status,
+            },
+            requests,
+        )
+    }
+}
+
+impl ResourceLoader for RedirectingDocumentLoader {
+    fn load(&self, target: &Url) -> Result<Resource, LoadError> {
+        Err(LoadError::Io {
+            url: target.to_string(),
+            message: "legacy load path must not run for opted-in initial redirects".into(),
+        })
+    }
+
+    fn load_response_once(
+        &self,
+        request: &FetchRequest,
+    ) -> Result<Option<FetchResponse>, LoadError> {
+        self.requests.lock().unwrap().push(request.clone());
+
+        let mut response = match request.url.path() {
+            "/start" => {
+                let mut response = FetchResponse::synthetic(
+                    request.url.clone(),
+                    302,
+                    Some("text/html"),
+                    Vec::new(),
+                );
+                response.headers.insert_raw("location", "/final");
+                response.headers.insert_raw(
+                    "set-cookie",
+                    "bootstrap=ready; Path=/; SameSite=Strict",
+                );
+                response
+            }
+            "/final" if self.final_status == 200 => FetchResponse::synthetic(
+                request.url.clone(),
+                200,
+                Some("text/html"),
+                b"<!doctype html><title>final</title><p>ok</p>".to_vec(),
+            ),
+            "/final" => FetchResponse::synthetic(
+                request.url.clone(),
+                self.final_status,
+                Some("text/plain"),
+                b"missing".to_vec(),
+            ),
+            other => panic!("unexpected document request path: {other}"),
+        };
+        response.redirected = false;
+        Ok(Some(response))
+    }
 }
 
 #[test]
 fn browser_open_applies_redirect_set_cookie_before_next_initial_hop() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let port = listener.local_addr().unwrap().port();
+    let (loader, requests) = RedirectingDocumentLoader::new(200);
+    let start = url("http://example.test/start");
+    let browser = Browser::open(Box::new(loader), &start).expect("open browser");
 
-    let server = std::thread::spawn(move || {
-        let (mut first, _) = listener.accept().expect("accept first hop");
-        let first_wire = read_request(&mut first);
-        assert!(first_wire.starts_with("GET /start HTTP/1.1"));
-        assert!(
-            !first_wire.to_ascii_lowercase().contains("cookie:"),
-            "fresh Browser initial request must not invent cookies: {first_wire}"
-        );
-        first
-            .write_all(
-                b"HTTP/1.1 302 Found\r\nLocation: /final\r\nSet-Cookie: bootstrap=ready; Path=/; SameSite=Strict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            )
-            .expect("write first redirect");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].url.to_string(), "http://example.test/start");
+    assert!(
+        requests[0].headers.get("cookie").is_none(),
+        "fresh Browser initial request must not invent cookies"
+    );
+    assert_eq!(requests[1].url.to_string(), "http://example.test/final");
+    assert_eq!(
+        requests[1].headers.get("cookie").as_deref(),
+        Some("bootstrap=ready"),
+        "redirect-set cookie must be selected for the next initial hop"
+    );
 
-        let (mut second, _) = listener.accept().expect("accept second hop");
-        let second_wire = read_request(&mut second);
-        assert!(second_wire.starts_with("GET /final HTTP/1.1"));
-        assert!(
-            second_wire
-                .to_ascii_lowercase()
-                .contains("cookie: bootstrap=ready"),
-            "redirect cookie must be selected after the first response: {second_wire}"
-        );
-        let body = b"<!doctype html><title>final</title><p>ok</p>";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            String::from_utf8_lossy(body)
-        );
-        second.write_all(response.as_bytes()).expect("write final");
-    });
-
-    let start = url(&format!("http://127.0.0.1:{port}/start"));
-    let browser = Browser::open(Box::new(HttpLoader::default()), &start).expect("open browser");
-
-    assert_eq!(browser.url().to_string(), format!("http://127.0.0.1:{port}/final"));
+    assert_eq!(browser.url().to_string(), "http://example.test/final");
     assert_eq!(browser.history().len(), 1);
     assert_eq!(browser.history()[0], *browser.url());
-    server.join().unwrap();
 }
 
 #[test]
 fn browser_open_preserves_load_error_semantics_after_redirect_chain() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let port = listener.local_addr().unwrap().port();
-
-    let server = std::thread::spawn(move || {
-        let (mut first, _) = listener.accept().expect("accept first hop");
-        let _ = read_request(&mut first);
-        first
-            .write_all(
-                b"HTTP/1.1 302 Found\r\nLocation: /missing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            )
-            .expect("write redirect");
-
-        let (mut second, _) = listener.accept().expect("accept final hop");
-        let second_wire = read_request(&mut second);
-        assert!(second_wire.starts_with("GET /missing HTTP/1.1"));
-        second
-            .write_all(
-                b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nmissing",
-            )
-            .expect("write 404");
-    });
-
-    let start = url(&format!("http://127.0.0.1:{port}/start"));
-    let error = match Browser::open(Box::new(HttpLoader::default()), &start) {
+    let (loader, requests) = RedirectingDocumentLoader::new(404);
+    let start = url("http://example.test/start");
+    let error = match Browser::open(Box::new(loader), &start) {
         Ok(_) => panic!("redirected 404 must preserve document-load error semantics"),
         Err(error) => error,
     };
 
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].url.to_string(), "http://example.test/final");
     assert_eq!(
         error,
         LoadError::HttpStatus {
-            url: format!("http://127.0.0.1:{port}/missing"),
+            url: "http://example.test/final".into(),
             status: 404,
         }
     );
-    server.join().unwrap();
 }
