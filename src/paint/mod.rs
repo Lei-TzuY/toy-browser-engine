@@ -432,6 +432,67 @@ fn render_box_decorations_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
     render_image_with_opacity(list, lb, opacity);
     render_form_control(list, lb, opacity);
     render_borders_with_opacity(list, lb, opacity);
+    render_outline_with_opacity(list, lb, opacity);
+}
+
+fn render_outline_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    let style = match styled_node(lb) {
+        Some(s) => s,
+        None => return,
+    };
+    let width = style.outline_width();
+    if width <= 0.0 || style.outline_style().is_none() {
+        return;
+    }
+    let color = apply_opacity(style.outline_color(), opacity);
+    let offset = style.outline_offset();
+    let border_box = lb.dimensions.border_box();
+
+    let out_x = border_box.x - offset - width;
+    let out_y = border_box.y - offset - width;
+    let out_w = (border_box.width + 2.0 * (offset + width)).max(0.0);
+    let out_h = (border_box.height + 2.0 * (offset + width)).max(0.0);
+
+    // Top
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x,
+            y: out_y,
+            width: out_w,
+            height: width,
+        },
+    ));
+    // Bottom
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x,
+            y: out_y + out_h - width,
+            width: out_w,
+            height: width,
+        },
+    ));
+    // Left
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x,
+            y: out_y + width,
+            width,
+            height: (out_h - 2.0 * width).max(0.0),
+        },
+    ));
+    // Right
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x + out_w - width,
+            y: out_y + width,
+            width,
+            height: (out_h - 2.0 * width).max(0.0),
+        },
+    ));
 }
 
 // ── Form controls ─────────────────────────────────────────────────────────────

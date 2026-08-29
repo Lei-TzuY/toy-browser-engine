@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use crate::css::parser::{
     parse_blend_mode, parse_declaration_block, parse_single_value, BlendMode, ClipPath, Color, Combinator,
-    Declaration, PseudoClass, Selector, SelectorPart, Stylesheet, TextShadow, Unit, Value,
+    Declaration, LinearGradient, PseudoClass, Selector, SelectorPart, Stylesheet, TextShadow, Unit, Value,
 };
 use crate::dom::{ElementData, Node, NodeType};
 
@@ -208,6 +208,51 @@ impl<'a> StyledNode<'a> {
     pub fn user_select(&self) -> Option<&str> {
         match self.value("user-select") {
             Some(Value::Keyword(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn outline_width(&self) -> f32 {
+        match self.value("outline-width") {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            Some(Value::Keyword(s)) => match s.as_str() {
+                "thin" => 1.0,
+                "medium" => 3.0,
+                "thick" => 5.0,
+                _ => 0.0,
+            },
+            _ => 0.0,
+        }
+    }
+
+    pub fn outline_color(&self) -> Color {
+        match self.value("outline-color") {
+            Some(Value::Color(c)) => *c,
+            _ => Color::rgb(0, 0, 0),
+        }
+    }
+
+    pub fn outline_style(&self) -> Option<&str> {
+        match self.value("outline-style") {
+            Some(Value::Keyword(s)) if s != "none" => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn outline_offset(&self) -> f32 {
+        match self.value("outline-offset") {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            _ => 0.0,
+        }
+    }
+
+    pub fn mask_image(&self) -> Option<LinearGradient> {
+        match self.value("mask-image") {
+            Some(Value::LinearGradient(lg)) => Some(lg.clone()),
             _ => None,
         }
     }

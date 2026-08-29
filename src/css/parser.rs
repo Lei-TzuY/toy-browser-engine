@@ -1397,7 +1397,21 @@ impl Parser {
                 c if c.is_alphabetic() => {
                     let sp = self.pos;
                     let name = self.parse_ident();
-                    if let Some(c) = named_color(&name) {
+                    if name == "rgb" || name == "rgba" {
+                        self.skip_ws_and_comments();
+                        if self.peek() == '(' {
+                            self.consume();
+                            if let Value::Color(c) = self.parse_rgb_inner() {
+                                Some(c)
+                            } else {
+                                self.pos = sp;
+                                None
+                            }
+                        } else {
+                            self.pos = sp;
+                            None
+                        }
+                    } else if let Some(c) = named_color(&name) {
                         Some(c)
                     } else {
                         self.pos = sp;
@@ -1699,6 +1713,10 @@ impl Parser {
                 let values = self.parse_shorthand_values(first_value);
                 expand_border_shorthand(&name, values)
             }
+            "outline" => {
+                let values = self.parse_shorthand_values(first_value);
+                expand_outline_shorthand(values)
+            }
             "flex" => {
                 let values = self.parse_shorthand_values(first_value);
                 expand_flex_shorthand(values)
@@ -1957,6 +1975,9 @@ impl Parser {
                 } else {
                     vec![Declaration::new(name, first_value)]
                 }
+            }
+            "mask-image" | "-webkit-mask-image" => {
+                vec![Declaration::new("mask-image", first_value)]
             }
             _ => vec![Declaration::new(name, first_value)],
         };
@@ -2392,6 +2413,34 @@ fn expand_gap_shorthand(values: Vec<Value>) -> Vec<Declaration> {
     ]
 }
 
+fn expand_outline_shorthand(values: Vec<Value>) -> Vec<Declaration> {
+    let mut width = Value::Length(1.0, Unit::Px);
+    let mut style = Value::Keyword("none".to_string());
+    let mut color = Value::Color(Color::rgb(0, 0, 0));
+
+    for val in values {
+        match val {
+            Value::Length(..) | Value::Number(..) => width = val,
+            Value::Color(..) => color = val,
+            Value::Keyword(ref s) => {
+                match s.as_str() {
+                    "none" | "hidden" | "dotted" | "dashed" | "solid" | "double" | "groove" | "ridge" | "inset" | "outset" => {
+                        style = val;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    vec![
+        Declaration::new("outline-width", width),
+        Declaration::new("outline-style", style),
+        Declaration::new("outline-color", color),
+    ]
+}
+
 /// `grid-column: <start> [ / <end> ]` and `grid-row: <start> [ / <end> ]`.
 fn expand_grid_placement_shorthand(name: &str, raw: &str) -> Vec<Declaration> {
     let (start_prop, end_prop) = if name == "grid-column" {
@@ -2594,6 +2643,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
         "aspect-ratio" | "backdrop-filter" | "columns" | "column-count" | "column-width" | "clip-path" | "mix-blend-mode" | "background-blend-mode" | "user-select" | "caret-color" => true,
+        "outline" | "outline-width" | "outline-style" | "outline-color" | "outline-offset" | "mask-image" | "-webkit-mask-image" | "mask-size" | "mask-repeat" => true,
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }
