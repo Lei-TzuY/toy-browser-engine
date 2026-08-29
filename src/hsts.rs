@@ -182,16 +182,54 @@ impl HstsCache {
     }
 }
 
+/// Canonicalize an ASCII DNS name for HSTS matching.
+///
+/// RFC 6797 defines Known HSTS Hosts in terms of domain names, not arbitrary
+/// URI reg-name strings. The URL layer does not yet implement IDNA, so this
+/// cache accepts ordinary ASCII DNS labels (including already-punycoded
+/// `xn--...` labels) and deliberately rejects raw non-ASCII names rather than
+/// creating a second, incompatible normalization scheme here.
+///
+/// One terminal root dot is ignored (`example.test.` == `example.test`), while
+/// empty interior labels, illegal label characters, leading/trailing hyphens,
+/// and DNS length violations are rejected. IP literals remain excluded by
+/// HSTS itself.
 fn canonical_dns_host(host: &str) -> Option<String> {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let host = host.trim();
     if host.is_empty() {
         return None;
     }
+
     let ip_candidate = host.trim_start_matches('[').trim_end_matches(']');
     if ip_candidate.parse::<IpAddr>().is_ok() {
         return None;
     }
-    Some(host)
+
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if host.is_empty() || host.len() > 253 || !host.is_ascii() {
+        return None;
+    }
+
+    let mut canonical = String::with_capacity(host.len());
+    for (index, label) in host.split('.').enumerate() {
+        if label.is_empty() || label.len() > 63 {
+            return None;
+        }
+        let bytes = label.as_bytes();
+        if !bytes[0].is_ascii_alphanumeric()
+            || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            || !bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+        {
+            return None;
+        }
+        if index != 0 {
+            canonical.push('.');
+        }
+        canonical.extend(label.chars().map(|ch| ch.to_ascii_lowercase()));
+    }
+    Some(canonical)
 }
 
 #[cfg(test)]
@@ -252,6 +290,24 @@ mod tests {
     }
 
     #[test]
+    fn canonicalizes_dns_case_and_one_terminal_root_dot() {
+        assert_eq!(canonical_dns_host("Example.TEST."), Some("example.test".into()));
+        assert_eq!(canonical_dns_host("XN--BCHER-KVA.Example"), Some("xn--bcher-kva.example".into()));
+        assert_eq!(canonical_dns_host("example.test.."), None);
+    }
+
+    #[test]
+    fn rejects_hosts_that_are_not_valid_ascii_dns_names() {
+        assert_eq!(canonical_dns_host("bad..example"), None);
+        assert_eq!(canonical_dns_host("-bad.example"), None);
+        assert_eq!(canonical_dns_host("bad-.example"), None);
+        assert_eq!(canonical_dns_host("bad_name.example"), None);
+        assert_eq!(canonical_dns_host("bücher.example"), None);
+        assert_eq!(canonical_dns_host(&format!("{}.example", "a".repeat(64))), None);
+        assert_eq!(canonical_dns_host(&format!("{}.test", "a".repeat(249))), None);
+    }
+
+    #[test]
     fn include_subdomains_matches_only_on_label_boundaries() {
         let mut cache = HstsCache::new();
         assert!(cache.observe_response(
@@ -261,8 +317,10 @@ mod tests {
         ));
         assert!(cache.is_known_host("api.example.test", 1));
         assert!(cache.is_known_host("deep.api.example.test", 1));
+        assert!(cache.is_known_host("API.EXAMPLE.TEST.", 1));
         assert!(!cache.is_known_host("notexample.test", 1));
         assert!(!cache.is_known_host("example.test.evil", 1));
+        assert!(!cache.is_known_host("bad..api.example.test", 1));
     }
 
     #[test]
