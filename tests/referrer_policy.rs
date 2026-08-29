@@ -91,6 +91,23 @@ fn same_origin_compares_effective_ports() {
 }
 
 #[test]
+fn referrer_longer_than_4096_characters_is_reduced_to_origin() {
+    let prefix = "https://example.test/";
+    let source = url(&format!("{prefix}{}", "a".repeat(5000)));
+    let target = url("https://other.test/resource");
+
+    assert!(source.without_fragment().to_string().chars().count() > 4096);
+    assert_eq!(
+        ReferrerPolicy::UnsafeUrl.compute(&source, &target),
+        Some("https://example.test/".into())
+    );
+    assert_eq!(
+        ReferrerPolicy::SameOrigin.compute(&source, &url("https://example.test/next")),
+        Some("https://example.test/".into())
+    );
+}
+
+#[test]
 fn non_http_sources_and_targets_never_produce_a_referer_header() {
     assert_eq!(
         ReferrerPolicy::UnsafeUrl.compute(

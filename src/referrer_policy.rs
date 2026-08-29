@@ -70,7 +70,10 @@ impl ReferrerPolicy {
     ///
     /// `None` means the header must be omitted. Fragment identifiers are never
     /// exposed. This engine's URL type already discards URL credentials while
-    /// parsing, so the resulting value is also credential-free.
+    /// parsing, so the resulting value is also credential-free. Referrer
+    /// Policy additionally requires a serialized full referrer longer than
+    /// 4096 characters to be reduced to its origin before the policy is
+    /// evaluated; `full_referrer` applies that limit centrally.
     pub fn compute(self, source: &Url, target: &Url) -> Option<String> {
         if !is_http_family(source) || !is_http_family(target) || source.host().is_empty() {
             return None;
@@ -151,7 +154,12 @@ fn full_referrer(source: &Url) -> Option<String> {
     if !is_http_family(source) || source.host().is_empty() {
         return None;
     }
-    Some(source.without_fragment().to_string())
+    let serialized = source.without_fragment().to_string();
+    if serialized.chars().count() > 4096 {
+        origin_referrer(source)
+    } else {
+        Some(serialized)
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +215,29 @@ mod tests {
         assert_eq!(
             ReferrerPolicy::UnsafeUrl.compute(&source, &url("http://other.test/")),
             Some("https://example.test/path?q=1".into())
+        );
+    }
+
+    #[test]
+    fn oversized_full_referrer_falls_back_to_origin() {
+        let prefix = "https://example.test/";
+        let source = url(&format!("{prefix}{}", "a".repeat(4097 - prefix.chars().count())));
+        assert_eq!(source.without_fragment().to_string().chars().count(), 4097);
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.compute(&source, &url("https://other.test/")),
+            Some("https://example.test/".into())
+        );
+    }
+
+    #[test]
+    fn referrer_at_4096_characters_is_not_reduced() {
+        let prefix = "https://example.test/";
+        let source_text = format!("{prefix}{}", "a".repeat(4096 - prefix.chars().count()));
+        let source = url(&source_text);
+        assert_eq!(source.without_fragment().to_string().chars().count(), 4096);
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.compute(&source, &url("https://other.test/")),
+            Some(source_text)
         );
     }
 
