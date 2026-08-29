@@ -12,8 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::cookie::CookieJar;
-use crate::cookie_network::{CookieJarRef, CookieNetwork};
+use crate::cookie_network::CookieJarRef;
 use crate::document::{Document, LoopReport, PageAction, PointerState};
 use crate::eventloop::{Clock, RealClock};
 use crate::forms::{self, encode_form_entries, Submission, SubmissionMethod};
@@ -24,6 +23,7 @@ use crate::net::{
 };
 use crate::script::interp::{EventInit, JsValue, StorageRef};
 use crate::script::NodePath;
+use crate::session_network::SessionNetwork;
 use crate::validation;
 
 /// How long one idle turn of [`Browser::settle_network`] waits on the network
@@ -49,8 +49,8 @@ pub struct Browser {
     /// nothing outside has to know.
     loader: Arc<dyn ResourceLoader>,
     /// Where `fetch()` goes. One per session, shared by every document it
-    /// shows; the browser wraps the supplied transport in `CookieNetwork` so
-    /// HTTP state remains browser policy rather than transport policy.
+    /// shows. `SessionNetwork` applies HSTS before cookie selection so Secure
+    /// cookies observe the URL that actually reaches transport.
     network: Rc<dyn NetworkBackend>,
     /// The one cookie jar owned by this browsing session. Documents and Fetch
     /// receive the same Rc, so `document.cookie` and Set-Cookie converge.
@@ -92,9 +92,9 @@ impl Browser {
 
     /// Load `url` with a caller-supplied clock *and* transport backend.
     ///
-    /// Browser policy still wraps that backend in `CookieNetwork`. Tests can
-    /// keep their own Rc to a `ManualNetwork` and inspect exactly what reached
-    /// the transport after browser-owned Cookie injection.
+    /// Browser policy wraps that transport in the canonical `SessionNetwork`.
+    /// Tests can keep their own Rc to a `ManualNetwork` and inspect exactly
+    /// what reached transport after HSTS and cookie policy have run.
     pub fn open_with_network(
         loader: Box<dyn ResourceLoader>,
         network: Rc<dyn NetworkBackend>,
@@ -128,12 +128,9 @@ impl Browser {
             .or_insert_with(|| Rc::new(RefCell::new(Vec::new())))
             .clone();
 
-        let cookie_jar = Rc::new(RefCell::new(CookieJar::with_clock(clock.clone())));
-        let network: Rc<dyn NetworkBackend> = Rc::new(CookieNetwork::new(
-            transport,
-            cookie_jar.clone(),
-            clock.clone(),
-        ));
+        let session_network = SessionNetwork::with_new_state(transport, clock.clone());
+        let cookie_jar = session_network.cookie_jar();
+        let network: Rc<dyn NetworkBackend> = Rc::new(session_network);
         let mut document = Document::load_with_session_state(
             url,
             loader.as_ref(),
@@ -438,7 +435,7 @@ impl Browser {
         self.document.has_pending_tasks()
     }
 
-    /// The cookie-aware network this session fetches through.
+    /// The browser-policy network this session fetches through.
     pub fn network(&self) -> &Rc<dyn NetworkBackend> {
         &self.network
     }
