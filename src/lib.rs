@@ -44,6 +44,7 @@ pub mod select_state;
 mod session_redirect;
 pub mod session_network;
 pub mod style;
+pub mod subresource_referrer;
 pub mod svg;
 pub mod text;
 pub mod transition;
@@ -67,4 +68,7 @@ pub use redirect_policy::{RedirectError, RedirectPlanner, FETCH_MAX_REDIRECTS};
 pub use referrer_meta::apply_meta_referrer_policies;
 pub use referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 pub use session_network::SessionNetwork;
+pub use subresource_referrer::{
+    prepare_subresource_request, subresource_redirect_state, subresource_referrer_policy,
+};
 pub use transition::TransitionManager;
