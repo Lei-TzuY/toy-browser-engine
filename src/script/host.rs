@@ -69,9 +69,18 @@ impl Body {
         Ok(self.bytes.borrow_mut().take().unwrap_or_default())
     }
 
-    /// Look at the bytes without consuming them — for building a request.
+    /// Look at the transport-significant bytes without consuming them.
+    ///
+    /// The engine represents a body-less Request with the same empty Body
+    /// wrapper used by the script API. Normalising zero-length bytes to `None`
+    /// here prevents cloning a body-less GET Request from turning that wrapper
+    /// into an authored GET body. Explicit `{ body: "" }` is still rejected
+    /// before a Body is constructed, so this does not loosen Fetch validation.
     pub fn peek(&self) -> Option<Vec<u8>> {
-        self.bytes.borrow().clone()
+        self.bytes
+            .borrow()
+            .clone()
+            .filter(|bytes| !bytes.is_empty())
     }
 }
 
@@ -114,6 +123,28 @@ impl AbortState {
 
 // ── Requests ──────────────────────────────────────────────────────────────────
 
+/// Cookie-credential mode carried by a script-visible `Request` object.
+///
+/// Cross-origin `include` is deliberately absent until the engine has CORS
+/// semantics capable of honoring it. Keeping this state on RequestData makes
+/// cloning and fetch(Request) inheritance explicit instead of reconstructing
+/// policy from a later fetch init object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestCredentials {
+    #[default]
+    SameOrigin,
+    Omit,
+}
+
+impl RequestCredentials {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RequestCredentials::SameOrigin => "same-origin",
+            RequestCredentials::Omit => "omit",
+        }
+    }
+}
+
 /// A `Request` object.
 #[derive(Debug)]
 pub struct RequestData {
@@ -122,19 +153,22 @@ pub struct RequestData {
     pub headers: HeadersRef,
     pub body: Body,
     pub signal: Option<Rc<AbortState>>,
+    pub credentials: RequestCredentials,
 }
 
 impl RequestData {
     /// The wire request this describes.
     ///
     /// Reads the body without consuming it, so `fetch(request)` still leaves
-    /// `request.bodyUsed` false until the script itself reads it.
+    /// `request.bodyUsed` false until the script itself reads it. Credentials
+    /// remain browser-only metadata and therefore are intentionally absent
+    /// from this transport representation.
     pub fn to_wire(&self) -> FetchRequest {
         FetchRequest::new(
             self.url.clone(),
             self.method,
             self.headers.borrow().clone(),
-            self.body.peek().filter(|bytes| !bytes.is_empty()),
+            self.body.peek(),
         )
     }
 }
@@ -492,6 +526,7 @@ mod tests {
     #[test]
     fn an_empty_body_is_still_a_body() {
         let body = Body::empty();
+        assert_eq!(body.peek(), None, "an empty wrapper has no transport body");
         assert_eq!(body.take().unwrap(), Vec::<u8>::new());
         assert!(body.take().is_err(), "even an empty body is single-use");
     }
@@ -545,12 +580,20 @@ mod tests {
             headers: headers_ref(HeaderMap::new()),
             body: Body::new(b"{}".to_vec()),
             signal: None,
+            credentials: RequestCredentials::Omit,
         };
 
         let wire = request.to_wire();
         assert_eq!(wire.method, Method::Post);
         assert_eq!(wire.body.as_deref(), Some(&b"{}"[..]));
         assert!(!request.body.used(), "sending is not reading");
+        assert_eq!(request.credentials, RequestCredentials::Omit);
+    }
+
+    #[test]
+    fn request_credentials_have_stable_web_names() {
+        assert_eq!(RequestCredentials::default().as_str(), "same-origin");
+        assert_eq!(RequestCredentials::Omit.as_str(), "omit");
     }
 
     #[test]
