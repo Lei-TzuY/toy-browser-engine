@@ -71,6 +71,17 @@ impl NavigationNetwork {
         self.clock.now_ms().max(0.0) as u64
     }
 
+    /// Return the URL that top-level policy will actually dispatch after
+    /// applying currently learned HSTS state.
+    ///
+    /// Browser-side SameSite classification must use this effective URL rather
+    /// than the authored HTTP spelling. Otherwise an HTTPS document navigating
+    /// to `http://same-host/...` can be misclassified as cross-site even though
+    /// HSTS upgrades the request to HTTPS before cookie selection.
+    pub fn effective_url(&self, url: &Url) -> Url {
+        self.hsts_cache.borrow().upgrade_url(url, self.now_ms())
+    }
+
     /// Load the first document in a fresh Browser session while retaining
     /// protocol response metadata.
     ///
@@ -81,10 +92,7 @@ impl NavigationNetwork {
     /// `ResourceLoader::load_response` keeps legacy `load()` semantics for
     /// embedders that do not opt in to response metadata.
     pub fn load_initial(&self, url: &Url) -> Result<FetchResponse, LoadError> {
-        let effective_url = self
-            .hsts_cache
-            .borrow()
-            .upgrade_url(url, self.now_ms());
+        let effective_url = self.effective_url(url);
         let mut response = self.loader.load_response(&effective_url)?;
         self.absorb_response(&mut response);
         Ok(response)
@@ -97,10 +105,7 @@ impl NavigationNetwork {
         context: SameSiteRequestContext,
     ) -> Result<FetchResponse, FetchError> {
         let mut effective = request.clone();
-        effective.url = self
-            .hsts_cache
-            .borrow()
-            .upgrade_url(&effective.url, self.now_ms());
+        effective.url = self.effective_url(&effective.url);
 
         if matches!(effective.url.scheme(), "http" | "https") {
             // Cookie is browser-owned. A caller-supplied value must not bypass
@@ -210,6 +215,33 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.url.to_string(), "https://example.test/page");
+    }
+
+    #[test]
+    fn effective_url_exposes_hsts_upgrade_for_request_classification() {
+        let loader: Arc<dyn ResourceLoader> = Arc::new(MemoryLoader::new());
+        let clock = Rc::new(ManualClock::new());
+        let jar = Rc::new(RefCell::new(CookieJar::with_clock(clock.clone())));
+        let hsts = Rc::new(RefCell::new(HstsCache::new()));
+        hsts.borrow_mut().observe_response(
+            &url("https://example.test/"),
+            "max-age=60",
+            0,
+        );
+        let navigation = NavigationNetwork::new(loader, jar, hsts, clock);
+
+        assert_eq!(
+            navigation
+                .effective_url(&url("http://example.test/account"))
+                .to_string(),
+            "https://example.test/account"
+        );
+        assert_eq!(
+            navigation
+                .effective_url(&url("http://other.test/account"))
+                .to_string(),
+            "http://other.test/account"
+        );
     }
 
     #[test]

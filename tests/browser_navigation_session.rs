@@ -39,15 +39,19 @@ impl ResourceLoader for RecordingLoader {
         if request.url.path() == "/learn" {
             final_url = Url::parse("https://example.test/learn").unwrap();
         } else if request.url.path() == "/submit" {
-            final_url = Url::parse("https://b.test/saved").unwrap();
+            final_url = if request.url.host() == "example.test" {
+                Url::parse("https://example.test/saved").unwrap()
+            } else {
+                Url::parse("https://b.test/saved").unwrap()
+            };
         }
 
-        let mut response = FetchResponse::synthetic(
-            final_url,
-            200,
-            Some("text/html"),
-            b"<title>Loaded</title><p>ok</p>".to_vec(),
-        );
+        let body = if request.url.path() == "/hsts-form" {
+            br#"<title>HSTS Form</title><form method="post" action="http://example.test/submit"><input name="q" value="v"><button id="go">Go</button></form>"#.to_vec()
+        } else {
+            b"<title>Loaded</title><p>ok</p>".to_vec()
+        };
+        let mut response = FetchResponse::synthetic(final_url, 200, Some("text/html"), body);
         if request.url.path() == "/next" {
             response
                 .headers
@@ -60,6 +64,10 @@ impl ResourceLoader for RecordingLoader {
             response.headers.append_raw(
                 "set-cookie",
                 "secure_lax=1; Path=/; Secure; SameSite=Lax",
+            );
+            response.headers.append_raw(
+                "set-cookie",
+                "secure_strict=1; Path=/; Secure; SameSite=Strict",
             );
         }
         Ok(response)
@@ -174,4 +182,31 @@ fn hsts_learned_by_navigation_upgrades_the_next_browser_navigation() {
     assert_eq!(requests[1].url.to_string(), "https://example.test/account");
     let cookie = requests[1].headers.get("cookie").unwrap();
     assert!(cookie.contains("secure_lax=1"), "{cookie}");
+    assert!(cookie.contains("secure_strict=1"), "{cookie}");
+}
+
+#[test]
+fn hsts_upgraded_same_site_post_keeps_strict_and_lax_cookies() {
+    let loader = RecordingLoader::default();
+    let probe = loader.clone();
+    let mut browser = Browser::open(Box::new(loader), &url("http://example.test/start")).unwrap();
+
+    browser.navigate(&url("http://example.test/learn")).unwrap();
+    browser
+        .navigate(&url("http://example.test/hsts-form"))
+        .unwrap();
+    assert_eq!(browser.url().to_string(), "https://example.test/hsts-form");
+
+    let button = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
+    let outcome = browser.click_node(&button);
+    assert!(matches!(outcome, ClickOutcome::Navigated(_)), "{outcome:?}");
+
+    let requests = probe.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2].method, Method::Post);
+    assert_eq!(requests[2].url.to_string(), "https://example.test/submit");
+    let cookie = requests[2].headers.get("cookie").unwrap();
+    assert!(cookie.contains("secure_strict=1"), "{cookie}");
+    assert!(cookie.contains("secure_lax=1"), "{cookie}");
+    assert_eq!(browser.url().to_string(), "https://example.test/saved");
 }
