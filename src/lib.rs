@@ -18,6 +18,7 @@ pub mod canvas;
 pub mod cookie;
 pub mod cookie_network;
 pub mod cookie_same_site;
+pub mod cors_settings;
 pub mod css;
 pub mod document;
 pub mod document_referrer;
@@ -54,6 +55,9 @@ pub use animation::AnimationManager;
 pub use browser::Browser;
 pub use cookie_network::{CookieJarRef, CookieNetwork};
 pub use cookie_same_site::{cookie_allows_request, same_site_allows, SameSiteRequestContext};
+pub use cors_settings::{
+    cors_enabled, parse_cors_settings_attribute, CorsCredentialsMode, CorsSettingsAttribute,
+};
 pub use document::{Document, PointerState};
 pub use document_referrer::DocumentReferrerContext;
 pub use hsts::{HstsCache, HstsPolicy};
