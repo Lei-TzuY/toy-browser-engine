@@ -23,6 +23,7 @@ pub mod cross_origin_embedder_policy;
 pub mod cross_origin_resource_policy;
 pub mod css;
 pub mod document;
+pub mod document_policy_container;
 pub mod document_referrer;
 pub mod dom;
 pub mod editing;
@@ -75,6 +76,7 @@ pub use cross_origin_resource_policy::{
     CrossOriginResourcePolicy,
 };
 pub use document::{Document, PointerState};
+pub use document_policy_container::{DocumentPolicyContainer, NoCorsResponsePolicyResult};
 pub use document_referrer::DocumentReferrerContext;
 pub use fetch_redirect_policy::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
