@@ -15,7 +15,7 @@
 //  task.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::cookie_network::{
     policy_registry_for_jar, CookieCredentials, CookieRequestPolicy,
@@ -38,6 +38,60 @@ use super::promise::{self, PromiseRef};
 
 /// The schemes a page may fetch, on top of its own.
 const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
+
+/// Fetch defaults preflight permissions to five seconds when Max-Age is absent
+/// or invalid. A user agent may impose its own upper bound.
+const DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 5;
+const MAX_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 7_200;
+const MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION: usize = 256;
+
+#[derive(Debug, Clone)]
+struct CorsPreflightCacheEntry {
+    source_origin: String,
+    target_url: String,
+    credentialed: bool,
+    allowed_methods: Vec<String>,
+    allowed_headers: Vec<String>,
+    expires_at_ms: u64,
+}
+
+#[derive(Debug)]
+struct CorsPreflightSessionCache {
+    /// Browser documents in one session share a CookieJar. A weak handle gives
+    /// the preflight cache the same lifetime without keeping dead sessions alive.
+    jar: Weak<RefCell<crate::cookie::CookieJar>>,
+    entries: Vec<CorsPreflightCacheEntry>,
+}
+
+thread_local! {
+    static CORS_PREFLIGHT_CACHES: RefCell<Vec<CorsPreflightSessionCache>> = RefCell::new(Vec::new());
+}
+
+fn with_cors_preflight_session_cache<R>(
+    jar: &Rc<RefCell<crate::cookie::CookieJar>>,
+    operation: impl FnOnce(&mut Vec<CorsPreflightCacheEntry>) -> R,
+) -> R {
+    CORS_PREFLIGHT_CACHES.with(|sessions| {
+        let mut sessions = sessions.borrow_mut();
+        sessions.retain(|session| session.jar.upgrade().is_some());
+        let index = sessions
+            .iter()
+            .position(|session| {
+                session
+                    .jar
+                    .upgrade()
+                    .is_some_and(|live| Rc::ptr_eq(&live, jar))
+            })
+            .unwrap_or_else(|| {
+                sessions.push(CorsPreflightSessionCache {
+                    jar: Rc::downgrade(jar),
+                    entries: Vec::new(),
+                });
+                sessions.len() - 1
+            });
+        operation(&mut sessions[index].entries)
+    })
+}
 
 /// Browser-only state needed while a CORS fetch is in flight.
 #[derive(Debug, Clone)]
@@ -94,9 +148,12 @@ impl JsRuntime {
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
-                    let needs_preflight = cors
-                        .as_ref()
-                        .is_some_and(|state| state.needs_preflight);
+                    let needs_preflight = match cors.as_ref() {
+                        Some(state) if state.needs_preflight => {
+                            !self.cors_preflight_cache_allows(&request, state)
+                        }
+                        _ => false,
+                    };
                     let queued = if needs_preflight {
                         let cors = cors.expect("preflight requires CORS state");
                         let preflight = build_cors_preflight_request(&request, &cors);
@@ -182,6 +239,7 @@ impl JsRuntime {
                     self.reject_with(&promise, &error);
                     return;
                 }
+                self.store_cors_preflight_permissions(&request, &cors, &response);
 
                 let wire = request.to_wire();
                 let actual = PendingFetch {
@@ -194,6 +252,88 @@ impl JsRuntime {
                 }
             }
         }
+    }
+
+    fn cors_preflight_cache_allows(
+        &self,
+        request: &RequestData,
+        cors: &CorsFetchState,
+    ) -> bool {
+        let now_ms = self
+            .cookie_jar
+            .borrow()
+            .effective_now_ms(self.now_ms.max(0.0) as u64);
+        let source_origin = cors.source_origin.header_value();
+        let target_url = request.url.without_fragment().to_string();
+
+        with_cors_preflight_session_cache(&self.cookie_jar, |entries| {
+            entries.retain(|entry| entry.expires_at_ms > now_ms);
+            entries.iter().any(|entry| {
+                if entry.source_origin != source_origin
+                    || entry.target_url != target_url
+                    || (!entry.credentialed && cors.credentialed)
+                {
+                    return false;
+                }
+
+                let method_allowed = is_cors_safelisted_method(cors.requested_method)
+                    || entry.allowed_methods.iter().any(|method| {
+                        method == cors.requested_method.as_str()
+                            || (method == "*" && !cors.credentialed)
+                    });
+                method_allowed
+                    && cors.requested_headers.iter().all(|requested| {
+                        entry.allowed_headers.iter().any(|allowed| {
+                            allowed.eq_ignore_ascii_case(requested)
+                                || (allowed == "*"
+                                    && !cors.credentialed
+                                    && !is_cors_non_wildcard_request_header_name(requested))
+                        })
+                    })
+            })
+        })
+    }
+
+    fn store_cors_preflight_permissions(
+        &self,
+        request: &RequestData,
+        cors: &CorsFetchState,
+        response: &FetchResponse,
+    ) {
+        let max_age = cors_preflight_max_age_seconds(response);
+        if max_age == 0 {
+            return;
+        }
+
+        let now_ms = self
+            .cookie_jar
+            .borrow()
+            .effective_now_ms(self.now_ms.max(0.0) as u64);
+        let source_origin = cors.source_origin.header_value();
+        let target_url = request.url.without_fragment().to_string();
+        let expires_at_ms = now_ms.saturating_add(max_age.saturating_mul(1_000));
+        let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
+        let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
+
+        with_cors_preflight_session_cache(&self.cookie_jar, |entries| {
+            entries.retain(|entry| {
+                entry.expires_at_ms > now_ms
+                    && (entry.source_origin != source_origin
+                        || entry.target_url != target_url
+                        || entry.credentialed != cors.credentialed)
+            });
+            if entries.len() >= MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION {
+                entries.remove(0);
+            }
+            entries.push(CorsPreflightCacheEntry {
+                source_origin,
+                target_url,
+                credentialed: cors.credentialed,
+                allowed_methods,
+                allowed_headers,
+                expires_at_ms,
+            });
+        });
     }
 
     fn queue_fetch(
@@ -1614,6 +1754,19 @@ fn validate_cors_response(
     }
 }
 
+fn cors_preflight_max_age_seconds(response: &FetchResponse) -> u64 {
+    response
+        .headers
+        .get("access-control-max-age")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS)
+        .min(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)
+}
+
+fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization")
+}
+
 fn comma_tokens(value: Option<String>) -> Vec<String> {
     value
         .unwrap_or_default()
@@ -1659,7 +1812,8 @@ fn validate_cors_preflight_response(
         let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
         let wildcard = !cors.credentialed && allowed.iter().any(|header| header == "*");
         for requested in &cors.requested_headers {
-            if !wildcard
+            let wildcard_allows = wildcard && !is_cors_non_wildcard_request_header_name(requested);
+            if !wildcard_allows
                 && !allowed
                     .iter()
                     .any(|header| header.eq_ignore_ascii_case(requested))
