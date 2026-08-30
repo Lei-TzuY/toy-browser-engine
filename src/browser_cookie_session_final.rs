@@ -48,6 +48,18 @@ pub enum ClickOutcome {
     NavigationFailed { url: Url, error: LoadError },
 }
 
+/// Navigation metadata owned by the activated `<a>` element.
+///
+/// Keeping this separate from the URL prevents element-only policy such as
+/// `referrerpolicy` and `rel=noreferrer` from leaking into ordinary calls to
+/// [`Browser::navigate`] or [`Browser::follow_link`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HyperlinkActivation {
+    url: Url,
+    referrerpolicy: Option<String>,
+    rel: Option<String>,
+}
+
 pub struct Browser {
     /// Shared with the network, which may hand it to a worker thread — hence
     /// `Arc` rather than `Box`. The public constructors still take a `Box`, so
@@ -251,6 +263,49 @@ impl Browser {
         Ok((document, final_url, document_referrer))
     }
 
+    /// Fetch and construct one document from an activated HTML hyperlink.
+    ///
+    /// Unlike ordinary programmatic navigation, this path carries the
+    /// activated element's referrer controls into the first request and keeps
+    /// the resulting redirect state alive across every hop. The committed
+    /// document still derives its own fresh policy from the final response and
+    /// parser-time metadata.
+    fn load_hyperlink_document(
+        &self,
+        activation: &HyperlinkActivation,
+    ) -> Result<(Document, Url, DocumentReferrerContext), LoadError> {
+        let effective_target = self.navigation.effective_url(&activation.url);
+        let context = top_level_context(&self.document.url, &effective_target, Method::Get);
+        let request = FetchRequest::get(activation.url.clone());
+        let (response, _) = self
+            .document_referrer
+            .fetch_hyperlink_navigation(
+                &self.navigation,
+                &request,
+                context,
+                activation.referrerpolicy.as_deref(),
+                activation.rel.as_deref(),
+            )
+            .map_err(|error| load_error_from_fetch(&activation.url, error))?;
+        if !response.ok() {
+            return Err(LoadError::HttpStatus {
+                url: response.url.to_string(),
+                status: response.status,
+            });
+        }
+
+        let document_referrer = committed_referrer_context_from_response(&response);
+        let final_url = response.url.clone();
+        let storage = self.storage_for_url(&final_url);
+        let document = Document::from_response_with_session_subresources(
+            &response,
+            &self.navigation,
+            Some(storage),
+            Some(self.cookie_jar.clone()),
+        );
+        Ok((document, final_url, document_referrer))
+    }
+
     /// Navigate to `url`, pushing a history entry.
     ///
     /// A URL that differs only by fragment does not refetch the document, the
@@ -277,6 +332,50 @@ impl Browser {
             .resolve(href)
             .ok_or_else(|| LoadError::InvalidUrl(href.to_string()))?;
         self.navigate(&url)
+    }
+
+    /// Snapshot the live `<a>` default-action state after click listeners ran.
+    ///
+    /// This deliberately mirrors `Document::link_at`'s ancestor walk, but also
+    /// retains the element-only policy inputs Browser needs to dispatch the
+    /// navigation correctly. Reading after event dispatch means authored code
+    /// may still change `href`, `referrerpolicy`, or `rel` before the default
+    /// action is selected.
+    fn hyperlink_at(&self, path: &[usize]) -> Option<HyperlinkActivation> {
+        for ancestor in crate::script::dom_api::ancestor_paths(path) {
+            let node = crate::script::dom_api::node_at(&self.document.dom, &ancestor)?;
+            let Some(element) = node.as_element() else {
+                continue;
+            };
+            if element.tag_name != "a" {
+                continue;
+            }
+            let href = element.get_attr("href")?;
+            let url = self.document.resolve(href)?;
+            return Some(HyperlinkActivation {
+                url,
+                referrerpolicy: element.get_attr("referrerpolicy").map(|value| value.to_string()),
+                rel: element.get_attr("rel").map(|value| value.to_string()),
+            });
+        }
+        None
+    }
+
+    /// Perform one hyperlink default action while preserving ordinary history
+    /// and same-document fragment semantics.
+    fn navigate_hyperlink(&mut self, activation: &HyperlinkActivation) -> Result<(), LoadError> {
+        let history_url = if !activation.url.same_document(self.url()) {
+            let (document, final_url, document_referrer) =
+                self.load_hyperlink_document(activation)?;
+            self.replace_document(document, document_referrer);
+            final_url
+        } else {
+            activation.url.clone()
+        };
+        self.history.truncate(self.index + 1);
+        self.history.push(history_url);
+        self.index = self.history.len() - 1;
+        Ok(())
     }
 
     /// Reload the current entry from its source.
@@ -418,11 +517,14 @@ impl Browser {
                 .unwrap_or(fallback);
             return self.perform_submission(submission);
         }
-        match self.document.link_at(path) {
-            Some(url) => match self.navigate(&url) {
-                Ok(()) => ClickOutcome::Navigated(url),
-                Err(error) => ClickOutcome::NavigationFailed { url, error },
-            },
+        match self.hyperlink_at(path) {
+            Some(activation) => {
+                let url = activation.url.clone();
+                match self.navigate_hyperlink(&activation) {
+                    Ok(()) => ClickOutcome::Navigated(url),
+                    Err(error) => ClickOutcome::NavigationFailed { url, error },
+                }
+            }
             None if outcome.dispatched => ClickOutcome::Script,
             None => ClickOutcome::Ignored,
         }
