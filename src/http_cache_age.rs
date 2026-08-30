@@ -139,9 +139,9 @@ mod tests {
     }
 
     #[test]
-    fn backwards_timing_never_underflows() {
+    fn backwards_local_timing_never_underflows() {
         let input = HttpCacheAgeInput {
-            date_value_secs: Some(120),
+            date_value_secs: None,
             request_time_secs: 150,
             response_time_secs: 140,
             now_secs: 130,
