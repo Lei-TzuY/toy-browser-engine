@@ -29,7 +29,7 @@ use crate::net::Url;
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
     IntersectionObserverEntryData, IntersectionObserverTarget, RequestCredentials, RequestData,
-    RequestMode, ResizeObserverData, ResizeObserverEntryData, ResponseData, UrlData,
+    RequestMode, ResizeObserverData, ResizeObserverEntryData, ResponseData, ResponseType, UrlData,
     UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
@@ -218,8 +218,11 @@ impl JsRuntime {
                         }
                         filter_cors_response_headers(&mut response, cors.credentialed);
                     }
-                    let value =
-                        host_value(HostObject::Response(ResponseData::from_wire(response)));
+                    let mut response_data = ResponseData::from_wire(response);
+                    if cors.is_some() {
+                        response_data.response_type = ResponseType::Cors;
+                    }
+                    let value = host_value(HostObject::Response(response_data));
                     self.settle_resolve(&promise, value);
                 }
                 Err(error) => self.reject_with(&promise, &error),
@@ -649,6 +652,7 @@ impl JsRuntime {
                     headers: headers_ref(headers),
                     body: Body::new(body),
                     redirected: false,
+                    response_type: ResponseType::Basic,
                 };
                 host_value(HostObject::Response(response))
             }
@@ -802,7 +806,7 @@ impl JsRuntime {
                 "redirected" => JsValue::Bool(response.redirected),
                 "headers" => host_value(HostObject::Headers(response.headers.clone())),
                 "bodyUsed" => JsValue::Bool(response.body.used()),
-                "type" => JsValue::Str("basic".to_string()),
+                "type" => JsValue::Str(response.response_type.as_str().to_string()),
                 _ => JsValue::Undefined,
             },
             HostObject::AbortController(state) => match prop {
