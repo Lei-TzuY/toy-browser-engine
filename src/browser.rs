@@ -268,7 +268,12 @@ impl Browser {
         // handler sees when it reads `document.activeElement`.
         self.document.focus_from_click(path);
 
-        let outcome = self.document.dispatch_runtime_event(path, "click");
+        let outcome = {
+            let document = &mut self.document;
+            document
+                .runtime
+                .dispatch_event(&mut document.dom, path, "click")
+        };
         let submitted = self.document.apply_pending_actions();
         // A listener is a task like any other, so its microtasks run now
         // rather than waiting for the next turn of the loop: a promise
@@ -544,11 +549,15 @@ impl Browser {
         form_path: NodePath,
         submitter: Option<NodePath>,
     ) -> ClickOutcome {
-        let key_outcome = self.document.dispatch_runtime_event_init(
-            &target,
-            "keydown",
-            browser_key_event_init(event),
-        );
+        let key_outcome = {
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
+                &target,
+                "keydown",
+                browser_key_event_init(event),
+            )
+        };
         let requested = self.document.apply_pending_actions();
         self.document.run_microtask_checkpoint();
         if let Some(submission) = requested {
@@ -569,11 +578,15 @@ impl Browser {
             return ClickOutcome::Script;
         }
 
-        let submit_outcome = self.document.dispatch_runtime_event_init(
-            &form_path,
-            "submit",
-            EventInit::bubbling(),
-        );
+        let submit_outcome = {
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
+                &form_path,
+                "submit",
+                EventInit::bubbling(),
+            )
+        };
         let requested = self.document.apply_pending_actions();
         self.document.run_microtask_checkpoint();
         if let Some(submission) = requested {
@@ -606,13 +619,15 @@ impl Browser {
         }
 
         for path in &invalid {
-            self.document.dispatch_runtime_event_init(
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
                 path,
                 "invalid",
                 EventInit::non_bubbling(),
             );
-            self.document.apply_pending_actions();
-            self.document.run_microtask_checkpoint();
+            document.apply_pending_actions();
+            document.run_microtask_checkpoint();
         }
         if let Some(first) = invalid.first() {
             self.document.focus_path(first);
