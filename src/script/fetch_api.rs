@@ -17,13 +17,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::cookie_network::{
-    policy_registry_for_jar, CookieCredentials, CookieRequestPolicy,
-};
+use crate::cookie_network::{policy_registry_for_jar, CookieCredentials, CookieRequestPolicy};
 use crate::cookie_same_site::SameSiteRequestContext;
-use crate::net::fetch::{
-    FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin,
-};
+use crate::net::fetch::{FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin};
 use crate::net::Url;
 
 use super::host::{
@@ -39,7 +35,22 @@ use super::promise::{self, PromiseRef};
 /// The schemes a page may fetch, on top of its own.
 const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
 
-/// Browser-only state needed while a CORS fetch is in flight.
+/// Fetch defaults preflight permissions to five seconds when Max-Age is absent or invalid.
+const DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 5;
+/// Deliberate user-agent cap; Fetch permits implementation-defined limits.
+const MAX_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 7_200;
+
+#[derive(Debug, Clone)]
+pub(crate) struct CorsPreflightCacheEntry {
+    source_origin: String,
+    target_url: String,
+    credentialed: bool,
+    allowed_methods: Vec<String>,
+    allowed_headers: Vec<String>,
+    expires_at_ms: f64,
+}
+
+/// Browser-only state neded while a CORS fetch is in flight.
 #[derive(Debug, Clone)]
 struct CorsFetchState {
     source_origin: Origin,
@@ -94,9 +105,12 @@ impl JsRuntime {
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
-                    let needs_preflight = cors
-                        .as_ref()
-                        .is_some_and(|state| state.needs_preflight);
+                    let needs_preflight = match cors.as_ref() {
+                        Some(state) if state.needs_preflight => {
+                            !self.cors_preflight_cache_allows(&request, state)
+                        }
+                        _ => false,
+                    };
                     let queued = if needs_preflight {
                         let cors = cors.expect("preflight requires CORS state");
                         let preflight = build_cors_preflight_request(&request, &cors);
@@ -160,8 +174,7 @@ impl JsRuntime {
                             return;
                         }
                     }
-                    let value =
-                        host_value(HostObject::Response(ResponseData::from_wire(response)));
+                    let value = host_value(HostObject::Response(ResponseData::from_wire(response)));
                     self.settle_resolve(&promise, value);
                 }
                 Err(error) => self.reject_with(&promise, &error),
@@ -182,6 +195,7 @@ impl JsRuntime {
                     self.reject_with(&promise, &error);
                     return;
                 }
+                self.store_cors_preflight_permissions(&request, &cors, &response);
 
                 let wire = request.to_wire();
                 let actual = PendingFetch {
@@ -194,6 +208,69 @@ impl JsRuntime {
                 }
             }
         }
+    }
+
+    fn cors_preflight_cache_allows(
+        &mut self,
+        request: &RequestData,
+        cors: &CorsFetchState,
+    ) -> bool {
+        let now = self.now_ms;
+        self.cors_preflight_cache
+            .retain(|entry| entry.expires_at_ms > now);
+        let source = cors.source_origin.header_value();
+        let target = request.url.to_string();
+        self.cors_preflight_cache.iter().any(|entry| {
+            if entry.source_origin != source
+                || entry.target_url != target
+                || !(entry.credentialed || !cors.credentialed)
+            {
+                return false;
+            }
+            let method_allowed = is_cors_safelisted_method(cors.requested_method)
+                || entry
+                    .allowed_methods
+                    .iter()
+                    .any(|method| method == "*" || method == cors.requested_method.as_str());
+            method_allowed
+                && cors.requested_headers.iter().all(|requested| {
+                    entry.allowed_headers.iter().any(|allowed| {
+                        allowed.eq_ignore_ascii_case(requested)
+                            || (allowed == "*"
+                                && !is_cors_non_wildcard_request_header_name(requested))
+                    })
+                })
+        })
+    }
+
+    fn store_cors_preflight_permissions(
+        &mut self,
+        request: &RequestData,
+        cors: &CorsFetchState,
+        response: &FetchResponse,
+    ) {
+        let max_age = cors_preflight_max_age_seconds(response);
+        if max_age == 0 {
+            return;
+        }
+        let source_origin = cors.source_origin.header_value();
+        let target_url = request.url.to_string();
+        let expires_at_ms = self.now_ms + max_age as f64 * 1_000.0;
+        let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
+        let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
+        self.cors_preflight_cache.retain(|entry| {
+            entry.source_origin != source_origin
+                || entry.target_url != target_url
+                || entry.credentialed != cors.credentialed
+        });
+        self.cors_preflight_cache.push(CorsPreflightCacheEntry {
+            source_origin,
+            target_url,
+            credentialed: cors.credentialed,
+            allowed_methods,
+            allowed_headers,
+            expires_at_ms,
+        });
     }
 
     fn queue_fetch(
@@ -242,8 +319,7 @@ impl JsRuntime {
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
             return Err(FetchError::UnsupportedScheme(scheme.to_string()));
         }
-        if request.credentials == RequestCredentials::Include
-            && !matches!(scheme, "http" | "https")
+        if request.credentials == RequestCredentials::Include && !matches!(scheme, "http" | "https")
         {
             return Err(FetchError::BadRequest(
                 "credentials mode \"include\" is only supported for HTTP(S) requests".into(),
@@ -276,8 +352,8 @@ impl JsRuntime {
                 }
 
                 let requested_headers = cors_unsafe_request_header_names(&request);
-                let needs_preflight = !is_cors_safelisted_method(request.method)
-                    || !requested_headers.is_empty();
+                let needs_preflight =
+                    !is_cors_safelisted_method(request.method) || !requested_headers.is_empty();
                 request
                     .headers
                     .borrow_mut()
@@ -297,7 +373,7 @@ impl JsRuntime {
                     "{} may not fetch {}",
                     source_origin.header_value(),
                     request.url
-                )))
+                )));
             }
             _ => None,
         };
@@ -320,37 +396,30 @@ impl JsRuntime {
 
     /// The `Request` constructor, shared with `fetch`'s first argument.
     fn build_request(&mut self, input: JsValue, init: JsValue) -> Result<RequestData, FetchError> {
-        let (
-            mut url,
-            mut method,
-            mut headers,
-            mut body,
-            mut signal,
-            mut mode,
-            mut credentials,
-        ) = match &input {
-            JsValue::Host(host) => match host.as_request() {
-                Some(existing) => (
-                    existing.url.clone(),
-                    existing.method,
-                    existing.headers.borrow().clone(),
-                    existing.body.peek(),
-                    existing.signal.clone(),
-                    existing.mode,
-                    existing.credentials,
+        let (mut url, mut method, mut headers, mut body, mut signal, mut mode, mut credentials) =
+            match &input {
+                JsValue::Host(host) => match host.as_request() {
+                    Some(existing) => (
+                        existing.url.clone(),
+                        existing.method,
+                        existing.headers.borrow().clone(),
+                        existing.body.peek(),
+                        existing.signal.clone(),
+                        existing.mode,
+                        existing.credentials,
+                    ),
+                    None => return Err(FetchError::InvalidUrl(to_string(&input))),
+                },
+                other => (
+                    self.resolve_fetch_url(&to_string(other))?,
+                    Method::Get,
+                    HeaderMap::new(),
+                    None,
+                    None,
+                    RequestMode::Cors,
+                    RequestCredentials::SameOrigin,
                 ),
-                None => return Err(FetchError::InvalidUrl(to_string(&input))),
-            },
-            other => (
-                self.resolve_fetch_url(&to_string(other))?,
-                Method::Get,
-                HeaderMap::new(),
-                None,
-                None,
-                RequestMode::Cors,
-                RequestCredentials::SameOrigin,
-            ),
-        };
+            };
 
         if let JsValue::Object(props) = &init {
             for (key, value) in props.borrow().iter() {
@@ -522,7 +591,9 @@ impl JsRuntime {
                         Ok(base_u) => match base_u.join(&url_str) {
                             Ok(u) => u,
                             Err(_) => {
-                                self.throw_type_error(format!("Invalid URL: {url_str} with base {base}"));
+                                self.throw_type_error(format!(
+                                    "Invalid URL: {url_str} with base {base}"
+                                ));
                                 return JsValue::Undefined;
                             }
                         },
@@ -540,7 +611,9 @@ impl JsRuntime {
                         }
                     }
                 };
-                host_value(HostObject::URL(Rc::new(RefCell::new(UrlData::new(parsed_url)))))
+                host_value(HostObject::URL(Rc::new(RefCell::new(UrlData::new(
+                    parsed_url,
+                )))))
             }
             Builtin::URLSearchParamsCtor => {
                 let init_val = args.first().unwrap_or(&JsValue::Undefined);
@@ -569,9 +642,9 @@ impl JsRuntime {
                 };
                 host_value(HostObject::URLSearchParams(Rc::new(RefCell::new(params))))
             }
-            Builtin::AudioContextCtor => {
-                host_value(HostObject::AudioContext(Rc::new(RefCell::new(crate::audio::AudioContext::new()))))
-            }
+            Builtin::AudioContextCtor => host_value(HostObject::AudioContext(Rc::new(
+                RefCell::new(crate::audio::AudioContext::new()),
+            ))),
             Builtin::IntersectionObserverCtor => {
                 let mut thresholds = vec![0.0];
                 if let Some(JsValue::Object(opts)) = args.get(1) {
@@ -580,7 +653,8 @@ impl JsRuntime {
                             match v {
                                 JsValue::Number(n) => thresholds = vec![*n],
                                 JsValue::Array(arr) => {
-                                    thresholds = arr.borrow().iter().map(|x| to_number(x)).collect();
+                                    thresholds =
+                                        arr.borrow().iter().map(|x| to_number(x)).collect();
                                 }
                                 _ => {}
                             }
@@ -588,29 +662,35 @@ impl JsRuntime {
                     }
                 }
                 let data = IntersectionObserverData::new(thresholds);
-                host_value(HostObject::IntersectionObserver(Rc::new(RefCell::new(data))))
+                host_value(HostObject::IntersectionObserver(Rc::new(RefCell::new(
+                    data,
+                ))))
             }
             Builtin::ResizeObserverCtor => {
                 let data = ResizeObserverData::new();
                 host_value(HostObject::ResizeObserver(Rc::new(RefCell::new(data))))
             }
             Builtin::MapCtor => {
-                let entries: Vec<(String, JsValue)> = if let Some(JsValue::Array(arr)) = args.first() {
-                    arr.borrow().iter().filter_map(|item| {
-                        if let JsValue::Array(pair) = item {
-                            let pair = pair.borrow();
-                            if pair.len() >= 2 {
-                                Some((to_string(&pair[0]), pair[1].clone()))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }).collect()
-                } else {
-                    Vec::new()
-                };
+                let entries: Vec<(String, JsValue)> =
+                    if let Some(JsValue::Array(arr)) = args.first() {
+                        arr.borrow()
+                            .iter()
+                            .filter_map(|item| {
+                                if let JsValue::Array(pair) = item {
+                                    let pair = pair.borrow();
+                                    if pair.len() >= 2 {
+                                        Some((to_string(&pair[0]), pair[1].clone()))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                 host_value(HostObject::JsMap(Rc::new(RefCell::new(entries))))
             }
             Builtin::SetCtor => {
@@ -686,8 +766,15 @@ impl JsRuntime {
                     "hostname" => JsValue::Str(u.url.host().to_string()),
                     "port" => JsValue::Str(u.url.port().map(|p| p.to_string()).unwrap_or_default()),
                     "pathname" => JsValue::Str(u.url.path().to_string()),
-                    "search" => JsValue::Str(u.url.query().map(|q| format!("?{}", q)).unwrap_or_default()),
-                    "hash" => JsValue::Str(u.url.fragment().map(|f| format!("#{}", f)).unwrap_or_default()),
+                    "search" => {
+                        JsValue::Str(u.url.query().map(|q| format!("?{}", q)).unwrap_or_default())
+                    }
+                    "hash" => JsValue::Str(
+                        u.url
+                            .fragment()
+                            .map(|f| format!("#{}", f))
+                            .unwrap_or_default(),
+                    ),
                     "searchParams" => {
                         let qs = u.url.query().unwrap_or("");
                         let params = UrlSearchParamsData::from_query(qs, Some(u_rc.clone()));
@@ -734,7 +821,9 @@ impl JsRuntime {
                 match prop {
                     "sampleRate" => JsValue::Number(c.sample_rate),
                     "state" => JsValue::Str(c.state.clone()),
-                    "destination" => host_value(HostObject::AudioNode(ctx.clone(), c.destination_id)),
+                    "destination" => {
+                        host_value(HostObject::AudioNode(ctx.clone(), c.destination_id))
+                    }
                     _ => JsValue::Undefined,
                 }
             }
@@ -746,11 +835,19 @@ impl JsRuntime {
                 match &node.kind {
                     crate::audio::AudioNodeKind::Oscillator { osc_type, .. } => match prop {
                         "type" => JsValue::Str(osc_type.as_str().to_string()),
-                        "frequency" => host_value(HostObject::AudioParam(ctx.clone(), *node_id, "frequency".to_string())),
+                        "frequency" => host_value(HostObject::AudioParam(
+                            ctx.clone(),
+                            *node_id,
+                            "frequency".to_string(),
+                        )),
                         _ => JsValue::Undefined,
                     },
                     crate::audio::AudioNodeKind::Gain { .. } => match prop {
-                        "gain" => host_value(HostObject::AudioParam(ctx.clone(), *node_id, "gain".to_string())),
+                        "gain" => host_value(HostObject::AudioParam(
+                            ctx.clone(),
+                            *node_id,
+                            "gain".to_string(),
+                        )),
                         _ => JsValue::Undefined,
                     },
                     crate::audio::AudioNodeKind::Destination => match prop {
@@ -765,7 +862,11 @@ impl JsRuntime {
                     return JsValue::Undefined;
                 };
                 let param = match &node.kind {
-                    crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => frequency,
+                    crate::audio::AudioNodeKind::Oscillator { frequency, .. }
+                        if param_name == "frequency" =>
+                    {
+                        frequency
+                    }
                     crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => gain,
                     _ => return JsValue::Undefined,
                 };
@@ -783,7 +884,8 @@ impl JsRuntime {
                     "root" => JsValue::Null,
                     "rootMargin" => JsValue::Str(d.root_margin.clone()),
                     "thresholds" => {
-                        let arr: Vec<JsValue> = d.thresholds.iter().map(|t| JsValue::Number(*t)).collect();
+                        let arr: Vec<JsValue> =
+                            d.thresholds.iter().map(|t| JsValue::Number(*t)).collect();
                         JsValue::Array(Rc::new(RefCell::new(arr)))
                     }
                     _ => JsValue::Undefined,
@@ -854,11 +956,20 @@ impl JsRuntime {
             HostObject::URLSearchParams(params) => match prop {
                 "get" => {
                     let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
-                    params.borrow().get(&name).map(JsValue::Str).unwrap_or(JsValue::Null)
+                    params
+                        .borrow()
+                        .get(&name)
+                        .map(JsValue::Str)
+                        .unwrap_or(JsValue::Null)
                 }
                 "getAll" => {
                     let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
-                    let all: Vec<JsValue> = params.borrow().get_all(&name).into_iter().map(JsValue::Str).collect();
+                    let all: Vec<JsValue> = params
+                        .borrow()
+                        .get_all(&name)
+                        .into_iter()
+                        .map(JsValue::Str)
+                        .collect();
                     JsValue::Array(Rc::new(std::cell::RefCell::new(all)))
                 }
                 "has" => {
@@ -884,17 +995,38 @@ impl JsRuntime {
                 }
                 "toString" => JsValue::Str(params.borrow().to_query_string()),
                 "keys" => {
-                    let keys: Vec<JsValue> = params.borrow().pairs.borrow().iter().map(|(k, _)| JsValue::Str(k.clone())).collect();
+                    let keys: Vec<JsValue> = params
+                        .borrow()
+                        .pairs
+                        .borrow()
+                        .iter()
+                        .map(|(k, _)| JsValue::Str(k.clone()))
+                        .collect();
                     JsValue::Array(Rc::new(std::cell::RefCell::new(keys)))
                 }
                 "values" => {
-                    let vals: Vec<JsValue> = params.borrow().pairs.borrow().iter().map(|(_, v)| JsValue::Str(v.clone())).collect();
+                    let vals: Vec<JsValue> = params
+                        .borrow()
+                        .pairs
+                        .borrow()
+                        .iter()
+                        .map(|(_, v)| JsValue::Str(v.clone()))
+                        .collect();
                     JsValue::Array(Rc::new(std::cell::RefCell::new(vals)))
                 }
                 "entries" => {
-                    let entries: Vec<JsValue> = params.borrow().pairs.borrow().iter().map(|(k, v)| {
-                        JsValue::Array(Rc::new(std::cell::RefCell::new(vec![JsValue::Str(k.clone()), JsValue::Str(v.clone())])))
-                    }).collect();
+                    let entries: Vec<JsValue> = params
+                        .borrow()
+                        .pairs
+                        .borrow()
+                        .iter()
+                        .map(|(k, v)| {
+                            JsValue::Array(Rc::new(std::cell::RefCell::new(vec![
+                                JsValue::Str(k.clone()),
+                                JsValue::Str(v.clone()),
+                            ])))
+                        })
+                        .collect();
                     JsValue::Array(Rc::new(std::cell::RefCell::new(entries)))
                 }
                 _ => JsValue::Undefined,
@@ -942,7 +1074,10 @@ impl JsRuntime {
                 }
                 "start" => {
                     if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
-                        if let crate::audio::AudioNodeKind::Oscillator { ref mut started, .. } = node.kind {
+                        if let crate::audio::AudioNodeKind::Oscillator {
+                            ref mut started, ..
+                        } = node.kind
+                        {
                             *started = true;
                         }
                     }
@@ -950,7 +1085,10 @@ impl JsRuntime {
                 }
                 "stop" => {
                     if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
-                        if let crate::audio::AudioNodeKind::Oscillator { ref mut stopped, .. } = node.kind {
+                        if let crate::audio::AudioNodeKind::Oscillator {
+                            ref mut stopped, ..
+                        } = node.kind
+                        {
                             *stopped = true;
                         }
                     }
@@ -964,7 +1102,11 @@ impl JsRuntime {
                     return JsValue::Undefined;
                 };
                 let param = match &node.kind {
-                    crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => frequency,
+                    crate::audio::AudioNodeKind::Oscillator { frequency, .. }
+                        if param_name == "frequency" =>
+                    {
+                        frequency
+                    }
                     crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => gain,
                     _ => return JsValue::Undefined,
                 };
@@ -991,7 +1133,9 @@ impl JsRuntime {
                 }
                 "unobserve" => {
                     let target_id = args.first().map(to_string).unwrap_or_default();
-                    data.borrow_mut().targets.retain(|t| t.element_id != target_id);
+                    data.borrow_mut()
+                        .targets
+                        .retain(|t| t.element_id != target_id);
                     JsValue::Undefined
                 }
                 "disconnect" => {
@@ -999,16 +1143,23 @@ impl JsRuntime {
                     JsValue::Undefined
                 }
                 "takeRecords" => {
-                    let entries: Vec<JsValue> = data.borrow().targets.iter().map(|t| {
-                        host_value(HostObject::IntersectionObserverEntry(IntersectionObserverEntryData {
-                            target_id: t.element_id.clone(),
-                            is_intersecting: t.is_intersecting,
-                            intersection_ratio: t.intersection_ratio,
-                            bounding_client_rect: [0.0, 0.0, 0.0, 0.0],
-                            intersection_rect: [0.0, 0.0, 0.0, 0.0],
-                            root_bounds: [0.0, 0.0, 0.0, 0.0],
-                        }))
-                    }).collect();
+                    let entries: Vec<JsValue> = data
+                        .borrow()
+                        .targets
+                        .iter()
+                        .map(|t| {
+                            host_value(HostObject::IntersectionObserverEntry(
+                                IntersectionObserverEntryData {
+                                    target_id: t.element_id.clone(),
+                                    is_intersecting: t.is_intersecting,
+                                    intersection_ratio: t.intersection_ratio,
+                                    bounding_client_rect: [0.0, 0.0, 0.0, 0.0],
+                                    intersection_rect: [0.0, 0.0, 0.0, 0.0],
+                                    root_bounds: [0.0, 0.0, 0.0, 0.0],
+                                },
+                            ))
+                        })
+                        .collect();
                     JsValue::Array(Rc::new(RefCell::new(entries)))
                 }
                 _ => JsValue::Undefined,
@@ -1033,14 +1184,19 @@ impl JsRuntime {
                     JsValue::Undefined
                 }
                 "takeRecords" => {
-                    let entries: Vec<JsValue> = data.borrow().targets.iter().map(|target_id| {
-                        host_value(HostObject::ResizeObserverEntry(ResizeObserverEntryData {
-                            target_id: target_id.clone(),
-                            content_rect: [0.0, 0.0, 100.0, 100.0],
-                            border_box_size: (100.0, 100.0),
-                            content_box_size: (100.0, 100.0),
-                        }))
-                    }).collect();
+                    let entries: Vec<JsValue> = data
+                        .borrow()
+                        .targets
+                        .iter()
+                        .map(|target_id| {
+                            host_value(HostObject::ResizeObserverEntry(ResizeObserverEntryData {
+                                target_id: target_id.clone(),
+                                content_rect: [0.0, 0.0, 100.0, 100.0],
+                                border_box_size: (100.0, 100.0),
+                                content_box_size: (100.0, 100.0),
+                            }))
+                        })
+                        .collect();
                     JsValue::Array(Rc::new(RefCell::new(entries)))
                 }
                 _ => JsValue::Undefined,
@@ -1049,7 +1205,9 @@ impl JsRuntime {
             HostObject::JsMap(entries) => match prop {
                 "get" => {
                     let key = args.first().map(to_string).unwrap_or_default();
-                    entries.borrow().iter()
+                    entries
+                        .borrow()
+                        .iter()
                         .find(|(k, _)| k == &key)
                         .map(|(_, v)| v.clone())
                         .unwrap_or(JsValue::Undefined)
@@ -1081,17 +1239,29 @@ impl JsRuntime {
                     JsValue::Undefined
                 }
                 "keys" => {
-                    let keys: Vec<JsValue> = entries.borrow().iter().map(|(k, _)| JsValue::Str(k.clone())).collect();
+                    let keys: Vec<JsValue> = entries
+                        .borrow()
+                        .iter()
+                        .map(|(k, _)| JsValue::Str(k.clone()))
+                        .collect();
                     JsValue::Array(Rc::new(RefCell::new(keys)))
                 }
                 "values" => {
-                    let vals: Vec<JsValue> = entries.borrow().iter().map(|(_, v)| v.clone()).collect();
+                    let vals: Vec<JsValue> =
+                        entries.borrow().iter().map(|(_, v)| v.clone()).collect();
                     JsValue::Array(Rc::new(RefCell::new(vals)))
                 }
                 "entries" => {
-                    let pairs: Vec<JsValue> = entries.borrow().iter().map(|(k, v)| {
-                        JsValue::Array(Rc::new(RefCell::new(vec![JsValue::Str(k.clone()), v.clone()])))
-                    }).collect();
+                    let pairs: Vec<JsValue> = entries
+                        .borrow()
+                        .iter()
+                        .map(|(k, v)| {
+                            JsValue::Array(Rc::new(RefCell::new(vec![
+                                JsValue::Str(k.clone()),
+                                v.clone(),
+                            ])))
+                        })
+                        .collect();
                     JsValue::Array(Rc::new(RefCell::new(pairs)))
                 }
                 _ => JsValue::Undefined,
@@ -1121,13 +1291,24 @@ impl JsRuntime {
                     JsValue::Undefined
                 }
                 "keys" | "values" => {
-                    let vals: Vec<JsValue> = items.borrow().iter().map(|v| JsValue::Str(v.clone())).collect();
+                    let vals: Vec<JsValue> = items
+                        .borrow()
+                        .iter()
+                        .map(|v| JsValue::Str(v.clone()))
+                        .collect();
                     JsValue::Array(Rc::new(RefCell::new(vals)))
                 }
                 "entries" => {
-                    let pairs: Vec<JsValue> = items.borrow().iter().map(|v| {
-                        JsValue::Array(Rc::new(RefCell::new(vec![JsValue::Str(v.clone()), JsValue::Str(v.clone())])))
-                    }).collect();
+                    let pairs: Vec<JsValue> = items
+                        .borrow()
+                        .iter()
+                        .map(|v| {
+                            JsValue::Array(Rc::new(RefCell::new(vec![
+                                JsValue::Str(v.clone()),
+                                JsValue::Str(v.clone()),
+                            ])))
+                        })
+                        .collect();
                     JsValue::Array(Rc::new(RefCell::new(pairs)))
                 }
                 _ => JsValue::Undefined,
@@ -1150,11 +1331,7 @@ impl JsRuntime {
                 "randomUUID" => {
                     let uuid = format!(
                         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-                        0x110ec58a_u32,
-                        0xa0f2_u16,
-                        0xac4_u16,
-                        0x8393_u16,
-                        0xc0de00000001_u64
+                        0x110ec58a_u32, 0xa0f2_u16, 0xac4_u16, 0x8393_u16, 0xc0de00000001_u64
                     );
                     JsValue::Str(uuid)
                 }
@@ -1505,9 +1682,7 @@ fn is_cors_safelisted_method(method: Method) -> bool {
 
 fn contains_cors_unsafe_request_header_byte(value: &str) -> bool {
     value.bytes().any(|byte| {
-        (byte < 0x20 && byte != b'\t')
-            || byte == 0x7f
-            || b"\"():<>?@[\\]{}".contains(&byte)
+        (byte < 0x20 && byte != b'\t') || byte == 0x7f || b"\"():<>?@[\\]{}".contains(&byte)
     })
 }
 
@@ -1517,9 +1692,9 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
     }
     match name {
         "accept" => !contains_cors_unsafe_request_header_byte(value),
-        "accept-language" | "content-language" => value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || b" *,-.;=".contains(&byte)
-        }),
+        "accept-language" | "content-language" => value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b" *,-.;=".contains(&byte)),
         "content-type" => {
             if contains_cors_unsafe_request_header_byte(value) {
                 return false;
@@ -1565,6 +1740,19 @@ fn build_cors_preflight_request(request: &RequestData, cors: &CorsFetchState) ->
         );
     }
     FetchRequest::new(request.url.clone(), Method::Options, headers, None)
+}
+
+fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization")
+}
+
+fn cors_preflight_max_age_seconds(response: &FetchResponse) -> u64 {
+    response
+        .headers
+        .get("access-control-max-age")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS)
+        .min(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)
 }
 
 fn cors_preflight_cookie_policy() -> CookieRequestPolicy {
@@ -1659,7 +1847,8 @@ fn validate_cors_preflight_response(
         let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
         let wildcard = !cors.credentialed && allowed.iter().any(|header| header == "*");
         for requested in &cors.requested_headers {
-            if !wildcard
+            let wildcard_allowed = wildcard && !is_cors_non_wildcard_request_header_name(requested);
+            if !wildcard_allowed
                 && !allowed
                     .iter()
                     .any(|header| header.eq_ignore_ascii_case(requested))

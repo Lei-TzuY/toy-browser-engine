@@ -391,6 +391,8 @@ pub struct JsRuntime {
     /// back a pending promise and queues the request, and the document is what
     /// hands it to the network and brings the answer back.
     pub fetches: FetchRegistry<PendingFetch>,
+    /// Successful CORS preflight permissions owned by this browsing runtime.
+    pub(crate) cors_preflight_cache: Vec<super::fetch_api::CorsPreflightCacheEntry>,
     detached: Vec<DetachedSlot>,
     depth: usize,
 }
@@ -419,6 +421,7 @@ impl JsRuntime {
             scheduler: Scheduler::new(),
             now_ms: 0.0,
             fetches: FetchRegistry::new(),
+            cors_preflight_cache: Vec::new(),
             url: crate::net::url::Url::parse("demo:///index.html").unwrap(),
             detached: Vec::new(),
             depth: 0,
@@ -634,8 +637,12 @@ impl JsRuntime {
                 let type_name = args.first().map(to_string).unwrap_or_default();
                 let options = args.get(1);
                 let (bubbles, cancelable, detail) = if let Some(JsValue::Object(props)) = options {
-                    let b = object_get(props, "bubbles").map(|v| to_boolean(&v)).unwrap_or(false);
-                    let c = object_get(props, "cancelable").map(|v| to_boolean(&v)).unwrap_or(false);
+                    let b = object_get(props, "bubbles")
+                        .map(|v| to_boolean(&v))
+                        .unwrap_or(false);
+                    let c = object_get(props, "cancelable")
+                        .map(|v| to_boolean(&v))
+                        .unwrap_or(false);
                     let d = object_get(props, "detail").unwrap_or(JsValue::Null);
                     (b, c, d)
                 } else {
@@ -659,7 +666,9 @@ impl JsRuntime {
                 JsValue::Object(Rc::new(RefCell::new(fields)))
             }
             JsValue::Builtin(Builtin::DOMParserCtor) => JsValue::Builtin(Builtin::DOMParser),
-            JsValue::Builtin(Builtin::XMLSerializerCtor) => JsValue::Builtin(Builtin::XMLSerializer),
+            JsValue::Builtin(Builtin::XMLSerializerCtor) => {
+                JsValue::Builtin(Builtin::XMLSerializer)
+            }
             JsValue::Builtin(
                 builtin @ (Builtin::HeadersCtor
                 | Builtin::RequestCtor
@@ -975,32 +984,38 @@ impl JsRuntime {
         let event = Rc::new(RefCell::new(properties));
         let mut outcome = EventOutcome::default();
 
-        let set_phase_and_target = |ev: &Rc<RefCell<Vec<(String, JsValue)>>>, phase: f32, path: &[usize]| {
-            let mut props = ev.borrow_mut();
-            if let Some((_, v)) = props.iter_mut().find(|(k, _)| k == "eventPhase") {
-                *v = JsValue::Number(phase);
-            } else {
-                props.push(("eventPhase".to_string(), JsValue::Number(phase)));
-            }
-            if let Some((_, v)) = props.iter_mut().find(|(k, _)| k == "currentTarget") {
-                *v = JsValue::Element(NodeRef::Tree(path.to_vec()));
-            } else {
-                props.push((
-                    "currentTarget".to_string(),
-                    JsValue::Element(NodeRef::Tree(path.to_vec())),
-                ));
-            }
-        };
+        let set_phase_and_target =
+            |ev: &Rc<RefCell<Vec<(String, JsValue)>>>, phase: f32, path: &[usize]| {
+                let mut props = ev.borrow_mut();
+                if let Some((_, v)) = props.iter_mut().find(|(k, _)| k == "eventPhase") {
+                    *v = JsValue::Number(phase);
+                } else {
+                    props.push(("eventPhase".to_string(), JsValue::Number(phase)));
+                }
+                if let Some((_, v)) = props.iter_mut().find(|(k, _)| k == "currentTarget") {
+                    *v = JsValue::Element(NodeRef::Tree(path.to_vec()));
+                } else {
+                    props.push((
+                        "currentTarget".to_string(),
+                        JsValue::Element(NodeRef::Tree(path.to_vec())),
+                    ));
+                }
+            };
 
         // Phase 1: Capturing phase (Root down to target's parent)
-        let capture_chain: Vec<NodePath> = (0..target.len()).map(|n| target[..n].to_vec()).collect();
+        let capture_chain: Vec<NodePath> =
+            (0..target.len()).map(|n| target[..n].to_vec()).collect();
         for path in capture_chain {
             set_phase_and_target(&event, 1.0, &path); // 1 = CAPTURING_PHASE
 
             let matching: Vec<Listener> = self
                 .listeners
                 .iter()
-                .filter(|l| l.event == event_type && l.capture && self.tree_path_of(&l.target).as_deref() == Some(path.as_slice()))
+                .filter(|l| {
+                    l.event == event_type
+                        && l.capture
+                        && self.tree_path_of(&l.target).as_deref() == Some(path.as_slice())
+                })
                 .cloned()
                 .collect();
 
@@ -1021,15 +1036,24 @@ impl JsRuntime {
                     Some(JsValue::Bool(true))
                 );
 
-                if matches!(object_get(&event, "stopImmediate"), Some(JsValue::Bool(true))) {
+                if matches!(
+                    object_get(&event, "stopImmediate"),
+                    Some(JsValue::Bool(true))
+                ) {
                     return outcome;
                 }
-                if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                if matches!(
+                    object_get(&event, "cancelBubble"),
+                    Some(JsValue::Bool(true))
+                ) {
                     break;
                 }
             }
 
-            if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+            if matches!(
+                object_get(&event, "cancelBubble"),
+                Some(JsValue::Bool(true))
+            ) {
                 return outcome;
             }
         }
@@ -1041,7 +1065,9 @@ impl JsRuntime {
             let matching: Vec<Listener> = self
                 .listeners
                 .iter()
-                .filter(|l| l.event == event_type && self.tree_path_of(&l.target).as_deref() == Some(target))
+                .filter(|l| {
+                    l.event == event_type && self.tree_path_of(&l.target).as_deref() == Some(target)
+                })
                 .cloned()
                 .collect();
 
@@ -1062,29 +1088,45 @@ impl JsRuntime {
                     Some(JsValue::Bool(true))
                 );
 
-                if matches!(object_get(&event, "stopImmediate"), Some(JsValue::Bool(true))) {
+                if matches!(
+                    object_get(&event, "stopImmediate"),
+                    Some(JsValue::Bool(true))
+                ) {
                     return outcome;
                 }
-                if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                if matches!(
+                    object_get(&event, "cancelBubble"),
+                    Some(JsValue::Bool(true))
+                ) {
                     break;
                 }
             }
 
-            if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+            if matches!(
+                object_get(&event, "cancelBubble"),
+                Some(JsValue::Bool(true))
+            ) {
                 return outcome;
             }
         }
 
         // Phase 3: Bubbling phase (Parent up to Root)
         if init.bubbles {
-            let bubble_chain: Vec<NodePath> = (0..target.len()).rev().map(|n| target[..n].to_vec()).collect();
+            let bubble_chain: Vec<NodePath> = (0..target.len())
+                .rev()
+                .map(|n| target[..n].to_vec())
+                .collect();
             for path in bubble_chain {
                 set_phase_and_target(&event, 3.0, &path); // 3 = BUBBLING_PHASE
 
                 let matching: Vec<Listener> = self
                     .listeners
                     .iter()
-                    .filter(|l| l.event == event_type && !l.capture && self.tree_path_of(&l.target).as_deref() == Some(path.as_slice()))
+                    .filter(|l| {
+                        l.event == event_type
+                            && !l.capture
+                            && self.tree_path_of(&l.target).as_deref() == Some(path.as_slice())
+                    })
                     .cloned()
                     .collect();
 
@@ -1105,15 +1147,24 @@ impl JsRuntime {
                         Some(JsValue::Bool(true))
                     );
 
-                    if matches!(object_get(&event, "stopImmediate"), Some(JsValue::Bool(true))) {
+                    if matches!(
+                        object_get(&event, "stopImmediate"),
+                        Some(JsValue::Bool(true))
+                    ) {
                         return outcome;
                     }
-                    if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                    if matches!(
+                        object_get(&event, "cancelBubble"),
+                        Some(JsValue::Bool(true))
+                    ) {
                         break;
                     }
                 }
 
-                if matches!(object_get(&event, "cancelBubble"), Some(JsValue::Bool(true))) {
+                if matches!(
+                    object_get(&event, "cancelBubble"),
+                    Some(JsValue::Bool(true))
+                ) {
                     return outcome;
                 }
             }
@@ -1939,9 +1990,12 @@ impl JsRuntime {
                 let style_map_opt = if let Some(path) = self.tree_path_of(r) {
                     crate::style::compute_element_style(dom, &path, &stylesheet, 800.0)
                 } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
-                    self.detached.get(slot).and_then(|s| s.node.as_ref()).and_then(|root| {
-                        crate::style::compute_element_style(root, &path, &stylesheet, 800.0)
-                    })
+                    self.detached
+                        .get(slot)
+                        .and_then(|s| s.node.as_ref())
+                        .and_then(|root| {
+                            crate::style::compute_element_style(root, &path, &stylesheet, 800.0)
+                        })
                 } else {
                     None
                 };
@@ -2066,7 +2120,9 @@ impl JsRuntime {
             "body" | "head" | "documentElement" => {
                 let doc_root = match self.resolve_ref(r) {
                     Resolved::InTree(_) => Some(dom as &Node),
-                    Resolved::InPool { slot, .. } => self.detached.get(slot).and_then(|s| s.node.as_ref()),
+                    Resolved::InPool { slot, .. } => {
+                        self.detached.get(slot).and_then(|s| s.node.as_ref())
+                    }
                     Resolved::Gone => None,
                 };
                 if let Some(root) = doc_root {
@@ -2235,9 +2291,11 @@ impl JsRuntime {
             JsValue::Builtin(Builtin::Document) => match prop {
                 "cookie" => {
                     let cookie_str = to_string(&value);
-                    self.cookie_jar
-                        .borrow_mut()
-                        .set_document_cookie(&cookie_str, &self.url, self.now_ms as u64);
+                    self.cookie_jar.borrow_mut().set_document_cookie(
+                        &cookie_str,
+                        &self.url,
+                        self.now_ms as u64,
+                    );
                 }
                 "title" => {
                     let text = to_string(&value);
@@ -2305,7 +2363,11 @@ impl JsRuntime {
                             e.set_attr(prop, &text);
                             if e.tag_name == "canvas" {
                                 if let Some(ctx) = &e.canvas {
-                                    let num = text.trim().trim_end_matches("px").parse::<u32>().unwrap_or(0);
+                                    let num = text
+                                        .trim()
+                                        .trim_end_matches("px")
+                                        .parse::<u32>()
+                                        .unwrap_or(0);
                                     if num > 0 {
                                         let mut c = ctx.borrow_mut();
                                         if prop == "width" {
@@ -2331,12 +2393,14 @@ impl JsRuntime {
                     let mut ctx = ctx.borrow_mut();
                     match prop {
                         "fillStyle" => {
-                            if let Some(color) = crate::css::parser::parse_color(&to_string(&value)) {
+                            if let Some(color) = crate::css::parser::parse_color(&to_string(&value))
+                            {
                                 ctx.fill_style = color;
                             }
                         }
                         "strokeStyle" => {
-                            if let Some(color) = crate::css::parser::parse_color(&to_string(&value)) {
+                            if let Some(color) = crate::css::parser::parse_color(&to_string(&value))
+                            {
                                 ctx.stroke_style = color;
                             }
                         }
@@ -2391,10 +2455,14 @@ impl JsRuntime {
                         let num = to_number(&value);
                         if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
                             match &mut node.kind {
-                                crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => {
+                                crate::audio::AudioNodeKind::Oscillator { frequency, .. }
+                                    if param_name == "frequency" =>
+                                {
                                     frequency.set_value(num);
                                 }
-                                crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => {
+                                crate::audio::AudioNodeKind::Gain { gain }
+                                    if param_name == "gain" =>
+                                {
                                     gain.set_value(num);
                                 }
                                 _ => {}
@@ -2406,7 +2474,11 @@ impl JsRuntime {
                         let type_str = to_string(&value);
                         if let Some(osc_type) = crate::audio::OscillatorType::from_str(&type_str) {
                             if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
-                                if let crate::audio::AudioNodeKind::Oscillator { osc_type: ref mut ot, .. } = node.kind {
+                                if let crate::audio::AudioNodeKind::Oscillator {
+                                    osc_type: ref mut ot,
+                                    ..
+                                } = node.kind
+                                {
                                     *ot = osc_type;
                                 }
                             }
@@ -2672,7 +2744,10 @@ impl JsRuntime {
             JsValue::Array(items) => self.array_method(dom, items, prop, args),
             JsValue::Object(props) => match prop {
                 "preventDefault" => {
-                    if matches!(object_get(props, "cancelable"), Some(JsValue::Bool(true)) | None) {
+                    if matches!(
+                        object_get(props, "cancelable"),
+                        Some(JsValue::Bool(true)) | None
+                    ) {
                         object_set(props, "defaultPrevented", JsValue::Bool(true));
                     }
                     JsValue::Undefined
@@ -2750,9 +2825,12 @@ impl JsRuntime {
                     let style_map_opt = if let Some(path) = self.tree_path_of(r) {
                         crate::style::compute_element_style(dom, &path, &stylesheet, 800.0)
                     } else if let Resolved::InPool { slot, path } = self.resolve_ref(r) {
-                        self.detached.get(slot).and_then(|s| s.node.as_ref()).and_then(|root| {
-                            crate::style::compute_element_style(root, &path, &stylesheet, 800.0)
-                        })
+                        self.detached
+                            .get(slot)
+                            .and_then(|s| s.node.as_ref())
+                            .and_then(|root| {
+                                crate::style::compute_element_style(root, &path, &stylesheet, 800.0)
+                            })
                     } else {
                         None
                     };
@@ -2943,9 +3021,9 @@ impl JsRuntime {
             "removeEventListener" => {
                 let capture = match args.get(2) {
                     Some(JsValue::Bool(b)) => *b,
-                    Some(JsValue::Object(props)) => {
-                        object_get(props, "capture").map(|v| to_boolean(&v)).unwrap_or(false)
-                    }
+                    Some(JsValue::Object(props)) => object_get(props, "capture")
+                        .map(|v| to_boolean(&v))
+                        .unwrap_or(false),
                     _ => false,
                 };
                 let handler_opt = args.get(1);
@@ -2975,7 +3053,11 @@ impl JsRuntime {
                                 EventInit::non_bubbling()
                             };
                             for (k, v) in props.borrow().iter() {
-                                if k != "type" && k != "bubbles" && k != "target" && k != "currentTarget" {
+                                if k != "type"
+                                    && k != "bubbles"
+                                    && k != "target"
+                                    && k != "currentTarget"
+                                {
                                     init.fields.push((k.clone(), v.clone()));
                                 }
                             }
@@ -3471,9 +3553,7 @@ impl JsRuntime {
                 }
                 JsValue::Undefined
             }
-            Builtin::StructuredClone => {
-                clone_value(&arg)
-            }
+            Builtin::StructuredClone => clone_value(&arg),
             Builtin::ParseInt => {
                 let s = to_string(&arg);
                 let digits: String = s
@@ -3666,7 +3746,10 @@ fn remove_node_at(root: &mut Node, path: &[usize]) -> Option<Node> {
 
 // ── Object helpers ────────────────────────────────────────────────────────────
 
-pub(crate) fn object_get(props: &Rc<RefCell<Vec<(String, JsValue)>>>, key: &str) -> Option<JsValue> {
+pub(crate) fn object_get(
+    props: &Rc<RefCell<Vec<(String, JsValue)>>>,
+    key: &str,
+) -> Option<JsValue> {
     props
         .borrow()
         .iter()
@@ -3803,11 +3886,7 @@ fn crypto_method(prop: &str, args: &[JsValue]) -> JsValue {
         "randomUUID" => {
             let uuid = format!(
                 "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-                0x110ec58a_u32,
-                0xa0f2_u16,
-                0xac4_u16,
-                0x8393_u16,
-                0xc0de00000001_u64
+                0x110ec58a_u32, 0xa0f2_u16, 0xac4_u16, 0x8393_u16, 0xc0de00000001_u64
             );
             JsValue::Str(uuid)
         }
