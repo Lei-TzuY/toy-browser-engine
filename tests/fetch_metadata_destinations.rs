@@ -1,4 +1,4 @@
-use toy_browser_engine::FetchMetadataDestination;
+use browser_engine::FetchMetadataDestination;
 
 #[test]
 fn request_destination_strings_match_fetch_standard_tokens() {
