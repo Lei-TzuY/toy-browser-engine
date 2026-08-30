@@ -35,6 +35,7 @@ pub mod hsts_network;
 pub mod html;
 pub mod http_cache_age;
 pub mod http_cache_policy;
+pub mod http_cache_revalidation;
 pub mod http_cache_vary;
 pub mod hyperlink_referrer;
 pub mod image;
@@ -88,6 +89,10 @@ pub use http_cache_age::{
 };
 pub use http_cache_policy::{
     cached_response_is_fresh, response_cache_policy, HttpResponseCachePolicy,
+};
+pub use http_cache_revalidation::{
+    cache_revalidation_headers, response_cache_validators, response_confirms_not_modified,
+    HttpCacheValidators,
 };
 pub use http_cache_vary::{parse_vary, vary_matches, HttpVary};
 pub use hyperlink_referrer::{
