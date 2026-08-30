@@ -197,6 +197,27 @@ impl RequestData {
 
 // ── Responses ─────────────────────────────────────────────────────────────────
 
+/// Script-visible Fetch response type.
+///
+/// `basic` is used for same-origin and synthetic responses. A successful
+/// cross-origin CORS fetch is tagged `cors` after its response gate succeeds.
+/// Opaque response types can be added here when `no-cors` is implemented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResponseType {
+    #[default]
+    Basic,
+    Cors,
+}
+
+impl ResponseType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ResponseType::Basic => "basic",
+            ResponseType::Cors => "cors",
+        }
+    }
+}
+
 /// A `Response` object.
 #[derive(Debug)]
 pub struct ResponseData {
@@ -206,6 +227,7 @@ pub struct ResponseData {
     pub headers: HeadersRef,
     pub body: Body,
     pub redirected: bool,
+    pub response_type: ResponseType,
 }
 
 impl ResponseData {
@@ -218,6 +240,7 @@ impl ResponseData {
             headers: headers_ref(response.headers),
             body: Body::new(response.body),
             redirected: response.redirected,
+            response_type: ResponseType::Basic,
         }
     }
 
