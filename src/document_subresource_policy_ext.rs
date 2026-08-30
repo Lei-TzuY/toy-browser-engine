@@ -65,7 +65,7 @@ impl Document {
             deferred_submission: None,
             network: Rc::new(OfflineNetwork::new()),
             transitions: std::cell::RefCell::new(crate::transition::TransitionManager::new()),
-            animations: std::cell::RefCell::new(crate::animation::TransitionManager::new()),
+            animations: std::cell::RefCell::new(crate::animation::AnimationManager::new()),
         };
         document.run_microtask_checkpoint();
         // Parser-time scripts and their microtasks may have appended external
