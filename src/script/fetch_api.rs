@@ -15,7 +15,7 @@
 //  task.
 
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use crate::cookie_network::{policy_registry_for_jar, CookieCredentials, CookieRequestPolicy};
 use crate::cookie_same_site::SameSiteRequestContext;
@@ -40,60 +40,6 @@ use super::promise::{self, PromiseRef};
 
 /// The schemes a page may fetch, on top of its own.
 const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
-
-/// Fetch defaults preflight permissions to five seconds when Max-Age is absent
-/// or invalid. A user agent may impose its own upper bound.
-const DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 5;
-const MAX_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 7_200;
-const MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION: usize = 256;
-
-#[derive(Debug, Clone)]
-struct CorsPreflightCacheEntry {
-    source_origin: String,
-    target_url: String,
-    credentialed: bool,
-    allowed_methods: Vec<String>,
-    allowed_headers: Vec<String>,
-    expires_at_ms: u64,
-}
-
-#[derive(Debug)]
-struct CorsPreflightSessionCache {
-    /// Browser documents in one session share a CookieJar. A weak handle gives
-    /// the preflight cache the same lifetime without keeping dead sessions alive.
-    jar: Weak<RefCell<crate::cookie::CookieJar>>,
-    entries: Vec<CorsPreflightCacheEntry>,
-}
-
-thread_local! {
-    static CORS_PREFLIGHT_CACHES: RefCell<Vec<CorsPreflightSessionCache>> = RefCell::new(Vec::new());
-}
-
-fn with_cors_preflight_session_cache<R>(
-    jar: &Rc<RefCell<crate::cookie::CookieJar>>,
-    operation: impl FnOnce(&mut Vec<CorsPreflightCacheEntry>) -> R,
-) -> R {
-    CORS_PREFLIGHT_CACHES.with(|sessions| {
-        let mut sessions = sessions.borrow_mut();
-        sessions.retain(|session| session.jar.upgrade().is_some());
-        let index = sessions
-            .iter()
-            .position(|session| {
-                session
-                    .jar
-                    .upgrade()
-                    .is_some_and(|live| Rc::ptr_eq(&live, jar))
-            })
-            .unwrap_or_else(|| {
-                sessions.push(CorsPreflightSessionCache {
-                    jar: Rc::downgrade(jar),
-                    entries: Vec::new(),
-                });
-                sessions.len() - 1
-            });
-        operation(&mut sessions[index].entries)
-    })
-}
 
 /// Browser-only state needed while a CORS fetch is in flight.
 #[derive(Debug, Clone)]
@@ -317,40 +263,20 @@ impl JsRuntime {
         }
     }
 
-    fn cors_preflight_cache_allows(&self, request: &RequestData, cors: &CorsFetchState) -> bool {
-        let now_ms = self
-            .cookie_jar
-            .borrow()
-            .effective_now_ms(self.now_ms.max(0.0) as u64);
-        let source_origin = cors.source_origin.header_value();
-        let target_url = request.url.without_fragment().to_string();
-
-        with_cors_preflight_session_cache(&self.cookie_jar, |entries| {
-            entries.retain(|entry| entry.expires_at_ms > now_ms);
-            entries.iter().any(|entry| {
-                if entry.source_origin != source_origin
-                    || entry.target_url != target_url
-                    || (!entry.credentialed && cors.credentialed)
-                {
-                    return false;
-                }
-
-                let method_allowed = is_cors_safelisted_method(cors.requested_method)
-                    || entry.allowed_methods.iter().any(|method| {
-                        method == cors.requested_method.as_str()
-                            || (method == "*" && !cors.credentialed)
-                    });
-                method_allowed
-                    && cors.requested_headers.iter().all(|requested| {
-                        entry.allowed_headers.iter().any(|allowed| {
-                            allowed.eq_ignore_ascii_case(requested)
-                                || (allowed == "*"
-                                    && !cors.credentialed
-                                    && !is_cors_non_wildcard_request_header_name(requested))
-                        })
-                    })
-            })
-        })
+    fn cors_preflight_cache_allows(
+        &self,
+        request: &RequestData,
+        cors: &CorsFetchState,
+    ) -> bool {
+        crate::fetch_cors_preflight::cache_allows(
+            &self.cookie_jar,
+            self.now_ms.max(0.0) as u64,
+            &cors.source_origin.header_value(),
+            &request.url,
+            cors.credentialed,
+            cors.requested_method,
+            &cors.requested_headers,
+        )
     }
 
     fn store_cors_preflight_permissions(
@@ -359,40 +285,14 @@ impl JsRuntime {
         cors: &CorsFetchState,
         response: &FetchResponse,
     ) {
-        let max_age = cors_preflight_max_age_seconds(response);
-        if max_age == 0 {
-            return;
-        }
-
-        let now_ms = self
-            .cookie_jar
-            .borrow()
-            .effective_now_ms(self.now_ms.max(0.0) as u64);
-        let source_origin = cors.source_origin.header_value();
-        let target_url = request.url.without_fragment().to_string();
-        let expires_at_ms = now_ms.saturating_add(max_age.saturating_mul(1_000));
-        let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
-        let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
-
-        with_cors_preflight_session_cache(&self.cookie_jar, |entries| {
-            entries.retain(|entry| {
-                entry.expires_at_ms > now_ms
-                    && (entry.source_origin != source_origin
-                        || entry.target_url != target_url
-                        || entry.credentialed != cors.credentialed)
-            });
-            if entries.len() >= MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION {
-                entries.remove(0);
-            }
-            entries.push(CorsPreflightCacheEntry {
-                source_origin,
-                target_url,
-                credentialed: cors.credentialed,
-                allowed_methods,
-                allowed_headers,
-                expires_at_ms,
-            });
-        });
+        crate::fetch_cors_preflight::store_permissions(
+            &self.cookie_jar,
+            self.now_ms.max(0.0) as u64,
+            &cors.source_origin.header_value(),
+            &request.url,
+            cors.credentialed,
+            response,
+        );
     }
 
     fn queue_fetch(
@@ -1982,27 +1882,20 @@ fn cors_unsafe_request_header_names(request: &RequestData) -> Vec<String> {
     names
 }
 
-fn build_cors_preflight_request(request: &RequestData, cors: &CorsFetchState) -> FetchRequest {
-    let mut headers = HeaderMap::new();
-    headers.insert_raw("origin", &cors.source_origin.header_value());
-    headers.insert_raw(
-        "access-control-request-method",
-        cors.requested_method.as_str(),
-    );
-    if !cors.requested_headers.is_empty() {
-        headers.insert_raw(
-            "access-control-request-headers",
-            &cors.requested_headers.join(", "),
-        );
-    }
-    FetchRequest::new(request.url.clone(), Method::Options, headers, None)
+fn build_cors_preflight_request(
+    request: &RequestData,
+    cors: &CorsFetchState,
+) -> FetchRequest {
+    crate::fetch_cors_preflight::build_preflight_request(
+        request.url.clone(),
+        &cors.source_origin.header_value(),
+        cors.requested_method,
+        &cors.requested_headers,
+    )
 }
 
 fn cors_preflight_cookie_policy() -> CookieRequestPolicy {
-    CookieRequestPolicy::new(
-        CookieCredentials::Omit,
-        SameSiteRequestContext::cross_site_subresource(Method::Options),
-    )
+    crate::fetch_cors_preflight::preflight_cookie_policy()
 }
 
 const CORS_SAFELISTED_RESPONSE_HEADERS: &[&str] = &[
@@ -2042,27 +1935,6 @@ fn filter_cors_response_headers(response: &mut FetchResponse, credentialed: bool
     }
 }
 
-fn validate_cors_response(
-    source_origin: &Origin,
-    credentialed: bool,
-    response: &FetchResponse,
-) -> Result<(), FetchError> {
-    validate_cors_response_origin(&source_origin.header_value(), credentialed, response)
-}
-
-fn cors_preflight_max_age_seconds(response: &FetchResponse) -> u64 {
-    response
-        .headers
-        .get("access-control-max-age")
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS)
-        .min(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)
-}
-
-fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization")
-}
-
 fn comma_tokens(value: Option<String>) -> Vec<String> {
     value
         .unwrap_or_default()
@@ -2077,49 +1949,11 @@ fn validate_cors_preflight_response(
     cors: &CorsFetchState,
     response: &FetchResponse,
 ) -> Result<(), FetchError> {
-    if response.redirected {
-        return Err(FetchError::Blocked(
-            "CORS: redirected preflight responses are not supported".into(),
-        ));
-    }
-    if !(200..300).contains(&response.status) {
-        return Err(FetchError::Blocked(format!(
-            "CORS: preflight response status {} is not successful",
-            response.status
-        )));
-    }
-    validate_cors_response(&cors.source_origin, cors.credentialed, response)?;
-
-    if !is_cors_safelisted_method(cors.requested_method) {
-        let methods = comma_tokens(response.headers.get("access-control-allow-methods"));
-        let wildcard = !cors.credentialed && methods.iter().any(|method| method == "*");
-        let exact = methods
-            .iter()
-            .any(|method| method == cors.requested_method.as_str());
-        if !wildcard && !exact {
-            return Err(FetchError::Blocked(format!(
-                "CORS: preflight did not allow method {}",
-                cors.requested_method
-            )));
-        }
-    }
-
-    if !cors.requested_headers.is_empty() {
-        let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
-        let wildcard = !cors.credentialed && allowed.iter().any(|header| header == "*");
-        for requested in &cors.requested_headers {
-            let wildcard_allows = wildcard && !is_cors_non_wildcard_request_header_name(requested);
-            if !wildcard_allows
-                && !allowed
-                    .iter()
-                    .any(|header| header.eq_ignore_ascii_case(requested))
-            {
-                return Err(FetchError::Blocked(format!(
-                    "CORS: preflight did not allow request header {requested}"
-                )));
-            }
-        }
-    }
-
-    Ok(())
+    crate::fetch_cors_preflight::validate_preflight_response(
+        &cors.source_origin.header_value(),
+        cors.credentialed,
+        cors.requested_method,
+        &cors.requested_headers,
+        response,
+    )
 }

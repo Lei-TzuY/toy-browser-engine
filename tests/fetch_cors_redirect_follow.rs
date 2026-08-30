@@ -171,7 +171,7 @@ fn second_cross_origin_hop_uses_null_origin_redirect_taint() {
 }
 
 #[test]
-fn redirect_that_would_need_preflight_fails_before_second_dispatch() {
+fn redirect_that_needs_preflight_sends_options_before_failing_without_permission() {
     let transport = Rc::new(ManualNetwork::new());
     transport.set_auto_complete(true);
     transport.respond(
@@ -190,7 +190,10 @@ fn redirect_that_would_need_preflight_fails_before_second_dispatch() {
     browser.settle_network(12);
 
     assert_eq!(browser.document().runtime.console, vec!["preflight-blocked"]);
-    assert_eq!(transport.requests().len(), 1);
+    let seen = transport.requests();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].method.as_str(), "OPTIONS");
+    assert_eq!(seen[1].url.to_string(), "http://api.test/final");
 }
 
 #[test]
