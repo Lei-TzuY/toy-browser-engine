@@ -79,8 +79,8 @@ pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
 pub use html_subresource_integrity::{
-    fetch_html_subresource_with_integrity, HtmlSubresourceIntegrityError,
-    HtmlSubresourceIntegrityResult,
+    fetch_html_subresource_with_integrity, fetch_html_subresource_with_integrity_reporting,
+    HtmlSubresourceIntegrityError, HtmlSubresourceIntegrityResult,
 };
 pub use hyperlink_referrer::{
     hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
