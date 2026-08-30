@@ -39,6 +39,7 @@ pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
 pub mod integrity_policy;
+pub mod integrity_policy_headers;
 pub mod layout;
 #[path = "navigation_network_with_credentials.rs"]
 pub mod navigation_network;
@@ -79,6 +80,9 @@ pub use hyperlink_referrer::{
 pub use integrity_policy::{
     evaluate_integrity_policy, IntegrityPolicy, IntegrityPolicyDecision, IntegrityPolicyDestination,
     IntegrityPolicyRequestMode, IntegrityPolicySource,
+};
+pub use integrity_policy_headers::{
+    IntegrityPolicyContainer, INTEGRITY_POLICY_HEADER, INTEGRITY_POLICY_REPORT_ONLY_HEADER,
 };
 pub use navigation_network::NavigationNetwork;
 pub use net::{MemoryLoader, ResourceLoader, Url};
