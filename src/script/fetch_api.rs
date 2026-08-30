@@ -21,7 +21,9 @@ use crate::cookie_network::{
     policy_registry_for_jar, CookieCredentials, CookieRequestPolicy,
 };
 use crate::cookie_same_site::SameSiteRequestContext;
-use crate::net::fetch::{FetchError, FetchResponse, HeaderMap, Method, Origin};
+use crate::net::fetch::{
+    FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin,
+};
 use crate::net::Url;
 
 use super::host::{
@@ -37,11 +39,27 @@ use super::promise::{self, PromiseRef};
 /// The schemes a page may fetch, on top of its own.
 const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
 
-/// Browser-only state needed when the response task completes.
+/// Browser-only state needed while a CORS fetch is in flight.
 #[derive(Debug, Clone)]
 struct CorsFetchState {
     source_origin: Origin,
     credentialed: bool,
+    requested_method: Method,
+    requested_headers: Vec<String>,
+    needs_preflight: bool,
+}
+
+/// Which network stage currently owns a script-visible Fetch promise.
+#[derive(Debug)]
+enum PendingFetchStage {
+    Actual {
+        cors: Option<CorsFetchState>,
+    },
+    Preflight {
+        request: RequestData,
+        cookie_policy: CookieRequestPolicy,
+        cors: CorsFetchState,
+    },
 }
 
 /// What the runtime keeps for one request it is waiting on.
@@ -50,7 +68,7 @@ pub struct PendingFetch {
     pub promise: PromiseRef,
     /// The signal watching this request, if `fetch` was given one.
     pub signal: Option<Rc<AbortState>>,
-    cors: Option<CorsFetchState>,
+    stage: PendingFetchStage,
 }
 
 fn rect_to_js(r: &[f32; 4]) -> JsValue {
@@ -76,21 +94,34 @@ impl JsRuntime {
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
-                    let pending = PendingFetch {
-                        promise: promise.clone(),
-                        signal,
-                        cors,
+                    let needs_preflight = cors
+                        .as_ref()
+                        .is_some_and(|state| state.needs_preflight);
+                    let queued = if needs_preflight {
+                        let cors = cors.expect("preflight requires CORS state");
+                        let preflight = build_cors_preflight_request(&request, &cors);
+                        let pending = PendingFetch {
+                            promise: promise.clone(),
+                            signal,
+                            stage: PendingFetchStage::Preflight {
+                                request,
+                                cookie_policy,
+                                cors,
+                            },
+                        };
+                        self.queue_fetch(preflight, pending, cors_preflight_cookie_policy())
+                    } else {
+                        let wire = request.to_wire();
+                        let pending = PendingFetch {
+                            promise: promise.clone(),
+                            signal,
+                            stage: PendingFetchStage::Actual { cors },
+                        };
+                        self.queue_fetch(wire, pending, cookie_policy)
                     };
-                    match self.fetches.start(request.to_wire(), pending) {
-                        Ok(id) => {
-                            // Attach the complete cookie policy, not merely
-                            // credentials=omit. Cross-origin CORS requests are
-                            // subresources, so Strict/Lax cookies do not leak.
-                            if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
-                                registry.set(id, cookie_policy);
-                            }
-                        }
-                        Err(error) => self.reject_with(&promise, &error),
+
+                    if let Err(error) = queued {
+                        self.reject_with(&promise, &error);
                     }
                 }
             }
@@ -98,33 +129,84 @@ impl JsRuntime {
         JsValue::Promise(promise)
     }
 
-    /// Settle the promise of a request the network has finished with.
+    /// Settle one network stage of a Fetch promise. A successful preflight
+    /// queues the actual request; only the actual response is exposed to script.
     pub fn settle_fetch(
         &mut self,
         pending: PendingFetch,
         result: Result<FetchResponse, FetchError>,
     ) {
-        if pending.signal.as_ref().is_some_and(|state| state.aborted()) {
-            self.reject_with(&pending.promise, &FetchError::Aborted);
+        let PendingFetch {
+            promise,
+            signal,
+            stage,
+        } = pending;
+
+        if signal.as_ref().is_some_and(|state| state.aborted()) {
+            self.reject_with(&promise, &FetchError::Aborted);
             return;
         }
-        match result {
-            Ok(response) => {
-                if let Some(cors) = &pending.cors {
-                    if let Err(error) = validate_simple_cors_response(
-                        &cors.source_origin,
-                        cors.credentialed,
-                        &response,
-                    ) {
-                        self.reject_with(&pending.promise, &error);
+
+        match stage {
+            PendingFetchStage::Actual { cors } => match result {
+                Ok(response) => {
+                    if let Some(cors) = &cors {
+                        if let Err(error) = validate_cors_response(
+                            &cors.source_origin,
+                            cors.credentialed,
+                            &response,
+                        ) {
+                            self.reject_with(&promise, &error);
+                            return;
+                        }
+                    }
+                    let value =
+                        host_value(HostObject::Response(ResponseData::from_wire(response)));
+                    self.settle_resolve(&promise, value);
+                }
+                Err(error) => self.reject_with(&promise, &error),
+            },
+            PendingFetchStage::Preflight {
+                request,
+                cookie_policy,
+                cors,
+            } => {
+                let response = match result {
+                    Ok(response) => response,
+                    Err(error) => {
+                        self.reject_with(&promise, &error);
                         return;
                     }
+                };
+                if let Err(error) = validate_cors_preflight_response(&cors, &response) {
+                    self.reject_with(&promise, &error);
+                    return;
                 }
-                let value = host_value(HostObject::Response(ResponseData::from_wire(response)));
-                self.settle_resolve(&pending.promise, value);
+
+                let wire = request.to_wire();
+                let actual = PendingFetch {
+                    promise: promise.clone(),
+                    signal,
+                    stage: PendingFetchStage::Actual { cors: Some(cors) },
+                };
+                if let Err(error) = self.queue_fetch(wire, actual, cookie_policy) {
+                    self.reject_with(&promise, &error);
+                }
             }
-            Err(error) => self.reject_with(&pending.promise, &error),
         }
+    }
+
+    fn queue_fetch(
+        &mut self,
+        request: FetchRequest,
+        pending: PendingFetch,
+        cookie_policy: CookieRequestPolicy,
+    ) -> Result<(), FetchError> {
+        let id = self.fetches.start(request, pending)?;
+        if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
+            registry.set(id, cookie_policy);
+        }
+        Ok(())
     }
 
     /// Reject every request watching `state`, and stop their delivery.
@@ -160,16 +242,15 @@ impl JsRuntime {
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
             return Err(FetchError::UnsupportedScheme(scheme.to_string()));
         }
-
         if request.credentials == RequestCredentials::Include
-    && !matches!(scheme, "http" | "https")
-{
-    return Err(FetchError::BadRequest(
-        "credentials mode \"include\" is only supported for HTTP(S) requests".into(),
-    ));
-}
+            && !matches!(scheme, "http" | "https")
+        {
+            return Err(FetchError::BadRequest(
+                "credentials mode \"include\" is only supported for HTTP(S) requests".into(),
+            ));
+        }
 
-let source_origin = Origin::of(&self.url);
+        let source_origin = Origin::of(&self.url);
         let same_origin = source_origin.can_fetch(&request.url);
         let cross_origin_web = matches!(self.url.scheme(), "http" | "https")
             && matches!(request.url.scheme(), "http" | "https")
@@ -184,14 +265,19 @@ let source_origin = Origin::of(&self.url);
                 )))
             }
             RequestMode::Cors if cross_origin_web => {
-                // Origin is browser-owned and must not affect safelist
-                // classification even if authored input attempted to forge it.
-                request.headers.borrow_mut().delete("origin");
-                if !is_cors_safelisted_request(&request) {
-                    return Err(FetchError::Blocked(
-                        "CORS preflight is required for this request and is not implemented".into(),
-                    ));
+                // Origin and the preflight-control fields are browser-owned.
+                // Strip authored copies before classification so they cannot
+                // influence either the preflight or the eventual actual request.
+                {
+                    let mut headers = request.headers.borrow_mut();
+                    headers.delete("origin");
+                    headers.delete("access-control-request-method");
+                    headers.delete("access-control-request-headers");
                 }
+
+                let requested_headers = cors_unsafe_request_header_names(&request);
+                let needs_preflight = !is_cors_safelisted_method(request.method)
+                    || !requested_headers.is_empty();
                 request
                     .headers
                     .borrow_mut()
@@ -199,6 +285,9 @@ let source_origin = Origin::of(&self.url);
                 Some(CorsFetchState {
                     source_origin: source_origin.clone(),
                     credentialed: request.credentials == RequestCredentials::Include,
+                    requested_method: request.method,
+                    requested_headers,
+                    needs_preflight,
                 })
             }
             RequestMode::Cors if !same_origin => {
@@ -1410,41 +1499,82 @@ fn conservative_same_site(source: &Url, target: &Url) -> bool {
     source.scheme() == target.scheme() && source.host().eq_ignore_ascii_case(target.host())
 }
 
-fn is_cors_safelisted_request(request: &RequestData) -> bool {
-    if !matches!(request.method, Method::Get | Method::Head | Method::Post) {
-        return false;
-    }
-
-    for (name, value) in request.headers.borrow().iter() {
-        match name {
-            "accept" | "accept-language" | "content-language" => {
-                if value.contains(['\r', '\n']) {
-                    return false;
-                }
-            }
-            "content-type" => {
-                let mime = value
-                    .split(';')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_ascii_lowercase();
-                if !matches!(
-                    mime.as_str(),
-                    "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
-                ) {
-                    return false;
-                }
-            }
-            // `origin` is installed only after this check. Every other authored
-            // header needs a preflight and therefore stays blocked for now.
-            _ => return false,
-        }
-    }
-    true
+fn is_cors_safelisted_method(method: Method) -> bool {
+    matches!(method, Method::Get | Method::Head | Method::Post)
 }
 
-fn validate_simple_cors_response(
+fn contains_cors_unsafe_request_header_byte(value: &str) -> bool {
+    value.bytes().any(|byte| {
+        (byte < 0x20 && byte != b'\t')
+            || byte == 0x7f
+            || b"\"():<>?@[\\]{}".contains(&byte)
+    })
+}
+
+fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+    if value.len() > 128 {
+        return false;
+    }
+    match name {
+        "accept" => !contains_cors_unsafe_request_header_byte(value),
+        "accept-language" | "content-language" => value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || b" *,-.;=".contains(&byte)
+        }),
+        "content-type" => {
+            if contains_cors_unsafe_request_header_byte(value) {
+                return false;
+            }
+            let mime = value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            matches!(
+                mime.as_str(),
+                "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn cors_unsafe_request_header_names(request: &RequestData) -> Vec<String> {
+    let mut names = Vec::new();
+    for (name, value) in request.headers.borrow().iter() {
+        if name != "origin" && !is_cors_safelisted_request_header(name, value) {
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn build_cors_preflight_request(request: &RequestData, cors: &CorsFetchState) -> FetchRequest {
+    let mut headers = HeaderMap::new();
+    headers.insert_raw("origin", &cors.source_origin.header_value());
+    headers.insert_raw(
+        "access-control-request-method",
+        cors.requested_method.as_str(),
+    );
+    if !cors.requested_headers.is_empty() {
+        headers.insert_raw(
+            "access-control-request-headers",
+            &cors.requested_headers.join(", "),
+        );
+    }
+    FetchRequest::new(request.url.clone(), Method::Options, headers, None)
+}
+
+fn cors_preflight_cookie_policy() -> CookieRequestPolicy {
+    CookieRequestPolicy::new(
+        CookieCredentials::Omit,
+        SameSiteRequestContext::cross_site_subresource(Method::Options),
+    )
+}
+
+fn validate_cors_response(
     source_origin: &Origin,
     credentialed: bool,
     response: &FetchResponse,
@@ -1482,4 +1612,64 @@ fn validate_simple_cors_response(
             "CORS: cross-origin response did not allow the document origin".into(),
         ))
     }
+}
+
+fn comma_tokens(value: Option<String>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn validate_cors_preflight_response(
+    cors: &CorsFetchState,
+    response: &FetchResponse,
+) -> Result<(), FetchError> {
+    if response.redirected {
+        return Err(FetchError::Blocked(
+            "CORS: redirected preflight responses are not supported".into(),
+        ));
+    }
+    if !(200..300).contains(&response.status) {
+        return Err(FetchError::Blocked(format!(
+            "CORS: preflight response status {} is not successful",
+            response.status
+        )));
+    }
+    validate_cors_response(&cors.source_origin, cors.credentialed, response)?;
+
+    if !is_cors_safelisted_method(cors.requested_method) {
+        let methods = comma_tokens(response.headers.get("access-control-allow-methods"));
+        let wildcard = !cors.credentialed && methods.iter().any(|method| method == "*");
+        let exact = methods
+            .iter()
+            .any(|method| method == cors.requested_method.as_str());
+        if !wildcard && !exact {
+            return Err(FetchError::Blocked(format!(
+                "CORS: preflight did not allow method {}",
+                cors.requested_method
+            )));
+        }
+    }
+
+    if !cors.requested_headers.is_empty() {
+        let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
+        let wildcard = !cors.credentialed && allowed.iter().any(|header| header == "*");
+        for requested in &cors.requested_headers {
+            if !wildcard
+                && !allowed
+                    .iter()
+                    .any(|header| header.eq_ignore_ascii_case(requested))
+            {
+                return Err(FetchError::Blocked(format!(
+                    "CORS: preflight did not allow request header {requested}"
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }

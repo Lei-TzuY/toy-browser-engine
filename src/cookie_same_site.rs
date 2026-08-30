@@ -52,11 +52,10 @@ impl SameSiteRequestContext {
 
     /// Fetch's safe-method subset supported by this engine.
     ///
-    /// RFC 9110 also defines OPTIONS and TRACE as safe, but this engine's public
-    /// Method enum does not expose either method. GET and HEAD are therefore the
-    /// complete safe-method set representable here.
+    /// OPTIONS is exposed for CORS preflight. TRACE remains intentionally
+    /// unsupported, so GET, HEAD and OPTIONS are the representable safe methods.
     pub const fn is_safe_method(self) -> bool {
-        matches!(self.method, Method::Get | Method::Head)
+        matches!(self.method, Method::Get | Method::Head | Method::Options)
     }
 }
 
