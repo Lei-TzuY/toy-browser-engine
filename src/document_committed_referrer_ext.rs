@@ -18,19 +18,20 @@ pub(crate) fn committed_referrer_context_from_response(
 }
 
 impl Document {
-    /// Refresh script-created images with the browsing context's committed
-    /// response/meta referrer state.
+    /// Refresh script-created element subresources with the browsing context's
+    /// committed response/meta referrer state.
     ///
-    /// The underlying implementation remains the same #159 CORS/credentials
-    /// path, including HSTS-effective URL classification, redirect-aware
-    /// referrer recomputation and ImageCache negative caching. This bridge only
-    /// supplies the long-lived document policy instead of reconstructing a
-    /// default policy from the mutable live DOM.
+    /// The same policy-aware path now covers dynamically inserted external
+    /// scripts, stylesheet links and images. Script/link element activation is
+    /// one-shot per DOM element, while every actual fetch keeps the established
+    /// CORS/credentials, HSTS-effective URL and redirect referrer behavior.
+    /// The historical method name is retained because Browser already calls it
+    /// at its post-event subresource checkpoint.
     pub(crate) fn refresh_images_with_committed_referrer(
         &mut self,
         navigation: &crate::navigation_network::NavigationNetwork,
         referrer: &crate::document_referrer::DocumentReferrerContext,
     ) {
-        self.refresh_images_with_referrer_context(navigation, referrer);
+        self.refresh_dynamic_element_subresources_with_referrer_context(navigation, referrer);
     }
 }
