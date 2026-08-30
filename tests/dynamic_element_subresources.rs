@@ -311,3 +311,42 @@ fn cors_failure_blocks_dynamic_script_and_stylesheet_without_retrying_raw_loader
         request.headers.get("origin").as_deref() == Some("https://page.test")
     }));
 }
+
+#[test]
+fn activation_budget_leaves_the_next_element_for_a_later_refresh() {
+    let html = r#"
+        <button id="add">add</button><button id="drain">drain</button><div id="host"></div>
+        <script>
+          document.getElementById("add").addEventListener("click", () => {
+            for (let i = 0; i < 65; i++) {
+              const script = document.createElement("script");
+              script.setAttribute("src", "https://cdn.test/count.js");
+              script.setAttribute("crossorigin", "anonymous");
+              document.getElementById("host").appendChild(script);
+            }
+          });
+          document.getElementById("drain").addEventListener("click", () => {});
+        </script>
+    "#;
+    let (loader, requests) = DynamicLoader::new(html, true);
+    let mut browser = Browser::open(Box::new(loader), &url("https://page.test/index.html"))
+        .expect("document loads");
+
+    let add = dom_api::get_element_by_id(&browser.document().dom, "add").unwrap();
+    browser.click_node(&add);
+    assert_eq!(
+        dom_api::query_selector_all(&browser.document().dom, &[], ".run").len(),
+        64,
+        "one refresh must stop at its activation budget"
+    );
+    assert_eq!(requests.lock().unwrap().len(), 64);
+
+    let drain = dom_api::get_element_by_id(&browser.document().dom, "drain").unwrap();
+    browser.click_node(&drain);
+    assert_eq!(
+        dom_api::query_selector_all(&browser.document().dom, &[], ".run").len(),
+        65,
+        "the unprocessed element must remain eligible for the next checkpoint"
+    );
+    assert_eq!(requests.lock().unwrap().len(), 65);
+}
