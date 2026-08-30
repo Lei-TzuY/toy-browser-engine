@@ -35,6 +35,7 @@ pub mod forms;
 pub mod hsts;
 pub mod hsts_network;
 pub mod html;
+pub mod html_subresource_integrity;
 pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
@@ -75,6 +76,10 @@ pub use fetch_redirect_policy::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
+pub use html_subresource_integrity::{
+    fetch_html_subresource_with_integrity, HtmlSubresourceIntegrityError,
+    HtmlSubresourceIntegrityResult,
+};
 pub use hyperlink_referrer::{
     hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
 };
