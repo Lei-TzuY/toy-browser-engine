@@ -26,6 +26,7 @@ pub mod dom;
 pub mod editing;
 pub mod eventloop;
 pub mod fetch_cache_mode;
+pub mod fetch_metadata;
 pub mod fetch_redirect_mode;
 pub mod form_state;
 pub mod forms;
@@ -67,6 +68,10 @@ pub use document::{Document, PointerState};
 pub use document_referrer::DocumentReferrerContext;
 pub use fetch_cache_mode::{
     cache_mode_is_valid_for_request_mode, effective_cache_mode_for_headers, FetchCacheMode,
+};
+pub use fetch_metadata::{
+    apply_fetch_metadata_headers, classify_fetch_metadata_site, FetchMetadataDestination,
+    FetchMetadataMode, FetchMetadataSite,
 };
 pub use fetch_redirect_mode::{
     is_fetch_redirect_status, no_cors_redirect_mode_is_valid, redirect_response_disposition,
