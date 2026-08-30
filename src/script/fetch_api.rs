@@ -156,7 +156,7 @@ impl JsRuntime {
         let input = args.first().cloned().unwrap_or(JsValue::Undefined);
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
         let input_is_request = matches!(&input, JsValue::Host(host) if host.as_request().is_some());
-        let mut request = self.build_request(input, init.clone())?;
+        let request = self.build_request(input, init.clone())?;
         let mode = fetch_mode_from_init(&init)?.unwrap_or(if input_is_request {
             // RequestData does not yet persist mode. Stay conservative for a
             // Request object unless this fetch call explicitly opts into CORS;
@@ -187,13 +187,14 @@ impl JsRuntime {
                 )))
             }
             FetchMode::Cors if cross_origin_web => {
+                // Origin is browser-owned and must not affect safelist
+                // classification even if authored input attempted to forge it.
+                request.headers.borrow_mut().delete("origin");
                 if !is_cors_safelisted_request(&request) {
                     return Err(FetchError::Blocked(
                         "CORS preflight is required for this request and is not implemented".into(),
                     ));
                 }
-                // Origin is browser-owned. Any authored value is discarded.
-                request.headers.borrow_mut().delete("origin");
                 request
                     .headers
                     .borrow_mut()
@@ -945,9 +946,9 @@ impl JsRuntime {
                     let entries: Vec<JsValue> = data.borrow().targets.iter().map(|target_id| {
                         host_value(HostObject::ResizeObserverEntry(ResizeObserverEntryData {
                             target_id: target_id.clone(),
-                            content_rect: [0.0, 0.0, 0.0, 0.0],
-                            border_box_size: (0.0, 0.0),
-                            content_box_size: (0.0, 0.0),
+                            content_rect: [0.0, 0.0, 100.0, 100.0],
+                            border_box_size: (100.0, 100.0),
+                            content_box_size: (100.0, 100.0),
                         }))
                     }).collect();
                     JsValue::Array(Rc::new(RefCell::new(entries)))
