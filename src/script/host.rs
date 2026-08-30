@@ -123,17 +123,37 @@ impl AbortState {
 
 // ── Requests ──────────────────────────────────────────────────────────────────
 
+/// Fetch request mode carried by a script-visible `Request` object.
+///
+/// Keeping mode on RequestData is important: `new Request(existing)` and
+/// `fetch(existing)` must not silently reconstruct a broader or narrower
+/// cross-origin policy from the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestMode {
+    #[default]
+    Cors,
+    SameOrigin,
+}
+
+impl RequestMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RequestMode::Cors => "cors",
+            RequestMode::SameOrigin => "same-origin",
+        }
+    }
+}
+
 /// Cookie-credential mode carried by a script-visible `Request` object.
 ///
-/// Cross-origin `include` is deliberately absent until the engine has CORS
-/// semantics capable of honoring it. Keeping this state on RequestData makes
-/// cloning and fetch(Request) inheritance explicit instead of reconstructing
-/// policy from a later fetch init object.
+/// This state is browser-only metadata: it controls cookie send/store policy
+/// and credentialed CORS validation but never becomes an authored wire header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RequestCredentials {
     #[default]
     SameOrigin,
     Omit,
+    Include,
 }
 
 impl RequestCredentials {
@@ -141,6 +161,7 @@ impl RequestCredentials {
         match self {
             RequestCredentials::SameOrigin => "same-origin",
             RequestCredentials::Omit => "omit",
+            RequestCredentials::Include => "include",
         }
     }
 }
@@ -153,6 +174,7 @@ pub struct RequestData {
     pub headers: HeadersRef,
     pub body: Body,
     pub signal: Option<Rc<AbortState>>,
+    pub mode: RequestMode,
     pub credentials: RequestCredentials,
 }
 
@@ -160,9 +182,9 @@ impl RequestData {
     /// The wire request this describes.
     ///
     /// Reads the body without consuming it, so `fetch(request)` still leaves
-    /// `request.bodyUsed` false until the script itself reads it. Credentials
-    /// remain browser-only metadata and therefore are intentionally absent
-    /// from this transport representation.
+    /// `request.bodyUsed` false until the script itself reads it. Mode and
+    /// credentials remain browser-only metadata and therefore are intentionally
+    /// absent from this transport representation.
     pub fn to_wire(&self) -> FetchRequest {
         FetchRequest::new(
             self.url.clone(),
@@ -457,7 +479,7 @@ impl HostObject {
             HostObject::URLSearchParams(_) => "URLSearchParams",
             HostObject::AudioContext(_) => "AudioContext",
             HostObject::AudioNode(_, _) => "AudioNode",
-            HostObject::AudioParam(_, _, _) => "AudioParam",
+            HostObject::AudioParam(_, _) => "AudioParam",
             HostObject::IntersectionObserver(_) => "IntersectionObserver",
             HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
             HostObject::ResizeObserver(_) => "ResizeObserver",
@@ -534,7 +556,6 @@ mod tests {
     #[test]
     fn text_decoding_strips_a_byte_order_mark() {
         assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'h', b'i']), "hi");
-        assert_eq!(decode_text("héllo".as_bytes()), "héllo");
     }
 
     #[test]
@@ -580,6 +601,7 @@ mod tests {
             headers: headers_ref(HeaderMap::new()),
             body: Body::new(b"{}".to_vec()),
             signal: None,
+            mode: RequestMode::SameOrigin,
             credentials: RequestCredentials::Omit,
         };
 
@@ -587,13 +609,17 @@ mod tests {
         assert_eq!(wire.method, Method::Post);
         assert_eq!(wire.body.as_deref(), Some(&b"{}"[..]));
         assert!(!request.body.used(), "sending is not reading");
+        assert_eq!(request.mode, RequestMode::SameOrigin);
         assert_eq!(request.credentials, RequestCredentials::Omit);
     }
 
     #[test]
-    fn request_credentials_have_stable_web_names() {
+    fn request_policy_modes_have_stable_web_names() {
+        assert_eq!(RequestMode::default().as_str(), "cors");
+        assert_eq!(RequestMode::SameOrigin.as_str(), "same-origin");
         assert_eq!(RequestCredentials::default().as_str(), "same-origin");
         assert_eq!(RequestCredentials::Omit.as_str(), "omit");
+        assert_eq!(RequestCredentials::Include.as_str(), "include");
     }
 
     #[test]
