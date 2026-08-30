@@ -3527,7 +3527,7 @@ mod tests {
     fn unsupported_init_members_are_refused_rather_than_ignored() {
         let (document, _network) = fetching_page(
             r#"<script>
-                 fetch("a", { mode: "no-cors" }).catch(function (e) { console.log("mode: " + e); });
+                 fetch("a", { mode: "navigate" }).catch(function (e) { console.log("mode: " + e); });
                  fetch("b", { credentials: "include" }).catch(function (e) { console.log("creds: " + e); });
                  fetch("c", { mode: "same-origin" }).catch(function (e) { console.log("UNEXPECTED " + e); });
                </script>"#,

@@ -133,6 +133,7 @@ pub enum RequestMode {
     #[default]
     Cors,
     SameOrigin,
+    NoCors,
 }
 
 impl RequestMode {
@@ -140,6 +141,7 @@ impl RequestMode {
         match self {
             RequestMode::Cors => "cors",
             RequestMode::SameOrigin => "same-origin",
+            RequestMode::NoCors => "no-cors",
         }
     }
 }
@@ -199,21 +201,26 @@ impl RequestData {
 
 /// Script-visible Fetch response type.
 ///
-/// `basic` is used for same-origin and synthetic responses. A successful
-/// cross-origin CORS fetch is tagged `cors` after its response gate succeeds.
-/// Opaque response types can be added here when `no-cors` is implemented.
+/// Synthetic `new Response()` values are `default`, ordinary same-origin
+/// network responses are `basic`, successful CORS responses are `cors`, and
+/// cross-origin `no-cors` responses are exposed only through an `opaque`
+/// filtered view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResponseType {
     #[default]
+    Default,
     Basic,
     Cors,
+    Opaque,
 }
 
 impl ResponseType {
     pub const fn as_str(self) -> &'static str {
         match self {
+            ResponseType::Default => "default",
             ResponseType::Basic => "basic",
             ResponseType::Cors => "cors",
+            ResponseType::Opaque => "opaque",
         }
     }
 }
@@ -242,6 +249,39 @@ impl ResponseData {
             redirected: response.redirected,
             response_type: ResponseType::Basic,
         }
+    }
+
+    /// Build the script-visible opaque filtered view of a successful
+    /// cross-origin no-CORS response. Cookie/HSTS processing has already seen
+    /// the internal wire response before this wrapper is constructed.
+    pub fn opaque_from_wire(response: FetchResponse) -> ResponseData {
+        ResponseData {
+            // Keep the internal URL only as non-script-visible bookkeeping. The
+            // `url` getter below suppresses it for opaque responses.
+            url: response.url,
+            status: 0,
+            status_text: String::new(),
+            headers: headers_ref(HeaderMap::new()),
+            body: Body::empty(),
+            redirected: false,
+            response_type: ResponseType::Opaque,
+        }
+    }
+
+    pub fn is_opaque(&self) -> bool {
+        self.response_type == ResponseType::Opaque
+    }
+
+    pub fn script_url(&self) -> String {
+        if self.is_opaque() {
+            String::new()
+        } else {
+            self.url.to_string()
+        }
+    }
+
+    pub fn body_used(&self) -> bool {
+        !self.is_opaque() && self.body.used()
     }
 
     /// `response.ok` — the 2xx range, and nothing else.

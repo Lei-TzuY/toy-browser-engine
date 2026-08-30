@@ -33,9 +33,9 @@ fn response(endpoint: &str) -> FetchResponse {
 }
 
 #[test]
-fn constructed_response_type_is_basic() {
+fn constructed_response_type_is_default() {
     let (browser, _) = browser_for(r#"console.log(new Response("ok").type);"#);
-    assert_eq!(browser.document().runtime.console, vec!["basic"]);
+    assert_eq!(browser.document().runtime.console, vec!["default"]);
 }
 
 #[test]
