@@ -70,32 +70,110 @@ impl FetchMetadataMode {
     }
 }
 
+/// Fetch request destination values used by `Sec-Fetch-Dest`.
+///
+/// This intentionally follows Fetch's destination vocabulary rather than only
+/// the destinations currently consumed by the engine. Keeping the enum complete
+/// prevents future loaders from inventing ad-hoc strings and makes unsupported
+/// destinations explicit at the integration boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchMetadataDestination {
     Empty,
-    Document,
-    Image,
-    Script,
-    Style,
-    Font,
     Audio,
+    AudioWorklet,
+    Document,
+    Embed,
+    Font,
+    Frame,
+    Iframe,
+    Image,
+    Json,
+    Manifest,
+    Object,
+    PaintWorklet,
+    Report,
+    Script,
+    ServiceWorker,
+    SharedWorker,
+    Style,
+    Text,
+    Track,
     Video,
+    WebIdentity,
     Worker,
+    Xslt,
 }
 
 impl FetchMetadataDestination {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Empty => "empty",
-            Self::Document => "document",
-            Self::Image => "image",
-            Self::Script => "script",
-            Self::Style => "style",
-            Self::Font => "font",
             Self::Audio => "audio",
+            Self::AudioWorklet => "audioworklet",
+            Self::Document => "document",
+            Self::Embed => "embed",
+            Self::Font => "font",
+            Self::Frame => "frame",
+            Self::Iframe => "iframe",
+            Self::Image => "image",
+            Self::Json => "json",
+            Self::Manifest => "manifest",
+            Self::Object => "object",
+            Self::PaintWorklet => "paintworklet",
+            Self::Report => "report",
+            Self::Script => "script",
+            Self::ServiceWorker => "serviceworker",
+            Self::SharedWorker => "sharedworker",
+            Self::Style => "style",
+            Self::Text => "text",
+            Self::Track => "track",
             Self::Video => "video",
+            Self::WebIdentity => "webidentity",
             Self::Worker => "worker",
+            Self::Xslt => "xslt",
         }
+    }
+
+    /// Whether Fetch classifies this destination as a subresource request.
+    pub const fn is_subresource(self) -> bool {
+        matches!(
+            self,
+            Self::Empty
+                | Self::Audio
+                | Self::AudioWorklet
+                | Self::Font
+                | Self::Image
+                | Self::Json
+                | Self::Manifest
+                | Self::PaintWorklet
+                | Self::Script
+                | Self::Style
+                | Self::Text
+                | Self::Track
+                | Self::Video
+                | Self::Xslt
+        )
+    }
+
+    /// Whether Fetch classifies this destination as navigation-like.
+    pub const fn is_navigation(self) -> bool {
+        matches!(
+            self,
+            Self::Document | Self::Embed | Self::Frame | Self::Iframe | Self::Object
+        )
+    }
+
+    /// Fetch's script-like destination classification.
+    pub const fn is_script_like(self) -> bool {
+        matches!(
+            self,
+            Self::AudioWorklet
+                | Self::PaintWorklet
+                | Self::Script
+                | Self::ServiceWorker
+                | Self::SharedWorker
+                | Self::Worker
+        )
     }
 }
 
@@ -164,6 +242,52 @@ mod tests {
             classify_fetch_metadata_site(None, &url("https://example.test/"), false),
             FetchMetadataSite::None
         );
+    }
+
+    #[test]
+    fn destination_strings_cover_fetch_vocabulary() {
+        let cases = [
+            (FetchMetadataDestination::Empty, "empty"),
+            (FetchMetadataDestination::Audio, "audio"),
+            (FetchMetadataDestination::AudioWorklet, "audioworklet"),
+            (FetchMetadataDestination::Document, "document"),
+            (FetchMetadataDestination::Embed, "embed"),
+            (FetchMetadataDestination::Font, "font"),
+            (FetchMetadataDestination::Frame, "frame"),
+            (FetchMetadataDestination::Iframe, "iframe"),
+            (FetchMetadataDestination::Image, "image"),
+            (FetchMetadataDestination::Json, "json"),
+            (FetchMetadataDestination::Manifest, "manifest"),
+            (FetchMetadataDestination::Object, "object"),
+            (FetchMetadataDestination::PaintWorklet, "paintworklet"),
+            (FetchMetadataDestination::Report, "report"),
+            (FetchMetadataDestination::Script, "script"),
+            (FetchMetadataDestination::ServiceWorker, "serviceworker"),
+            (FetchMetadataDestination::SharedWorker, "sharedworker"),
+            (FetchMetadataDestination::Style, "style"),
+            (FetchMetadataDestination::Text, "text"),
+            (FetchMetadataDestination::Track, "track"),
+            (FetchMetadataDestination::Video, "video"),
+            (FetchMetadataDestination::WebIdentity, "webidentity"),
+            (FetchMetadataDestination::Worker, "worker"),
+            (FetchMetadataDestination::Xslt, "xslt"),
+        ];
+        for (destination, expected) in cases {
+            assert_eq!(destination.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn destination_categories_match_fetch() {
+        assert!(FetchMetadataDestination::Image.is_subresource());
+        assert!(FetchMetadataDestination::Script.is_subresource());
+        assert!(!FetchMetadataDestination::Document.is_subresource());
+        assert!(FetchMetadataDestination::Document.is_navigation());
+        assert!(FetchMetadataDestination::Iframe.is_navigation());
+        assert!(!FetchMetadataDestination::Worker.is_navigation());
+        assert!(FetchMetadataDestination::AudioWorklet.is_script_like());
+        assert!(FetchMetadataDestination::ServiceWorker.is_script_like());
+        assert!(!FetchMetadataDestination::Xslt.is_script_like());
     }
 
     #[test]
