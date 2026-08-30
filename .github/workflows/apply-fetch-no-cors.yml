@@ -1,9 +1,9 @@
-name: Apply Fetch no-cors opaque support
+name: Validate clean Fetch no-cors opaque support
 
 on:
   push:
     branches:
-      - agent/fetch-no-cors-opaque
+      - agent/fetch-no-cors-clean-validate
 
 permissions:
   contents: write
@@ -16,8 +16,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
       - name: Repair helper test patch point
         shell: bash
         run: |
@@ -35,7 +33,7 @@ jobs:
           )
           path.write_text(text)
           PY
-      - name: Apply no-cors implementation
+      - name: Apply no-cors implementation without reformatting unrelated code
         run: python3 .github/scripts/apply_fetch_no_cors.py
       - name: Update legacy unsupported-mode regression
         shell: bash
@@ -50,8 +48,6 @@ jobs:
               raise SystemExit('legacy unsupported-mode assertion not found')
           path.write_text(text.replace(old, new, 1))
           PY
-      - name: Format patched files
-        run: cargo fmt
       - name: Run focused no-cors tests
         run: |
           cargo test --locked --test fetch_no_cors
@@ -63,7 +59,7 @@ jobs:
           cargo test --locked --lib unsupported_init_members_are_refused_rather_than_ignored
       - name: Run full suite
         run: cargo test --locked
-      - name: Commit validated product changes
+      - name: Commit clean validated product changes
         shell: bash
         run: |
           git rm -f .github/scripts/apply_fetch_no_cors.py .github/workflows/apply-fetch-no-cors.yml
@@ -71,4 +67,4 @@ jobs:
           git config user.email "41898282+Lei-TzuY@users.noreply.github.com"
           git add src/document_core.rs src/script/host.rs src/script/fetch_api.rs tests/fetch_response_type.rs tests/fetch_no_cors.rs
           git commit -m "Implement Fetch no-cors opaque responses"
-          git push origin HEAD:agent/fetch-no-cors-opaque
+          git push origin HEAD:agent/fetch-no-cors-clean-validate
