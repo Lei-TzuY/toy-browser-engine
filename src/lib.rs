@@ -38,6 +38,7 @@ pub mod html;
 pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
+pub mod integrity_policy;
 pub mod layout;
 #[path = "navigation_network_with_credentials.rs"]
 pub mod navigation_network;
@@ -74,6 +75,10 @@ pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
 pub use hyperlink_referrer::{
     hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
+};
+pub use integrity_policy::{
+    evaluate_integrity_policy, IntegrityPolicy, IntegrityPolicyDecision, IntegrityPolicyDestination,
+    IntegrityPolicyRequestMode, IntegrityPolicySource,
 };
 pub use navigation_network::NavigationNetwork;
 pub use net::{MemoryLoader, ResourceLoader, Url};
