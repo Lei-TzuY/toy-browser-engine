@@ -33,6 +33,7 @@ pub mod forms;
 pub mod hsts;
 pub mod hsts_network;
 pub mod html;
+pub mod http_cache_age;
 pub mod http_cache_policy;
 pub mod http_cache_vary;
 pub mod hyperlink_referrer;
@@ -82,6 +83,9 @@ pub use fetch_redirect_mode::{
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
+pub use http_cache_age::{
+    corrected_initial_age_secs, current_age_secs, response_age_value_secs, HttpCacheAgeInput,
+};
 pub use http_cache_policy::{
     cached_response_is_fresh, response_cache_policy, HttpResponseCachePolicy,
 };
