@@ -37,8 +37,8 @@ jobs:
           PY
       - name: Apply no-cors implementation
         run: python3 .github/scripts/apply_fetch_no_cors.py
-      - name: Check formatting
-        run: cargo fmt -- --check
+      - name: Format patched files
+        run: cargo fmt
       - name: Run focused no-cors tests
         run: |
           cargo test --locked --test fetch_no_cors
@@ -54,7 +54,7 @@ jobs:
         run: |
           git rm .github/scripts/apply_fetch_no_cors.py .github/workflows/apply-fetch-no-cors.yml
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+Lei-TzuY@users.noreply.github.com"
           git add src/script/host.rs src/script/fetch_api.rs tests/fetch_response_type.rs tests/fetch_no_cors.rs
           git commit -m "Implement Fetch no-cors opaque responses"
           git push origin HEAD:agent/fetch-no-cors-opaque
