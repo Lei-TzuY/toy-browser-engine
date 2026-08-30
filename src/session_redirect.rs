@@ -28,6 +28,7 @@ use crate::fetch_redirect_policy::{FetchRedirectMode, FetchRedirectPolicyRegistr
 use crate::hsts_network::HstsCacheRef;
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin, Url};
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
+use crate::referrer_policy::RedirectReferrerState;
 
 struct RedirectPreflight {
     actual_request: FetchRequest,
@@ -47,6 +48,7 @@ struct RedirectChain {
     request_policy: Option<FetchCorsRedirectPolicy>,
     cors_tainted: bool,
     cors_origin: String,
+    referrer: RedirectReferrerState,
     pending_preflight: Option<RedirectPreflight>,
     planner: RedirectPlanner,
 }
@@ -163,15 +165,36 @@ impl SessionRedirectNetwork {
         request.method == crate::net::Method::Options
             && request.headers.has("access-control-request-method")
     }
+
+    /// Referrer Policy is evaluated against the HSTS-effective target, while
+    /// the inner HSTS layer still owns the actual URL rewrite. Temporarily
+    /// substitute that target only for Referer computation, then restore the
+    /// authored URL before dispatch.
+    fn prepare_referrer_for_effective_target(
+        state: &RedirectReferrerState,
+        request: &mut FetchRequest,
+        effective_target: &Url,
+    ) {
+        let authored_url = request.url.clone();
+        request.url = effective_target.clone();
+        state.prepare_request(request);
+        request.url = authored_url;
+    }
 }
 
 impl NetworkBackend for SessionRedirectNetwork {
-    fn start(&self, id: FetchId, request: FetchRequest) {
+    fn start(&self, id: FetchId, mut request: FetchRequest) {
         let cookie_policy = self.request_policy(id, &request);
         let redirect_mode = self.redirect_policies.remove(id).unwrap_or_default();
         let request_policy = self.cors_redirect_policies.remove(id);
+        let referrer = request_policy
+            .as_ref()
+            .map(|policy| policy.referrer.clone())
+            .unwrap_or_else(RedirectReferrerState::no_referrer);
+        let effective_url = self.effective_url(&request);
+        Self::prepare_referrer_for_effective_target(&referrer, &mut request, &effective_url);
         let mut effective_request = request.clone();
-        effective_request.url = self.effective_url(&request);
+        effective_request.url = effective_url;
         let initial_origin = Origin::of(&effective_request.url);
         let (cors_tainted, cors_origin) = match &request_policy {
             Some(policy) if policy.mode == FetchRequestMode::Cors => {
@@ -194,6 +217,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 request_policy,
                 cors_tainted,
                 cors_origin,
+                referrer,
                 pending_preflight: None,
                 planner: RedirectPlanner::default(),
             },
@@ -326,6 +350,11 @@ impl NetworkBackend for SessionRedirectNetwork {
                         FetchRedirectMode::Follow => {}
                     }
 
+                    {
+                        let response = completion.result.as_ref().expect("checked above");
+                        chain.referrer.observe_redirect_response(response);
+                    }
+
                     let effective_next = self.effective_url(&next_request);
                     let next_origin = Origin::of(&effective_next);
                     let mut redirect_preflight: Option<Vec<String>> = None;
@@ -403,6 +432,14 @@ impl NetworkBackend for SessionRedirectNetwork {
 
                     let actual_cookie_policy =
                         Self::redirect_cookie_policy(&chain, &effective_next, next_request.method);
+                    // Browser-owned Referer is added after CORS unsafe-header
+                    // classification so it can never appear in
+                    // Access-Control-Request-Headers.
+                    Self::prepare_referrer_for_effective_target(
+                        &chain.referrer,
+                        &mut next_request,
+                        &effective_next,
+                    );
 
                     if let Some(requested_headers) = redirect_preflight {
                         let credentialed = chain.request_policy.as_ref().is_some_and(|policy| {
@@ -421,11 +458,19 @@ impl NetworkBackend for SessionRedirectNetwork {
                         );
 
                         if !cached {
-                            let preflight_request = build_preflight_request(
+                            let mut preflight_request = build_preflight_request(
                                 next_request.url.clone(),
                                 &serialized_origin,
                                 requested_method,
                                 &requested_headers,
+                            );
+                            // Fetch preflight inherits the actual request's
+                            // referrer source/policy but its response must not
+                            // mutate that redirect-chain policy.
+                            Self::prepare_referrer_for_effective_target(
+                                &chain.referrer,
+                                &mut preflight_request,
+                                &effective_next,
                             );
                             self.cookie_policies.set(id, preflight_cookie_policy());
                             chain.pending_preflight = Some(RedirectPreflight {

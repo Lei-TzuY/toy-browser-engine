@@ -18,6 +18,7 @@ use std::rc::Rc;
 
 use crate::fetch_redirect_policy::FetchRedirectMode;
 use crate::net::fetch::{FetchRequest, FetchResponse, HeaderMap, Method};
+use crate::referrer_policy::ReferrerPolicy;
 use crate::net::Url;
 
 /// A shared, mutable header list.
@@ -169,6 +170,30 @@ impl RequestCredentials {
     }
 }
 
+/// Referrer source carried by a script-visible `Request`.
+///
+/// `Client` is the web-facing `about:client` sentinel: the actual source URL is
+/// resolved from the environment only when Fetch is started. Keeping that
+/// sentinel distinct from a concrete URL prevents a Request constructed under
+/// one base URL from accidentally freezing that base as its referrer source.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RequestReferrer {
+    #[default]
+    Client,
+    NoReferrer,
+    Url(Url),
+}
+
+impl RequestReferrer {
+    pub fn as_str(&self) -> String {
+        match self {
+            RequestReferrer::Client => "about:client".to_string(),
+            RequestReferrer::NoReferrer => String::new(),
+            RequestReferrer::Url(url) => url.without_fragment().to_string(),
+        }
+    }
+}
+
 /// A `Request` object.
 #[derive(Debug)]
 pub struct RequestData {
@@ -180,6 +205,10 @@ pub struct RequestData {
     pub mode: RequestMode,
     pub credentials: RequestCredentials,
     pub redirect: FetchRedirectMode,
+    pub referrer: RequestReferrer,
+    /// `None` is the script-visible empty-string policy and means inherit the
+    /// environment's committed document policy when Fetch starts.
+    pub referrer_policy: Option<ReferrerPolicy>,
 }
 
 impl RequestData {
@@ -695,6 +724,8 @@ mod tests {
             mode: RequestMode::SameOrigin,
             credentials: RequestCredentials::Omit,
             redirect: FetchRedirectMode::Follow,
+            referrer: RequestReferrer::Client,
+            referrer_policy: None,
         };
 
         let wire = request.to_wire();
@@ -704,6 +735,8 @@ mod tests {
         assert_eq!(request.mode, RequestMode::SameOrigin);
         assert_eq!(request.credentials, RequestCredentials::Omit);
         assert_eq!(request.redirect, FetchRedirectMode::Follow);
+        assert_eq!(request.referrer, RequestReferrer::Client);
+        assert_eq!(request.referrer_policy, None);
     }
 
     #[test]
@@ -716,6 +749,8 @@ mod tests {
         assert_eq!(FetchRedirectMode::default().as_str(), "follow");
         assert_eq!(FetchRedirectMode::Error.as_str(), "error");
         assert_eq!(FetchRedirectMode::Manual.as_str(), "manual");
+        assert_eq!(RequestReferrer::Client.as_str(), "about:client");
+        assert_eq!(RequestReferrer::NoReferrer.as_str(), "");
     }
 
     #[test]

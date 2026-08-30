@@ -373,7 +373,15 @@ pub struct JsRuntime {
     /// every junction and unwinds until a `try` catches it or the call
     /// finishes.
     exception: Option<JsValue>,
+    /// API base URL used by URL-accepting JavaScript APIs. This may be a
+    /// `<base href>` URL and therefore must not double as the document's
+    /// referrer source or security origin.
     pub url: crate::net::url::Url,
+    /// URL of the committed document that owns this runtime.
+    pub referrer_source: Option<crate::net::url::Url>,
+    /// Committed document Referrer-Policy inherited by Request values whose
+    /// `referrerPolicy` member is the empty string.
+    pub referrer_policy: crate::referrer_policy::ReferrerPolicy,
     /// Promise reactions and `queueMicrotask` callbacks, drained to empty at
     /// every checkpoint.
     pub microtasks: MicrotaskQueue<Microtask>,
@@ -420,6 +428,8 @@ impl JsRuntime {
             now_ms: 0.0,
             fetches: FetchRegistry::new(),
             url: crate::net::url::Url::parse("demo:///index.html").unwrap(),
+            referrer_source: None,
+            referrer_policy: crate::referrer_policy::ReferrerPolicy::default(),
             detached: Vec::new(),
             depth: 0,
         }
