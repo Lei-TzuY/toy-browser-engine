@@ -4,7 +4,7 @@ use browser_engine::net::{
     FetchError, FetchRequest, FetchResponse, LoadError, Resource, ResourceLoader, Url,
 };
 use browser_engine::script::dom_api;
-use browser_engine::{Browser, ReferrerPolicy};
+use browser_engine::Browser;
 
 const PPM: &[u8] = b"P6\n1 1\n255\n\x10\x20\x30";
 
@@ -96,11 +96,6 @@ fn response_header_policy_survives_until_dynamic_image_fetch() {
     let mut browser = Browser::open(Box::new(loader), &url("https://page.test/index.html"))
         .expect("document loads");
 
-    assert_eq!(
-        browser.document().referrer_context().policy(),
-        ReferrerPolicy::UnsafeUrl
-    );
-
     let button = dom_api::get_element_by_id(&browser.document().dom, "add").unwrap();
     browser.click_node(&button);
 
@@ -126,18 +121,26 @@ fn response_header_policy_survives_until_dynamic_image_fetch() {
 }
 
 #[test]
-fn parser_time_meta_override_is_the_persisted_dynamic_policy() {
+fn parser_time_meta_override_is_frozen_for_later_dynamic_fetches() {
     let (loader, requests) = ReferrerLoader::new(
-        dynamic_image_page(r#"<meta name="referrer" content="no-referrer">"#),
+        dynamic_image_page(r#"<meta id="policy" name="referrer" content="no-referrer">"#),
         "unsafe-url",
     );
     let mut browser = Browser::open(Box::new(loader), &url("https://page.test/index.html"))
         .expect("document loads");
 
-    assert_eq!(
-        browser.document().referrer_context().policy(),
-        ReferrerPolicy::NoReferrer
-    );
+    // Referrer metadata is processed while the document is committed. Later
+    // script mutation of the live meta element must not retroactively replace
+    // that already-selected policy. This specifically catches the old #159
+    // behavior that reconstructed policy from the mutable DOM on every image
+    // refresh.
+    {
+        let document = browser.document_mut();
+        document.runtime.run_script(
+            &mut document.dom,
+            r#"document.getElementById("policy").setAttribute("content", "unsafe-url");"#,
+        );
+    }
 
     let button = dom_api::get_element_by_id(&browser.document().dom, "add").unwrap();
     browser.click_node(&button);
@@ -149,6 +152,6 @@ fn parser_time_meta_override_is_the_persisted_dynamic_policy() {
         .expect("dynamic image request");
     assert!(
         !image.headers.has("referer"),
-        "parser-time meta policy must still override the response header later"
+        "parser-time meta policy must remain authoritative after live DOM mutation"
     );
 }
