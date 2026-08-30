@@ -7,12 +7,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::cookie_network::{CookieCredentials, CookiePolicyRegistry, CookieRequestPolicy};
+use crate::cookie_network::{
+    CookieCredentials, CookieJarRef, CookiePolicyRegistry, CookieRequestPolicy,
+};
 use crate::cookie_same_site::SameSiteRequestContext;
 use crate::eventloop::Clock;
 use crate::fetch_cors::{
     cors_unsafe_request_header_names, is_cors_safelisted_method, validate_cors_response_origin,
     CORS_REDIRECT_ORIGIN_HEADER,
+};
+use crate::fetch_cors_preflight::{
+    build_preflight_request, cache_allows as preflight_cache_allows, preflight_cookie_policy,
+    store_permissions as store_preflight_permissions, validate_preflight_response,
 };
 use crate::fetch_cors_redirect::{
     FetchCorsRedirectPolicy, FetchCorsRedirectPolicyRegistry, FetchCredentialsMode,
@@ -23,6 +29,16 @@ use crate::hsts_network::HstsCacheRef;
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin, Url};
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
 
+struct RedirectPreflight {
+    actual_request: FetchRequest,
+    effective_url: Url,
+    actual_cookie_policy: CookieRequestPolicy,
+    serialized_origin: String,
+    credentialed: bool,
+    requested_method: crate::net::Method,
+    requested_headers: Vec<String>,
+}
+
 struct RedirectChain {
     current_request: FetchRequest,
     initial_origin: Origin,
@@ -31,11 +47,13 @@ struct RedirectChain {
     request_policy: Option<FetchCorsRedirectPolicy>,
     cors_tainted: bool,
     cors_origin: String,
+    pending_preflight: Option<RedirectPreflight>,
     planner: RedirectPlanner,
 }
 
 pub(crate) struct SessionRedirectNetwork {
     inner: Rc<dyn NetworkBackend>,
+    cookie_jar: CookieJarRef,
     cookie_policies: CookiePolicyRegistry,
     hsts_cache: HstsCacheRef,
     clock: Rc<dyn Clock>,
@@ -47,6 +65,7 @@ pub(crate) struct SessionRedirectNetwork {
 impl SessionRedirectNetwork {
     pub(crate) fn new(
         inner: Rc<dyn NetworkBackend>,
+        cookie_jar: CookieJarRef,
         cookie_policies: CookiePolicyRegistry,
         hsts_cache: HstsCacheRef,
         clock: Rc<dyn Clock>,
@@ -55,6 +74,7 @@ impl SessionRedirectNetwork {
     ) -> SessionRedirectNetwork {
         SessionRedirectNetwork {
             inner,
+            cookie_jar,
             cookie_policies,
             hsts_cache,
             clock,
@@ -174,6 +194,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 request_policy,
                 cors_tainted,
                 cors_origin,
+                pending_preflight: None,
                 planner: RedirectPlanner::default(),
             },
         );
@@ -199,6 +220,36 @@ impl NetworkBackend for SessionRedirectNetwork {
                 }
             };
             chain.current_request.url = response_url.clone();
+
+            if let Some(preflight) = chain.pending_preflight.take() {
+                let response = completion.result.as_ref().expect("checked above");
+                if let Err(error) = validate_preflight_response(
+                    &preflight.serialized_origin,
+                    preflight.credentialed,
+                    preflight.requested_method,
+                    &preflight.requested_headers,
+                    response,
+                ) {
+                    completion.result = Err(error);
+                    visible.push(completion);
+                    continue;
+                }
+
+                store_preflight_permissions(
+                    &self.cookie_jar,
+                    self.now_ms(),
+                    &preflight.serialized_origin,
+                    &preflight.actual_request.url,
+                    preflight.credentialed,
+                    response,
+                );
+                self.cookie_policies.set(id, preflight.actual_cookie_policy);
+                chain.current_request = preflight.actual_request.clone();
+                chain.current_request.url = preflight.effective_url;
+                self.chains.borrow_mut().insert(id, chain);
+                self.inner.start(id, preflight.actual_request);
+                continue;
+            }
 
             let next = {
                 let response = completion.result.as_ref().expect("checked above");
@@ -277,6 +328,7 @@ impl NetworkBackend for SessionRedirectNetwork {
 
                     let effective_next = self.effective_url(&next_request);
                     let next_origin = Origin::of(&effective_next);
+                    let mut redirect_preflight: Option<Vec<String>> = None;
 
                     match &chain.request_policy {
                         Some(policy) => {
@@ -306,22 +358,11 @@ impl NetworkBackend for SessionRedirectNetwork {
                                     }
                                 }
                                 FetchRequestMode::Cors => {
-                                    let next_is_cross_origin = !source_origin.can_fetch(&effective_next);
+                                    let next_is_cross_origin =
+                                        !source_origin.can_fetch(&effective_next);
                                     if next_is_cross_origin || chain.cors_tainted {
-                                        let unsafe_headers =
-                                            cors_unsafe_request_header_names(&next_request.headers);
-                                        if !is_cors_safelisted_method(next_request.method)
-                                            || !unsafe_headers.is_empty()
-                                        {
-                                            completion.result = Err(FetchError::Blocked(
-                                                "CORS: redirect target requires a new preflight; redirected preflight is not implemented"
-                                                    .into(),
-                                            ));
-                                            visible.push(completion);
-                                            continue;
-                                        }
-
-                                        let current_origin = Origin::of(&chain.current_request.url);
+                                        let current_origin =
+                                            Origin::of(&chain.current_request.url);
                                         if chain.cors_tainted && current_origin != next_origin {
                                             chain.cors_origin = "null".to_string();
                                         } else if !chain.cors_tainted {
@@ -331,6 +372,14 @@ impl NetworkBackend for SessionRedirectNetwork {
                                         next_request
                                             .headers
                                             .insert_raw("origin", &chain.cors_origin);
+
+                                        let unsafe_headers =
+                                            cors_unsafe_request_header_names(&next_request.headers);
+                                        if !is_cors_safelisted_method(next_request.method)
+                                            || !unsafe_headers.is_empty()
+                                        {
+                                            redirect_preflight = Some(unsafe_headers);
+                                        }
                                     } else {
                                         next_request.headers.delete("origin");
                                     }
@@ -352,10 +401,50 @@ impl NetworkBackend for SessionRedirectNetwork {
                         }
                     }
 
-                    self.cookie_policies.set(
-                        id,
-                        Self::redirect_cookie_policy(&chain, &effective_next, next_request.method),
-                    );
+                    let actual_cookie_policy =
+                        Self::redirect_cookie_policy(&chain, &effective_next, next_request.method);
+
+                    if let Some(requested_headers) = redirect_preflight {
+                        let credentialed = chain.request_policy.as_ref().is_some_and(|policy| {
+                            policy.credentials == FetchCredentialsMode::Include
+                        });
+                        let serialized_origin = chain.cors_origin.clone();
+                        let requested_method = next_request.method;
+                        let cached = preflight_cache_allows(
+                            &self.cookie_jar,
+                            self.now_ms(),
+                            &serialized_origin,
+                            &next_request.url,
+                            credentialed,
+                            requested_method,
+                            &requested_headers,
+                        );
+
+                        if !cached {
+                            let preflight_request = build_preflight_request(
+                                next_request.url.clone(),
+                                &serialized_origin,
+                                requested_method,
+                                &requested_headers,
+                            );
+                            self.cookie_policies.set(id, preflight_cookie_policy());
+                            chain.pending_preflight = Some(RedirectPreflight {
+                                actual_request: next_request,
+                                effective_url: effective_next,
+                                actual_cookie_policy,
+                                serialized_origin,
+                                credentialed,
+                                requested_method,
+                                requested_headers,
+                            });
+                            chain.current_request = preflight_request.clone();
+                            self.chains.borrow_mut().insert(id, chain);
+                            self.inner.start(id, preflight_request);
+                            continue;
+                        }
+                    }
+
+                    self.cookie_policies.set(id, actual_cookie_policy);
 
                     chain.current_request = next_request.clone();
                     chain.current_request.url = effective_next;

@@ -211,6 +211,7 @@ impl SessionNetwork {
             Rc::new(HstsNetwork::new(cookie, hsts_cache.clone(), clock.clone()));
         let network: Rc<dyn NetworkBackend> = Rc::new(SessionRedirectNetwork::new(
             per_hop,
+            cookie_jar.clone(),
             cookie_policies.clone(),
             hsts_cache.clone(),
             clock,
