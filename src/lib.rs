@@ -42,6 +42,7 @@ pub mod redirect_policy;
 pub mod referrer_meta;
 pub mod referrer_policy;
 pub mod script;
+pub mod script_response_mime;
 pub mod select_state;
 mod session_redirect;
 pub mod session_network;
@@ -74,6 +75,10 @@ pub use net::{MemoryLoader, ResourceLoader, Url};
 pub use redirect_policy::{RedirectError, RedirectPlanner, FETCH_MAX_REDIRECTS};
 pub use referrer_meta::apply_meta_referrer_policies;
 pub use referrer_policy::{RedirectReferrerState, ReferrerPolicy};
+pub use script_response_mime::{
+    is_javascript_mime_type, script_response_is_allowed, script_response_mime_disposition,
+    ScriptResponseMimeDisposition,
+};
 pub use session_network::SessionNetwork;
 pub use subresource_cors::validate_subresource_cors_response;
 pub use subresource_referrer::{
