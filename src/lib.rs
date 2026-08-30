@@ -25,6 +25,8 @@ pub mod document_referrer;
 pub mod dom;
 pub mod editing;
 pub mod eventloop;
+pub(crate) mod fetch_cors;
+pub(crate) mod fetch_cors_redirect;
 pub mod fetch_redirect_policy;
 pub mod form_state;
 pub mod forms;
