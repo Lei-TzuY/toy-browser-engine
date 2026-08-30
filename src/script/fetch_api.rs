@@ -108,6 +108,7 @@ struct CorsFetchState {
 enum PendingFetchStage {
     Actual {
         cors: Option<CorsFetchState>,
+        opaque: bool,
     },
     Preflight {
         request: RequestData,
@@ -143,7 +144,7 @@ impl JsRuntime {
 
         match self.prepare_request(&args) {
             Err(error) => self.reject_with(&promise, &error),
-            Ok((request, cookie_policy, cors)) => {
+            Ok((request, cookie_policy, cors, opaque)) => {
                 let signal = request.signal.clone();
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
@@ -172,7 +173,7 @@ impl JsRuntime {
                         let pending = PendingFetch {
                             promise: promise.clone(),
                             signal,
-                            stage: PendingFetchStage::Actual { cors },
+                            stage: PendingFetchStage::Actual { cors, opaque },
                         };
                         self.queue_fetch(wire, pending, cookie_policy)
                     };
@@ -205,7 +206,7 @@ impl JsRuntime {
         }
 
         match stage {
-            PendingFetchStage::Actual { cors } => match result {
+            PendingFetchStage::Actual { cors, opaque } => match result {
                 Ok(mut response) => {
                     if let Some(cors) = &cors {
                         if let Err(error) = validate_cors_response(
@@ -218,7 +219,12 @@ impl JsRuntime {
                         }
                         filter_cors_response_headers(&mut response, cors.credentialed);
                     }
-                    let mut response_data = ResponseData::from_wire(response);
+                    let mut response_data = if opaque {
+                        debug_assert!(cors.is_none(), "opaque no-CORS responses are not CORS responses");
+                        ResponseData::opaque_from_wire(response)
+                    } else {
+                        ResponseData::from_wire(response)
+                    };
                     if cors.is_some() {
                         response_data.response_type = ResponseType::Cors;
                     }
@@ -249,7 +255,10 @@ impl JsRuntime {
                 let actual = PendingFetch {
                     promise: promise.clone(),
                     signal,
-                    stage: PendingFetchStage::Actual { cors: Some(cors) },
+                    stage: PendingFetchStage::Actual {
+                        cors: Some(cors),
+                        opaque: false,
+                    },
                 };
                 if let Err(error) = self.queue_fetch(wire, actual, cookie_policy) {
                     self.reject_with(&promise, &error);
@@ -376,7 +385,10 @@ impl JsRuntime {
     fn prepare_request(
         &mut self,
         args: &[JsValue],
-    ) -> Result<(RequestData, CookieRequestPolicy, Option<CorsFetchState>), FetchError> {
+    ) -> Result<
+        (RequestData, CookieRequestPolicy, Option<CorsFetchState>, bool),
+        FetchError,
+    > {
         let input = args.first().cloned().unwrap_or(JsValue::Undefined);
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
         let request = self.build_request(input, init)?;
@@ -400,6 +412,34 @@ impl JsRuntime {
             && matches!(request.url.scheme(), "http" | "https")
             && !same_origin;
 
+        if mode == RequestMode::NoCors {
+            if !is_cors_safelisted_method(request.method) {
+                return Err(FetchError::BadRequest(format!(
+                    "no-cors mode only supports CORS-safelisted methods, not {}",
+                    request.method
+                )));
+            }
+
+            // A request-no-cors header guard only permits CORS-safelisted
+            // request headers. This engine does not attach guard metadata to
+            // Headers objects yet, so enforce the equivalent wire invariant at
+            // fetch preparation time by dropping unsafe authored fields.
+            {
+                let mut headers = request.headers.borrow_mut();
+                headers.delete("origin");
+                headers.delete("access-control-request-method");
+                headers.delete("access-control-request-headers");
+            }
+            let unsafe_names = cors_unsafe_request_header_names(&request);
+            if !unsafe_names.is_empty() {
+                let mut headers = request.headers.borrow_mut();
+                for name in unsafe_names {
+                    headers.delete(&name);
+                }
+            }
+        }
+
+        let mut opaque = false;
         let cors = match mode {
             RequestMode::SameOrigin if !same_origin => {
                 return Err(FetchError::Blocked(format!(
@@ -443,6 +483,23 @@ impl JsRuntime {
                     request.url
                 )))
             }
+            RequestMode::NoCors if cross_origin_web => {
+                // no-cors sends the constrained request without a CORS
+                // handshake. The internal response may still update browser
+                // policy/cookies, but script receives only an opaque filter.
+                opaque = true;
+                None
+            }
+            RequestMode::NoCors if !same_origin => {
+                // Preserve the engine's file/local containment boundary; this
+                // no-cors implementation is intentionally HTTP(S)-only across
+                // origins.
+                return Err(FetchError::Blocked(format!(
+                    "{} may not fetch {} in no-cors mode",
+                    source_origin.header_value(),
+                    request.url
+                )))
+            }
             _ => None,
         };
 
@@ -459,7 +516,7 @@ impl JsRuntime {
         };
         let cookie_policy = CookieRequestPolicy::new(credentials, same_site);
 
-        Ok((request, cookie_policy, cors))
+        Ok((request, cookie_policy, cors, opaque))
     }
 
     /// The `Request` constructor, shared with `fetch`'s first argument.
@@ -652,7 +709,7 @@ impl JsRuntime {
                     headers: headers_ref(headers),
                     body: Body::new(body),
                     redirected: false,
-                    response_type: ResponseType::Basic,
+                    response_type: ResponseType::Default,
                 };
                 host_value(HostObject::Response(response))
             }
@@ -802,10 +859,10 @@ impl JsRuntime {
                 "status" => JsValue::Number(response.status as f32),
                 "statusText" => JsValue::Str(response.status_text.clone()),
                 "ok" => JsValue::Bool(response.ok()),
-                "url" => JsValue::Str(response.url.to_string()),
+                "url" => JsValue::Str(response.script_url()),
                 "redirected" => JsValue::Bool(response.redirected),
                 "headers" => host_value(HostObject::Headers(response.headers.clone())),
-                "bodyUsed" => JsValue::Bool(response.body.used()),
+                "bodyUsed" => JsValue::Bool(response.body_used()),
                 "type" => JsValue::Str(response.response_type.as_str().to_string()),
                 _ => JsValue::Undefined,
             },
@@ -977,6 +1034,8 @@ impl JsRuntime {
                 _ => JsValue::Undefined,
             },
             HostObject::Response(response) => match prop {
+                "text" if response.is_opaque() => self.consume_null_body(false),
+                "json" if response.is_opaque() => self.consume_null_body(true),
                 "text" => self.consume_body(&response.body, false),
                 "json" => self.consume_body(&response.body, true),
                 _ => JsValue::Undefined,
@@ -1576,6 +1635,19 @@ impl JsRuntime {
         }
     }
 
+    fn consume_null_body(&mut self, as_json: bool) -> JsValue {
+        let promise = promise::new_promise();
+        if as_json {
+            match json::parse("") {
+                Ok(value) => self.settle_resolve(&promise, value),
+                Err(message) => self.settle_reject(&promise, JsValue::Str(message)),
+            }
+        } else {
+            self.settle_resolve(&promise, JsValue::Str(String::new()));
+        }
+        JsValue::Promise(promise)
+    }
+
     fn consume_body(&mut self, body: &Body, as_json: bool) -> JsValue {
         let promise = promise::new_promise();
         match body.take() {
@@ -1623,8 +1695,9 @@ fn check_mode(mode: &str) -> Result<RequestMode, FetchError> {
     match mode {
         "cors" | "" => Ok(RequestMode::Cors),
         "same-origin" => Ok(RequestMode::SameOrigin),
+        "no-cors" => Ok(RequestMode::NoCors),
         other => Err(FetchError::BadRequest(format!(
-            "unsupported fetch mode {other:?}: this engine supports cors and same-origin"
+            "unsupported fetch mode {other:?}: this engine supports cors, same-origin, and no-cors"
         ))),
     }
 }
