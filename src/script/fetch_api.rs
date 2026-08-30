@@ -12,12 +12,7 @@
 //  It validates its arguments, creates a pending promise, records the request
 //  and returns — all on the caller's stack, in constant time. The document
 //  hands the request to a backend on a later turn, and the answer arrives as a
-//  task. That is what makes
-//
-//      console.log("A"); fetch(u).then(() => console.log("C")); console.log("B");
-//
-//  print A, B, C however fast the resource is, including one already sitting
-//  in memory.
+//  task.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -39,21 +34,27 @@ use super::json;
 use super::promise::{self, PromiseRef};
 
 /// The schemes a page may fetch, on top of its own.
-///
-/// An allowlist rather than a denylist: `javascript:`, `data:` and anything
-/// else the engine has not thought about are refused by default.
 const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FetchMode {
+    Cors,
+    SameOrigin,
+}
+
+/// Browser-only state needed when the response task completes.
+#[derive(Debug, Clone)]
+struct CorsFetchState {
+    source_origin: Origin,
+}
+
 /// What the runtime keeps for one request it is waiting on.
-///
-/// The promise is here and nowhere else, which is the whole navigation story:
-/// dropping the document drops the registry, drops this, and drops the
-/// promise, so a completion for the previous page can never settle anything.
 #[derive(Debug)]
 pub struct PendingFetch {
     pub promise: PromiseRef,
     /// The signal watching this request, if `fetch` was given one.
     pub signal: Option<Rc<AbortState>>,
+    cors: Option<CorsFetchState>,
 }
 
 fn rect_to_js(r: &[f32; 4]) -> JsValue {
@@ -69,42 +70,29 @@ impl JsRuntime {
     // ── fetch() ───────────────────────────────────────────────────────────
 
     /// `fetch(input, init)` — returns a pending promise, always.
-    ///
-    /// Every failure path rejects that promise rather than throwing, so a bad
-    /// URL or a blocked origin reaches `.catch()` like any other network
-    /// problem instead of unwinding through the caller.
     pub fn start_fetch(&mut self, args: Vec<JsValue>) -> JsValue {
         let promise = promise::new_promise();
 
         match self.prepare_request(&args) {
             Err(error) => self.reject_with(&promise, &error),
-            Ok((request, credentials)) => {
+            Ok((request, cookie_policy, cors)) => {
                 let signal = request.signal.clone();
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
-                    // Already aborted before it began.
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
-                    let method = request.method;
                     let pending = PendingFetch {
                         promise: promise.clone(),
                         signal,
+                        cors,
                     };
                     match self.fetches.start(request.to_wire(), pending) {
                         Ok(id) => {
-                            // Cookie policy is keyed by the exact FetchId that
-                            // will later reach CookieNetwork::start. Browser
-                            // bootstrap publishes this registry before authored
-                            // scripts execute, while standalone Documents simply
-                            // have no cookie-policy endpoint to configure.
-                            if credentials == CookieCredentials::Omit {
-                                if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
-                                    registry.set(
-                                        id,
-                                        CookieRequestPolicy::omit(
-                                            SameSiteRequestContext::same_site(method),
-                                        ),
-                                    );
-                                }
+                            // Attach the complete cookie policy, not merely
+                            // credentials=omit. Cross-origin CORS requests are
+                            // subresources, so Strict/Lax cookies must not leak
+                            // even when a later credentials=include mode exists.
+                            if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
+                                registry.set(id, cookie_policy);
                             }
                         }
                         Err(error) => self.reject_with(&promise, &error),
@@ -116,21 +104,24 @@ impl JsRuntime {
     }
 
     /// Settle the promise of a request the network has finished with.
-    ///
-    /// Called from the document's network phase — a task — so the reactions it
-    /// releases run at the checkpoint that follows, never inline.
     pub fn settle_fetch(
         &mut self,
         pending: PendingFetch,
         result: Result<FetchResponse, FetchError>,
     ) {
-        // An abort raised while the answer was in flight wins over the answer.
         if pending.signal.as_ref().is_some_and(|state| state.aborted()) {
             self.reject_with(&pending.promise, &FetchError::Aborted);
             return;
         }
         match result {
             Ok(response) => {
+                if let Some(cors) = &pending.cors {
+                    if let Err(error) = validate_simple_cors_response(&cors.source_origin, &response)
+                    {
+                        self.reject_with(&pending.promise, &error);
+                        return;
+                    }
+                }
                 let value = host_value(HostObject::Response(ResponseData::from_wire(response)));
                 self.settle_resolve(&pending.promise, value);
             }
@@ -157,38 +148,90 @@ impl JsRuntime {
 
     // ── Building a request ────────────────────────────────────────────────
 
-    /// Turn `(input, init)` into a request plus browser-only cookie policy, or
-    /// explain why it cannot be one.
+    /// Turn `(input, init)` into a request plus browser-only Fetch policy.
     fn prepare_request(
         &mut self,
         args: &[JsValue],
-    ) -> Result<(RequestData, CookieCredentials), FetchError> {
+    ) -> Result<(RequestData, CookieRequestPolicy, Option<CorsFetchState>), FetchError> {
         let input = args.first().cloned().unwrap_or(JsValue::Undefined);
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-        let request = self.build_request(input, init)?;
-        let credentials = match request.credentials {
-            RequestCredentials::SameOrigin => CookieCredentials::Include,
-            RequestCredentials::Omit => CookieCredentials::Omit,
-        };
+        let input_is_request = matches!(&input, JsValue::Host(host) if host.as_request().is_some());
+        let request = self.build_request(input, init.clone())?;
+        let mode = fetch_mode_from_init(&init)?.unwrap_or(if input_is_request {
+            // RequestData does not yet persist mode. Stay conservative for a
+            // Request object unless this fetch call explicitly opts into CORS;
+            // this avoids turning a cloned same-origin Request into a broader
+            // cross-origin capability.
+            FetchMode::SameOrigin
+        } else {
+            FetchMode::Cors
+        });
 
-        // Policy, applied once, on the URL that will actually be requested.
         let scheme = request.url.scheme();
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
             return Err(FetchError::UnsupportedScheme(scheme.to_string()));
         }
-        if !Origin::of(&self.url).can_fetch(&request.url) {
-            return Err(FetchError::Blocked(format!(
-                "{} may not fetch {}",
-                Origin::of(&self.url).header_value(),
-                request.url
-            )));
-        }
-        Ok((request, credentials))
+
+        let source_origin = Origin::of(&self.url);
+        let same_origin = source_origin.can_fetch(&request.url);
+        let cross_origin_web = matches!(self.url.scheme(), "http" | "https")
+            && matches!(request.url.scheme(), "http" | "https")
+            && !same_origin;
+
+        let cors = match mode {
+            FetchMode::SameOrigin if !same_origin => {
+                return Err(FetchError::Blocked(format!(
+                    "{} may not fetch {} in same-origin mode",
+                    source_origin.header_value(),
+                    request.url
+                )))
+            }
+            FetchMode::Cors if cross_origin_web => {
+                // Origin is browser-owned and must not affect safelist
+                // classification even if authored input attempted to forge it.
+                request.headers.borrow_mut().delete("origin");
+                if !is_cors_safelisted_request(&request) {
+                    return Err(FetchError::Blocked(
+                        "CORS preflight is required for this request and is not implemented".into(),
+                    ));
+                }
+                request
+                    .headers
+                    .borrow_mut()
+                    .insert_raw("origin", &source_origin.header_value());
+                Some(CorsFetchState {
+                    source_origin: source_origin.clone(),
+                })
+            }
+            FetchMode::Cors if !same_origin => {
+                // CORS is only meaningful for network tuple origins here. Keep
+                // the existing local-file containment boundary intact.
+                return Err(FetchError::Blocked(format!(
+                    "{} may not fetch {}",
+                    source_origin.header_value(),
+                    request.url
+                )))
+            }
+            _ => None,
+        };
+
+        let credentials = match request.credentials {
+            RequestCredentials::Omit => CookieCredentials::Omit,
+            RequestCredentials::SameOrigin if same_origin => CookieCredentials::Include,
+            RequestCredentials::SameOrigin => CookieCredentials::Omit,
+        };
+        let same_site = if conservative_same_site(&self.url, &request.url) {
+            SameSiteRequestContext::same_site(request.method)
+        } else {
+            SameSiteRequestContext::cross_site_subresource(request.method)
+        };
+        let cookie_policy = CookieRequestPolicy::new(credentials, same_site);
+
+        Ok((request, cookie_policy, cors))
     }
 
     /// The `Request` constructor, shared with `fetch`'s first argument.
     fn build_request(&mut self, input: JsValue, init: JsValue) -> Result<RequestData, FetchError> {
-        // A Request as input supplies the defaults; a string supplies only a URL.
         let (mut url, mut method, mut headers, mut body, mut signal, mut credentials) =
             match &input {
                 JsValue::Host(host) => match host.as_request() {
@@ -200,9 +243,7 @@ impl JsRuntime {
                         existing.signal.clone(),
                         existing.credentials,
                     ),
-                    None => {
-                        return Err(FetchError::InvalidUrl(to_string(&input)));
-                    }
+                    None => return Err(FetchError::InvalidUrl(to_string(&input))),
                 },
                 other => (
                     self.resolve_fetch_url(&to_string(other))?,
@@ -239,16 +280,17 @@ impl JsRuntime {
                             }
                         }
                     }
-                    // Accepted, with the subset this engine actually enforces.
-                    "mode" => check_mode(&to_string(value))?,
+                    "mode" => {
+                        // Validation happens here for Request construction;
+                        // fetch() reads it again to select browser policy.
+                        check_mode(&to_string(value))?;
+                    }
                     "credentials" => {
                         credentials = match check_credentials(&to_string(value))? {
                             CookieCredentials::Include => RequestCredentials::SameOrigin,
                             CookieCredentials::Omit => RequestCredentials::Omit,
                         };
                     }
-                    // `url` on an init object is not a thing; anything else is
-                    // ignored the way an unknown init member is in Fetch.
                     _ => {}
                 }
             }
@@ -259,8 +301,6 @@ impl JsRuntime {
                 "a {method} request cannot have a body"
             )));
         }
-        // A Request as input may still be re-pointed by a string second form;
-        // keep the URL absolute either way.
         if url.scheme().is_empty() {
             url = self.resolve_fetch_url(&url.to_string())?;
         }
@@ -278,7 +318,6 @@ impl JsRuntime {
         })
     }
 
-    /// Resolve a fetch URL against the document, as a relative reference.
     fn resolve_fetch_url(&self, reference: &str) -> Result<Url, FetchError> {
         let trimmed = reference.trim();
         if trimmed.is_empty() {
@@ -289,7 +328,6 @@ impl JsRuntime {
             .map_err(|_| FetchError::InvalidUrl(trimmed.to_string()))
     }
 
-    /// Read a `headers` init member: a plain object or a `Headers`.
     fn header_map_from(&self, value: &JsValue) -> Result<HeaderMap, FetchError> {
         let mut headers = HeaderMap::new();
         match value {
@@ -303,6 +341,9 @@ impl JsRuntime {
             },
             JsValue::Object(props) => {
                 for (name, value) in props.borrow().iter() {
+                    if HeaderMap::is_forbidden(name) {
+                        continue;
+                    }
                     headers
                         .append(name, &to_string(value))
                         .map_err(|e| FetchError::BadRequest(e.to_string()))?;
@@ -320,8 +361,6 @@ impl JsRuntime {
 
     // ── Constructors ──────────────────────────────────────────────────────
 
-    /// `new Headers(...)`, `new Request(...)`, `new Response(...)`,
-    /// `new AbortController()`.
     pub(crate) fn construct_host(&mut self, builtin: Builtin, args: Vec<JsValue>) -> JsValue {
         match builtin {
             Builtin::HeadersCtor => {
@@ -340,7 +379,6 @@ impl JsRuntime {
                 match self.build_request(input, init) {
                     Ok(request) => host_value(HostObject::Request(request)),
                     Err(error) => {
-                        // A constructor is not a promise: this one throws.
                         self.throw_type_error(error.to_string());
                         JsValue::Undefined
                     }
@@ -446,8 +484,6 @@ impl JsRuntime {
                 host_value(HostObject::AudioContext(Rc::new(RefCell::new(crate::audio::AudioContext::new()))))
             }
             Builtin::IntersectionObserverCtor => {
-                // new IntersectionObserver(callback, options?)
-                // callback is stored in JS land; we just track targets
                 let mut thresholds = vec![0.0];
                 if let Some(JsValue::Object(opts)) = args.get(1) {
                     for (k, v) in opts.borrow().iter() {
@@ -512,7 +548,6 @@ impl JsRuntime {
 
     // ── Properties ────────────────────────────────────────────────────────
 
-    /// Read a property of a Web-platform object.
     pub(crate) fn host_member(&mut self, host: &Rc<HostObject>, prop: &str) -> JsValue {
         match host.as_ref() {
             HostObject::Headers(_) => JsValue::Undefined,
@@ -536,8 +571,6 @@ impl JsRuntime {
                 "redirected" => JsValue::Bool(response.redirected),
                 "headers" => host_value(HostObject::Headers(response.headers.clone())),
                 "bodyUsed" => JsValue::Bool(response.body.used()),
-                // Only one response type exists here: there is no opaque
-                // cross-origin mode to report.
                 "type" => JsValue::Str("basic".to_string()),
                 _ => JsValue::Undefined,
             },
@@ -576,7 +609,7 @@ impl JsRuntime {
             HostObject::URLSearchParams(params) => match prop {
                 "size" => JsValue::Number(params.borrow().pairs.borrow().len() as f32),
                 _ => JsValue::Undefined,
-            }
+            },
             HostObject::CanvasRenderingContext2D(ctx) => {
                 let ctx = ctx.borrow();
                 match prop {
@@ -695,7 +728,6 @@ impl JsRuntime {
 
     // ── Methods ───────────────────────────────────────────────────────────
 
-    /// Call a method of a Web-platform object.
     pub(crate) fn host_method(
         &mut self,
         host: &Rc<HostObject>,
@@ -836,24 +868,24 @@ impl JsRuntime {
                 }
                 _ => JsValue::Undefined,
             },
-            HostObject::AudioParam(ctx, node_id, param_name) => match prop {
-                "setValueAtTime" => {
-                    let val = args.first().map(to_number).unwrap_or(0.0);
-                    if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
-                        match &mut node.kind {
-                            crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => {
-                                frequency.set_value(val);
-                            }
-                            crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => {
-                                gain.set_value(val);
-                            }
-                            _ => {}
-                        }
-                    }
-                    JsValue::Undefined
+            HostObject::AudioParam(ctx, node_id, param_name) => {
+                let c = ctx.borrow();
+                let Some(node) = c.get_node(*node_id) else {
+                    return JsValue::Undefined;
+                };
+                let param = match &node.kind {
+                    crate::audio::AudioNodeKind::Oscillator { frequency, .. } if param_name == "frequency" => frequency,
+                    crate::audio::AudioNodeKind::Gain { gain } if param_name == "gain" => gain,
+                    _ => return JsValue::Undefined,
+                };
+                match prop {
+                    "value" => JsValue::Number(param.value),
+                    "defaultValue" => JsValue::Number(param.default_value),
+                    "minValue" => JsValue::Number(param.min_value),
+                    "maxValue" => JsValue::Number(param.max_value),
+                    _ => JsValue::Undefined,
                 }
-                _ => JsValue::Undefined,
-            },
+            }
             HostObject::IntersectionObserver(data) => match prop {
                 "observe" => {
                     let target_id = args.first().map(to_string).unwrap_or_default();
@@ -941,7 +973,6 @@ impl JsRuntime {
                     } else {
                         e.push((key, val));
                     }
-                    // Return the Map itself for chaining
                     host_value(HostObject::JsMap(entries.clone()))
                 }
                 "has" => {
@@ -1263,13 +1294,11 @@ impl JsRuntime {
         match prop {
             "get" => match headers.borrow().get(&name) {
                 Some(found) => JsValue::Str(found),
-                // Fetch returns null, not undefined, for a header that is absent.
                 None => JsValue::Null,
             },
             "has" => JsValue::Bool(headers.borrow().has(&name)),
             "set" | "append" => {
                 if HeaderMap::is_forbidden(&name) {
-                    // Silently ignored, as Fetch specifies for forbidden names.
                     return JsValue::Undefined;
                 }
                 let outcome = if prop == "set" {
@@ -1312,11 +1341,6 @@ impl JsRuntime {
         }
     }
 
-    /// `response.text()` / `response.json()`, and the same on a `Request`.
-    ///
-    /// The bytes are already in memory, but the answer is still a promise and
-    /// its handlers still run as microtasks — reading a body is never
-    /// synchronous, however local it is.
     fn consume_body(&mut self, body: &Body, as_json: bool) -> JsValue {
         let promise = promise::new_promise();
         match body.take() {
@@ -1336,12 +1360,6 @@ impl JsRuntime {
         JsValue::Promise(promise)
     }
 
-    // ── JSON ──────────────────────────────────────────────────────────────
-
-    /// `JSON.parse` / `JSON.stringify`.
-    ///
-    /// Parsing throws a `SyntaxError` on bad input the way JavaScript does,
-    /// rather than quietly producing `undefined`.
     pub(crate) fn json_method(&mut self, prop: &str, args: &[JsValue]) -> JsValue {
         match prop {
             "stringify" => {
@@ -1362,26 +1380,32 @@ impl JsRuntime {
     }
 }
 
-/// Wrap a host object as a value.
 fn host_value(object: HostObject) -> JsValue {
     JsValue::Host(Rc::new(object))
 }
 
-/// `mode`: the engine only does same-origin, so say so rather than pretend.
-fn check_mode(mode: &str) -> Result<(), FetchError> {
+fn fetch_mode_from_init(init: &JsValue) -> Result<Option<FetchMode>, FetchError> {
+    let JsValue::Object(props) = init else {
+        return Ok(None);
+    };
+    for (key, value) in props.borrow().iter() {
+        if key == "mode" {
+            return check_mode(&to_string(value)).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn check_mode(mode: &str) -> Result<FetchMode, FetchError> {
     match mode {
-        // Both are accepted, and both are enforced as same-origin, because
-        // there is no CORS preflight here to make `cors` mean more.
-        "cors" | "same-origin" | "" => Ok(()),
+        "cors" | "" => Ok(FetchMode::Cors),
+        "same-origin" => Ok(FetchMode::SameOrigin),
         other => Err(FetchError::BadRequest(format!(
-            "unsupported fetch mode {other:?}: this engine only does same-origin requests"
+            "unsupported fetch mode {other:?}: this engine supports cors and same-origin"
         ))),
     }
 }
 
-/// Parse Fetch credentials into the cookie participation policy understood by
-/// the browser-owned CookieNetwork layer. The engine still blocks cross-origin
-/// fetches, so `same-origin` is equivalent to cookie participation here.
 fn check_credentials(credentials: &str) -> Result<CookieCredentials, FetchError> {
     match credentials {
         "same-origin" | "" => Ok(CookieCredentials::Include),
@@ -1389,5 +1413,60 @@ fn check_credentials(credentials: &str) -> Result<CookieCredentials, FetchError>
         other => Err(FetchError::BadRequest(format!(
             "unsupported credentials mode {other:?}: this engine supports same-origin and omit"
         ))),
+    }
+}
+
+fn conservative_same_site(source: &Url, target: &Url) -> bool {
+    source.scheme() == target.scheme() && source.host().eq_ignore_ascii_case(target.host())
+}
+
+fn is_cors_safelisted_request(request: &RequestData) -> bool {
+    if !matches!(request.method, Method::Get | Method::Head | Method::Post) {
+        return false;
+    }
+
+    for (name, value) in request.headers.borrow().iter() {
+        match name {
+            "accept" | "accept-language" | "content-language" => {
+                if value.contains(['\r', '\n']) {
+                    return false;
+                }
+            }
+            "content-type" => {
+                let mime = value
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
+                if !matches!(
+                    mime.as_str(),
+                    "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+                ) {
+                    return false;
+                }
+            }
+            // `origin` is installed only after this check. Every other authored
+            // header needs a preflight and therefore stays blocked for now.
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn validate_simple_cors_response(
+    source_origin: &Origin,
+    response: &FetchResponse,
+) -> Result<(), FetchError> {
+    let allow_origin = response.headers.get("access-control-allow-origin");
+    let serialized = source_origin.header_value();
+    if matches!(allow_origin.as_deref(), Some("*"))
+        || allow_origin.as_deref() == Some(serialized.as_str())
+    {
+        Ok(())
+    } else {
+        Err(FetchError::Blocked(
+            "CORS: cross-origin response did not allow the document origin".into(),
+        ))
     }
 }
