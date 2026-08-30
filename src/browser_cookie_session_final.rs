@@ -541,13 +541,21 @@ impl Browser {
     ///
     /// This is step 3–4 of a frame: due timers, then animation-frame
     /// callbacks. The caller renders afterwards, so anything a callback
-    /// changed is in the next paint.
+    /// changed is in the next paint. Dynamic element subresources created by
+    /// the turn (including its microtasks) are activated before that paint as
+    /// long as the turn did not already request a top-level navigation.
     pub fn tick(&mut self) -> LoopReport {
         let now = self.now_ms();
         let mut report = self.document.run_event_loop(now);
         if let Some(submission) = report.submission.take() {
             // A callback called `form.submit()`; carry it out like any other.
+            // Do not start old-document subresources immediately before
+            // replacing that document.
             self.perform_submission(submission);
+        } else {
+            let referrer = self.document_referrer.clone();
+            self.document
+                .refresh_images_with_committed_referrer(&self.navigation, &referrer);
         }
         report
     }
