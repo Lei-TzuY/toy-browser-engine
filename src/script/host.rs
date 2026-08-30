@@ -479,7 +479,7 @@ impl HostObject {
             HostObject::URLSearchParams(_) => "URLSearchParams",
             HostObject::AudioContext(_) => "AudioContext",
             HostObject::AudioNode(_, _) => "AudioNode",
-            HostObject::AudioParam(_, _) => "AudioParam",
+            HostObject::AudioParam(_, _, _) => "AudioParam",
             HostObject::IntersectionObserver(_) => "IntersectionObserver",
             HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
             HostObject::ResizeObserver(_) => "ResizeObserver",
@@ -556,6 +556,7 @@ mod tests {
     #[test]
     fn text_decoding_strips_a_byte_order_mark() {
         assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'h', b'i']), "hi");
+        assert_eq!(decode_text("héllo".as_bytes()), "héllo");
     }
 
     #[test]
