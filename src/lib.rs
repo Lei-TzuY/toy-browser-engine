@@ -19,6 +19,7 @@ pub mod cookie;
 pub mod cookie_network;
 pub mod cookie_same_site;
 pub mod cors_settings;
+pub mod cross_origin_resource_policy;
 pub mod css;
 pub mod document;
 pub mod document_referrer;
@@ -61,6 +62,10 @@ pub use cookie_network::{CookieJarRef, CookieNetwork};
 pub use cookie_same_site::{cookie_allows_request, same_site_allows, SameSiteRequestContext};
 pub use cors_settings::{
     cors_enabled, parse_cors_settings_attribute, CorsCredentialsMode, CorsSettingsAttribute,
+};
+pub use cross_origin_resource_policy::{
+    cross_origin_resource_policy_allows, parse_cross_origin_resource_policy,
+    response_allows_cross_origin_resource, CorpOriginRelation, CrossOriginResourcePolicy,
 };
 pub use document::{Document, PointerState};
 pub use document_referrer::DocumentReferrerContext;
