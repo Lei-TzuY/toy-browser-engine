@@ -52,3 +52,5 @@ let source_origin = Origin::of(&self.url);'''
           git add src/script/fetch_api.rs .github/workflows/agent-format-fetch-policy.yml
           git commit -m "Format credentialed Fetch policy gate"
           git push origin HEAD:agent/fetch-request-mode-credentialed-cors
+
+# Updated once so the workflow exists before its trigger push.
