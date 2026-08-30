@@ -8,17 +8,74 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use crate::cookie_network::{
-    CookieCredentials, CookiePolicyRegistry, CookieRequestPolicy,
+    CookieCredentials, CookieJarRef, CookiePolicyRegistry, CookieRequestPolicy,
 };
+use crate::fetch_redirect_mode::{is_fetch_redirect_status, FetchRedirectMode};
 use crate::cookie_same_site::SameSiteRequestContext;
 use crate::eventloop::Clock;
 use crate::hsts_network::HstsCacheRef;
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin};
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
+
+
+#[derive(Clone, Default)]
+pub(crate) struct RedirectPolicyRegistry {
+    policies: Rc<RefCell<HashMap<FetchId, FetchRedirectMode>>>,
+}
+
+impl RedirectPolicyRegistry {
+    pub(crate) fn new() -> Self { Self::default() }
+    pub(crate) fn set(&self, id: FetchId, mode: FetchRedirectMode) {
+        self.policies.borrow_mut().insert(id, mode);
+    }
+    fn take(&self, id: FetchId) -> Option<FetchRedirectMode> {
+        self.policies.borrow_mut().remove(&id)
+    }
+    fn remove(&self, id: FetchId) {
+        self.policies.borrow_mut().remove(&id);
+    }
+}
+
+struct RedirectPolicySession {
+    jar: Weak<RefCell<crate::cookie::CookieJar>>,
+    registry: RedirectPolicyRegistry,
+}
+
+thread_local! {
+    static REDIRECT_POLICY_SESSIONS: RefCell<Vec<RedirectPolicySession>> = RefCell::new(Vec::new());
+}
+
+pub(crate) fn register_redirect_policy_registry_for_jar(
+    jar: &CookieJarRef,
+    registry: RedirectPolicyRegistry,
+) {
+    REDIRECT_POLICY_SESSIONS.with(|sessions| {
+        let mut sessions = sessions.borrow_mut();
+        sessions.retain(|session| session.jar.upgrade().is_some());
+        sessions.retain(|session| {
+            !session.jar.upgrade().is_some_and(|live| Rc::ptr_eq(&live, jar))
+        });
+        sessions.push(RedirectPolicySession { jar: Rc::downgrade(jar), registry });
+    });
+}
+
+pub(crate) fn redirect_policy_registry_for_jar(
+    jar: &CookieJarRef,
+) -> Option<RedirectPolicyRegistry> {
+    REDIRECT_POLICY_SESSIONS.with(|sessions| {
+        let mut sessions = sessions.borrow_mut();
+        sessions.retain(|session| session.jar.upgrade().is_some());
+        sessions.iter().find_map(|session| {
+            session.jar.upgrade().and_then(|live| {
+                Rc::ptr_eq(&live, jar).then(|| session.registry.clone())
+            })
+        })
+    })
+}
 
 struct RedirectChain {
     /// Browser-policy-free request shape for the current hop. Its URL is kept
@@ -27,6 +84,7 @@ struct RedirectChain {
     current_request: FetchRequest,
     initial_origin: Origin,
     credentials: CookieCredentials,
+    redirect_mode: FetchRedirectMode,
     planner: RedirectPlanner,
 }
 
@@ -43,6 +101,7 @@ pub(crate) struct SessionRedirectNetwork {
     cookie_policies: CookiePolicyRegistry,
     hsts_cache: HstsCacheRef,
     clock: Rc<dyn Clock>,
+    redirect_policies: RedirectPolicyRegistry,
     chains: RefCell<HashMap<FetchId, RedirectChain>>,
 }
 
@@ -52,12 +111,14 @@ impl SessionRedirectNetwork {
         cookie_policies: CookiePolicyRegistry,
         hsts_cache: HstsCacheRef,
         clock: Rc<dyn Clock>,
+        redirect_policies: RedirectPolicyRegistry,
     ) -> SessionRedirectNetwork {
         SessionRedirectNetwork {
             inner,
             cookie_policies,
             hsts_cache,
             clock,
+            redirect_policies,
             chains: RefCell::new(HashMap::new()),
         }
     }
@@ -102,6 +163,7 @@ impl NetworkBackend for SessionRedirectNetwork {
         let mut effective_request = request.clone();
         effective_request.url = self.effective_url(&request);
         let initial_origin = Origin::of(&effective_request.url);
+        let redirect_mode = self.redirect_policies.take(id).unwrap_or_default();
 
         self.chains.borrow_mut().insert(
             id,
@@ -109,6 +171,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 current_request: effective_request,
                 initial_origin,
                 credentials: policy.credentials,
+                redirect_mode,
                 planner: RedirectPlanner::default(),
             },
         );
@@ -138,6 +201,27 @@ impl NetworkBackend for SessionRedirectNetwork {
             // hop response records that effective URL, which is the correct base
             // for Location resolution and the current-hop origin.
             chain.current_request.url = response_url.clone();
+
+            let is_redirect = completion
+                .result
+                .as_ref()
+                .is_ok_and(|response| is_fetch_redirect_status(response.status));
+            if is_redirect {
+                match chain.redirect_mode {
+                    FetchRedirectMode::Error => {
+                        completion.result = Err(FetchError::Io(
+                            "redirect mode \"error\" rejected an HTTP redirect".into(),
+                        ));
+                        visible.push(completion);
+                        continue;
+                    }
+                    FetchRedirectMode::Manual => {
+                        visible.push(completion);
+                        continue;
+                    }
+                    FetchRedirectMode::Follow => {}
+                }
+            }
 
             let next = {
                 let response = completion.result.as_ref().expect("checked above");
@@ -194,6 +278,7 @@ impl NetworkBackend for SessionRedirectNetwork {
     fn cancel(&self, id: FetchId) {
         self.chains.borrow_mut().remove(&id);
         self.cookie_policies.remove(id);
+        self.redirect_policies.remove(id);
         self.inner.cancel(id);
     }
 

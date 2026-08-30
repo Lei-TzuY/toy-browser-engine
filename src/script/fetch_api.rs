@@ -21,6 +21,10 @@ use crate::cookie_network::{
     policy_registry_for_jar, CookieCredentials, CookieRequestPolicy,
 };
 use crate::cookie_same_site::SameSiteRequestContext;
+use crate::fetch_redirect_mode::{
+    is_fetch_redirect_status, no_cors_redirect_mode_is_valid, FetchRedirectMode,
+};
+use crate::session_redirect::redirect_policy_registry_for_jar;
 use crate::net::fetch::{
     FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin,
 };
@@ -109,6 +113,7 @@ enum PendingFetchStage {
     Actual {
         cors: Option<CorsFetchState>,
         opaque: bool,
+        redirect: FetchRedirectMode,
     },
     Preflight {
         request: RequestData,
@@ -146,6 +151,7 @@ impl JsRuntime {
             Err(error) => self.reject_with(&promise, &error),
             Ok((request, cookie_policy, cors, opaque)) => {
                 let signal = request.signal.clone();
+                let redirect = request.redirect;
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
@@ -167,15 +173,20 @@ impl JsRuntime {
                                 cors,
                             },
                         };
-                        self.queue_fetch(preflight, pending, cors_preflight_cookie_policy())
+                        self.queue_fetch(
+                            preflight,
+                            pending,
+                            cors_preflight_cookie_policy(),
+                            FetchRedirectMode::Manual,
+                        )
                     } else {
                         let wire = request.to_wire();
                         let pending = PendingFetch {
                             promise: promise.clone(),
                             signal,
-                            stage: PendingFetchStage::Actual { cors, opaque },
+                            stage: PendingFetchStage::Actual { cors, opaque, redirect },
                         };
-                        self.queue_fetch(wire, pending, cookie_policy)
+                        self.queue_fetch(wire, pending, cookie_policy, redirect)
                     };
 
                     if let Err(error) = queued {
@@ -206,8 +217,17 @@ impl JsRuntime {
         }
 
         match stage {
-            PendingFetchStage::Actual { cors, opaque } => match result {
+            PendingFetchStage::Actual { cors, opaque, redirect } => match result {
                 Ok(mut response) => {
+                    if redirect == FetchRedirectMode::Manual
+                        && is_fetch_redirect_status(response.status)
+                    {
+                        let value = host_value(HostObject::Response(
+                            ResponseData::opaque_redirect_from_wire(response),
+                        ));
+                        self.settle_resolve(&promise, value);
+                        return;
+                    }
                     if let Some(cors) = &cors {
                         if let Err(error) = validate_cors_response(
                             &cors.source_origin,
@@ -251,6 +271,7 @@ impl JsRuntime {
                 }
                 self.store_cors_preflight_permissions(&request, &cors, &response);
 
+                let redirect = request.redirect;
                 let wire = request.to_wire();
                 let actual = PendingFetch {
                     promise: promise.clone(),
@@ -258,9 +279,10 @@ impl JsRuntime {
                     stage: PendingFetchStage::Actual {
                         cors: Some(cors),
                         opaque: false,
+                        redirect,
                     },
                 };
-                if let Err(error) = self.queue_fetch(wire, actual, cookie_policy) {
+                if let Err(error) = self.queue_fetch(wire, actual, cookie_policy, redirect) {
                     self.reject_with(&promise, &error);
                 }
             }
@@ -354,10 +376,14 @@ impl JsRuntime {
         request: FetchRequest,
         pending: PendingFetch,
         cookie_policy: CookieRequestPolicy,
+        redirect: FetchRedirectMode,
     ) -> Result<(), FetchError> {
         let id = self.fetches.start(request, pending)?;
         if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
             registry.set(id, cookie_policy);
+        }
+        if let Some(registry) = redirect_policy_registry_for_jar(&self.cookie_jar) {
+            registry.set(id, redirect);
         }
         Ok(())
     }
@@ -393,6 +419,11 @@ impl JsRuntime {
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
         let request = self.build_request(input, init)?;
         let mode = request.mode;
+        if mode == RequestMode::NoCors && !no_cors_redirect_mode_is_valid(request.redirect) {
+            return Err(FetchError::BadRequest(
+                "no-cors mode requires redirect mode \"follow\"".into(),
+            ));
+        }
 
         let scheme = request.url.scheme();
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
@@ -529,6 +560,7 @@ impl JsRuntime {
             mut signal,
             mut mode,
             mut credentials,
+            mut redirect,
         ) = match &input {
             JsValue::Host(host) => match host.as_request() {
                 Some(existing) => (
@@ -539,6 +571,7 @@ impl JsRuntime {
                     existing.signal.clone(),
                     existing.mode,
                     existing.credentials,
+                    existing.redirect,
                 ),
                 None => return Err(FetchError::InvalidUrl(to_string(&input))),
             },
@@ -550,6 +583,7 @@ impl JsRuntime {
                 None,
                 RequestMode::Cors,
                 RequestCredentials::SameOrigin,
+                FetchRedirectMode::Follow,
             ),
         };
 
@@ -580,9 +614,16 @@ impl JsRuntime {
                     }
                     "mode" => mode = check_mode(&to_string(value))?,
                     "credentials" => credentials = check_credentials(&to_string(value))?,
+                    "redirect" => redirect = check_redirect(&to_string(value))?,
                     _ => {}
                 }
             }
+        }
+
+        if mode == RequestMode::NoCors && !no_cors_redirect_mode_is_valid(redirect) {
+            return Err(FetchError::BadRequest(
+                "no-cors mode requires redirect mode \"follow\"".into(),
+            ));
         }
 
         if body.is_some() && !method.allows_body() {
@@ -605,6 +646,7 @@ impl JsRuntime {
             signal,
             mode,
             credentials,
+            redirect,
         })
     }
 
@@ -849,6 +891,7 @@ impl JsRuntime {
                 "bodyUsed" => JsValue::Bool(request.body.used()),
                 "mode" => JsValue::Str(request.mode.as_str().to_string()),
                 "credentials" => JsValue::Str(request.credentials.as_str().to_string()),
+                "redirect" => JsValue::Str(request.redirect.as_str().to_string()),
                 "signal" => match &request.signal {
                     Some(state) => host_value(HostObject::AbortSignal(state.clone())),
                     None => JsValue::Null,
@@ -1700,6 +1743,14 @@ fn check_mode(mode: &str) -> Result<RequestMode, FetchError> {
             "unsupported fetch mode {other:?}: this engine supports cors, same-origin, and no-cors"
         ))),
     }
+}
+
+fn check_redirect(redirect: &str) -> Result<FetchRedirectMode, FetchError> {
+    FetchRedirectMode::parse(redirect).ok_or_else(|| {
+        FetchError::BadRequest(format!(
+            "unsupported redirect mode {redirect:?}: expected follow, error, or manual"
+        ))
+    })
 }
 
 fn check_credentials(credentials: &str) -> Result<RequestCredentials, FetchError> {

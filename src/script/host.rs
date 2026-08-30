@@ -16,6 +16,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::fetch_redirect_mode::FetchRedirectMode;
 use crate::net::fetch::{FetchRequest, FetchResponse, HeaderMap, Method};
 use crate::net::Url;
 
@@ -178,6 +179,7 @@ pub struct RequestData {
     pub signal: Option<Rc<AbortState>>,
     pub mode: RequestMode,
     pub credentials: RequestCredentials,
+    pub redirect: FetchRedirectMode,
 }
 
 impl RequestData {
@@ -212,6 +214,7 @@ pub enum ResponseType {
     Basic,
     Cors,
     Opaque,
+    OpaqueRedirect,
 }
 
 impl ResponseType {
@@ -221,6 +224,7 @@ impl ResponseType {
             ResponseType::Basic => "basic",
             ResponseType::Cors => "cors",
             ResponseType::Opaque => "opaque",
+            ResponseType::OpaqueRedirect => "opaqueredirect",
         }
     }
 }
@@ -269,7 +273,19 @@ impl ResponseData {
     }
 
     pub fn is_opaque(&self) -> bool {
-        self.response_type == ResponseType::Opaque
+        matches!(self.response_type, ResponseType::Opaque | ResponseType::OpaqueRedirect)
+    }
+
+    pub fn opaque_redirect_from_wire(response: FetchResponse) -> ResponseData {
+        ResponseData {
+            url: response.url,
+            status: 0,
+            status_text: String::new(),
+            headers: headers_ref(HeaderMap::new()),
+            body: Body::empty(),
+            redirected: false,
+            response_type: ResponseType::OpaqueRedirect,
+        }
     }
 
     pub fn script_url(&self) -> String {
@@ -667,6 +683,7 @@ mod tests {
             signal: None,
             mode: RequestMode::SameOrigin,
             credentials: RequestCredentials::Omit,
+            redirect: FetchRedirectMode::Follow,
         };
 
         let wire = request.to_wire();

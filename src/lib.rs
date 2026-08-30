@@ -27,6 +27,7 @@ pub mod editing;
 pub mod eventloop;
 pub mod form_state;
 pub mod forms;
+pub mod fetch_redirect_mode;
 pub mod hsts;
 pub mod hsts_network;
 pub mod html;
@@ -63,6 +64,7 @@ pub use cors_settings::{
 };
 pub use document::{Document, PointerState};
 pub use document_referrer::DocumentReferrerContext;
+pub use fetch_redirect_mode::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
