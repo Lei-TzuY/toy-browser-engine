@@ -9,11 +9,11 @@
 
 pub mod animation;
 pub mod audio;
+#[path = "browser_cookie_session_final.rs"]
+pub mod browser;
 #[allow(dead_code)]
 #[path = "browser.rs"]
 mod browser_prev;
-#[path = "browser_cookie_session_final.rs"]
-pub mod browser;
 pub mod canvas;
 pub mod cookie;
 pub mod cookie_network;
@@ -25,6 +25,7 @@ pub mod document_referrer;
 pub mod dom;
 pub mod editing;
 pub mod eventloop;
+pub mod fetch_redirect_policy;
 pub mod form_state;
 pub mod forms;
 pub mod hsts;
@@ -43,8 +44,8 @@ pub mod referrer_meta;
 pub mod referrer_policy;
 pub mod script;
 pub mod select_state;
-mod session_redirect;
 pub mod session_network;
+mod session_redirect;
 pub mod style;
 pub mod subresource_cors;
 pub mod subresource_cors_credentials;
@@ -63,6 +64,7 @@ pub use cors_settings::{
 };
 pub use document::{Document, PointerState};
 pub use document_referrer::DocumentReferrerContext;
+pub use fetch_redirect_policy::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;

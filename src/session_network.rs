@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::cookie::CookieJar;
 use crate::cookie_network::{CookieJarRef, CookieNetwork, CookiePolicyRegistry};
 use crate::eventloop::Clock;
+use crate::fetch_redirect_policy::{FetchRedirectPolicyPublication, FetchRedirectPolicyRegistry};
 use crate::hsts::HstsCache;
 use crate::hsts_network::{HstsCacheRef, HstsNetwork};
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin};
@@ -137,6 +138,7 @@ pub struct SessionNetwork {
     cookie_jar: CookieJarRef,
     hsts_cache: HstsCacheRef,
     cookie_policies: CookiePolicyRegistry,
+    _redirect_policy_publication: Option<FetchRedirectPolicyPublication>,
 }
 
 impl SessionNetwork {
@@ -164,6 +166,7 @@ impl SessionNetwork {
             cookie_jar,
             hsts_cache,
             cookie_policies,
+            _redirect_policy_publication: None,
         }
     }
 
@@ -183,6 +186,9 @@ impl SessionNetwork {
         clock: Rc<dyn Clock>,
     ) -> SessionNetwork {
         let cookie_policies = CookiePolicyRegistry::new();
+        let redirect_policies = FetchRedirectPolicyRegistry::new();
+        let redirect_publication =
+            FetchRedirectPolicyPublication::new(cookie_jar.clone(), redirect_policies.clone());
         let guarded_transport: Rc<dyn NetworkBackend> =
             Rc::new(SingleHopTransportGuard::new(transport));
         let cookie: Rc<dyn NetworkBackend> = Rc::new(CookieNetwork::with_policy_registry(
@@ -191,22 +197,21 @@ impl SessionNetwork {
             clock.clone(),
             cookie_policies.clone(),
         ));
-        let per_hop: Rc<dyn NetworkBackend> = Rc::new(HstsNetwork::new(
-            cookie,
-            hsts_cache.clone(),
-            clock.clone(),
-        ));
+        let per_hop: Rc<dyn NetworkBackend> =
+            Rc::new(HstsNetwork::new(cookie, hsts_cache.clone(), clock.clone()));
         let network: Rc<dyn NetworkBackend> = Rc::new(SessionRedirectNetwork::new(
             per_hop,
             cookie_policies.clone(),
             hsts_cache.clone(),
             clock,
+            redirect_policies,
         ));
         SessionNetwork {
             network,
             cookie_jar,
             hsts_cache,
             cookie_policies,
+            _redirect_policy_publication: Some(redirect_publication),
         }
     }
 

@@ -11,11 +11,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::cookie_network::{
-    CookieCredentials, CookiePolicyRegistry, CookieRequestPolicy,
-};
+use crate::cookie_network::{CookieCredentials, CookiePolicyRegistry, CookieRequestPolicy};
 use crate::cookie_same_site::SameSiteRequestContext;
 use crate::eventloop::Clock;
+use crate::fetch_redirect_policy::{FetchRedirectMode, FetchRedirectPolicyRegistry};
 use crate::hsts_network::HstsCacheRef;
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin};
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
@@ -27,6 +26,7 @@ struct RedirectChain {
     current_request: FetchRequest,
     initial_origin: Origin,
     credentials: CookieCredentials,
+    redirect_mode: FetchRedirectMode,
     planner: RedirectPlanner,
 }
 
@@ -43,6 +43,7 @@ pub(crate) struct SessionRedirectNetwork {
     cookie_policies: CookiePolicyRegistry,
     hsts_cache: HstsCacheRef,
     clock: Rc<dyn Clock>,
+    redirect_policies: FetchRedirectPolicyRegistry,
     chains: RefCell<HashMap<FetchId, RedirectChain>>,
 }
 
@@ -52,12 +53,14 @@ impl SessionRedirectNetwork {
         cookie_policies: CookiePolicyRegistry,
         hsts_cache: HstsCacheRef,
         clock: Rc<dyn Clock>,
+        redirect_policies: FetchRedirectPolicyRegistry,
     ) -> SessionRedirectNetwork {
         SessionRedirectNetwork {
             inner,
             cookie_policies,
             hsts_cache,
             clock,
+            redirect_policies,
             chains: RefCell::new(HashMap::new()),
         }
     }
@@ -78,7 +81,10 @@ impl SessionRedirectNetwork {
             .unwrap_or_else(|| CookieRequestPolicy::same_site(request.method))
     }
 
-    fn redirect_policy(credentials: CookieCredentials, request: &FetchRequest) -> CookieRequestPolicy {
+    fn redirect_policy(
+        credentials: CookieCredentials,
+        request: &FetchRequest,
+    ) -> CookieRequestPolicy {
         CookieRequestPolicy::new(
             credentials,
             SameSiteRequestContext::same_site(request.method),
@@ -99,6 +105,7 @@ impl SessionRedirectNetwork {
 impl NetworkBackend for SessionRedirectNetwork {
     fn start(&self, id: FetchId, request: FetchRequest) {
         let policy = self.request_policy(id, &request);
+        let redirect_mode = self.redirect_policies.remove(id).unwrap_or_default();
         let mut effective_request = request.clone();
         effective_request.url = self.effective_url(&request);
         let initial_origin = Origin::of(&effective_request.url);
@@ -109,6 +116,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 current_request: effective_request,
                 initial_origin,
                 credentials: policy.credentials,
+                redirect_mode,
                 planner: RedirectPlanner::default(),
             },
         );
@@ -156,7 +164,28 @@ impl NetworkBackend for SessionRedirectNetwork {
                     visible.push(completion);
                 }
                 Ok(Some(next_request)) => {
-                    // Fetch is same-origin-only today. Classify the redirect
+                    match chain.redirect_mode {
+                        FetchRedirectMode::Error => {
+                            completion.result = Err(FetchError::Blocked(format!(
+                                "redirect mode \"error\" rejected redirect from {}",
+                                response_url
+                            )));
+                            visible.push(completion);
+                            continue;
+                        }
+                        FetchRedirectMode::Manual => {
+                            // Browser-only marker consumed by the Fetch runtime.
+                            // The eventual opaqueredirect wrapper clears it.
+                            if let Ok(response) = &mut completion.result {
+                                response.redirected = true;
+                            }
+                            visible.push(completion);
+                            continue;
+                        }
+                        FetchRedirectMode::Follow => {}
+                    }
+
+                    // Fetch follow mode is still same-origin-only today. Classify the redirect
                     // target *after* learned HSTS is applied, matching Browser's
                     // top-level HSTS-before-SameSite/origin ordering.
                     let effective_next = self.effective_url(&next_request);
@@ -175,10 +204,8 @@ impl NetworkBackend for SessionRedirectNetwork {
                     // completes. Re-arm the same credentials mode before the
                     // next hop, with a same-origin subresource context updated
                     // for any redirect method rewrite.
-                    self.cookie_policies.set(
-                        id,
-                        Self::redirect_policy(chain.credentials, &next_request),
-                    );
+                    self.cookie_policies
+                        .set(id, Self::redirect_policy(chain.credentials, &next_request));
 
                     chain.current_request = next_request.clone();
                     chain.current_request.url = effective_next;
@@ -193,6 +220,7 @@ impl NetworkBackend for SessionRedirectNetwork {
 
     fn cancel(&self, id: FetchId) {
         self.chains.borrow_mut().remove(&id);
+        self.redirect_policies.remove(id);
         self.cookie_policies.remove(id);
         self.inner.cancel(id);
     }
