@@ -97,20 +97,33 @@ fn explicit_same_origin_mode_blocks_before_transport() {
 }
 
 #[test]
-fn request_that_needs_preflight_is_rejected_without_sending() {
+fn request_that_needs_preflight_starts_with_options_not_the_actual_request() {
     let endpoint = "http://api.test/data";
-    let (browser, transport) = browser_for(
+    let (mut browser, transport) = browser_for(
         r#"fetch("http://api.test/data", {
                  method: "PUT",
                  headers: { "X-Token": "secret" },
                  body: "payload"
-               }).catch(function () { console.log("preflight required"); });"#,
+               }).catch(function () { console.log("blocked"); });"#,
         endpoint,
         cors_response(endpoint, Some("*")),
     );
 
     assert!(transport.requests().is_empty());
-    assert_eq!(browser.document().runtime.console, vec!["preflight required"]);
+    let turn = browser.tick();
+    assert_eq!(turn.requests_sent, 1);
+    let sent = transport.requests();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].method.as_str(), "OPTIONS");
+    assert_eq!(
+        sent[0].headers.get("access-control-request-method").as_deref(),
+        Some("PUT")
+    );
+    assert_eq!(
+        sent[0].headers.get("access-control-request-headers").as_deref(),
+        Some("x-token")
+    );
+    assert!(browser.document().runtime.console.is_empty());
 }
 
 #[test]
