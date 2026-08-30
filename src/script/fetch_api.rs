@@ -206,7 +206,7 @@ impl JsRuntime {
 
         match stage {
             PendingFetchStage::Actual { cors } => match result {
-                Ok(response) => {
+                Ok(mut response) => {
                     if let Some(cors) = &cors {
                         if let Err(error) = validate_cors_response(
                             &cors.source_origin,
@@ -216,6 +216,7 @@ impl JsRuntime {
                             self.reject_with(&promise, &error);
                             return;
                         }
+                        filter_cors_response_headers(&mut response, cors.credentialed);
                     }
                     let value =
                         host_value(HostObject::Response(ResponseData::from_wire(response)));
@@ -1712,6 +1713,43 @@ fn cors_preflight_cookie_policy() -> CookieRequestPolicy {
         CookieCredentials::Omit,
         SameSiteRequestContext::cross_site_subresource(Method::Options),
     )
+}
+
+const CORS_SAFELISTED_RESPONSE_HEADERS: &[&str] = &[
+    "cache-control",
+    "content-language",
+    "content-length",
+    "content-type",
+    "expires",
+    "last-modified",
+    "pragma",
+];
+
+fn is_forbidden_response_header_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("set-cookie") || name.eq_ignore_ascii_case("set-cookie2")
+}
+
+/// Apply the Fetch CORS response-header-name filter before a cross-origin
+/// response becomes script-visible. The wire response remains available to
+/// lower networking layers for policy processing; only the Response wrapper is
+/// narrowed here.
+fn filter_cors_response_headers(response: &mut FetchResponse, credentialed: bool) {
+    let exposed = comma_tokens(response.headers.get("access-control-expose-headers"));
+    let wildcard = !credentialed && exposed.iter().any(|name| name == "*");
+
+    for name in response.headers.names() {
+        let safelisted = CORS_SAFELISTED_RESPONSE_HEADERS
+            .iter()
+            .any(|allowed| name.eq_ignore_ascii_case(allowed));
+        let explicitly_exposed = exposed
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(&name));
+        if is_forbidden_response_header_name(&name)
+            || (!wildcard && !safelisted && !explicitly_exposed)
+        {
+            response.headers.delete(&name);
+        }
+    }
 }
 
 fn validate_cors_response(
