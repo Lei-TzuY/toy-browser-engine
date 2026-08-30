@@ -46,6 +46,7 @@ pub mod select_state;
 mod session_redirect;
 pub mod session_network;
 pub mod style;
+pub mod stylesheet_mime;
 pub mod subresource_cors;
 pub mod subresource_cors_credentials;
 pub mod subresource_referrer;
@@ -75,6 +76,9 @@ pub use redirect_policy::{RedirectError, RedirectPlanner, FETCH_MAX_REDIRECTS};
 pub use referrer_meta::apply_meta_referrer_policies;
 pub use referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 pub use session_network::SessionNetwork;
+pub use stylesheet_mime::{
+    stylesheet_mime_disposition, stylesheet_response_is_css, StylesheetMimeDisposition,
+};
 pub use subresource_cors::validate_subresource_cors_response;
 pub use subresource_referrer::{
     prepare_subresource_request, subresource_redirect_state, subresource_referrer_policy,
