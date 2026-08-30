@@ -65,7 +65,7 @@ impl Document {
             deferred_submission: None,
             network: Rc::new(OfflineNetwork::new()),
             transitions: std::cell::RefCell::new(crate::transition::TransitionManager::new()),
-            animations: std::cell::RefCell::new(crate::animation::AnimationManager::new()),
+            animations: std::cell::RefCell::new(crate::animation::TransitionManager::new()),
         };
         document.run_microtask_checkpoint();
         // Parser-time scripts and their microtasks may have appended external
@@ -110,19 +110,14 @@ impl Document {
         navigation: &crate::navigation_network::NavigationNetwork,
         referrer: &crate::document_referrer::DocumentReferrerContext,
     ) {
-        let mut activated = 0usize;
-        while let Some(source) = take_next_dynamic_element_subresource(&mut self.dom) {
-            if activated >= MAX_DYNAMIC_ELEMENT_SUBRESOURCES_PER_REFRESH {
-                self.diagnostics.push(Diagnostic {
-                    url: self.url.to_string(),
-                    message: format!(
-                        "dynamic element subresource activation budget exhausted after {} loads",
-                        MAX_DYNAMIC_ELEMENT_SUBRESOURCES_PER_REFRESH
-                    ),
-                });
+        // Bound the number we *take* from the live DOM rather than taking one
+        // extra and then checking the budget. `take_next...` marks an element
+        // before returning it, so this order is what leaves item 65 untouched
+        // and eligible for a later refresh instead of silently losing it.
+        for _ in 0..MAX_DYNAMIC_ELEMENT_SUBRESOURCES_PER_REFRESH {
+            let Some(source) = take_next_dynamic_element_subresource(&mut self.dom) else {
                 break;
-            }
-            activated += 1;
+            };
 
             match source {
                 DynamicElementSubresource::Stylesheet {
