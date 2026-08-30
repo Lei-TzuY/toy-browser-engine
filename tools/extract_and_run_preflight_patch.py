@@ -18,10 +18,11 @@ code_lines = []
 for line in lines[start:end]:
     if line.startswith('          '):
         code_lines.append(line[10:])
-    elif not line.strip():
-        code_lines.append('')
     else:
-        raise SystemExit(f'unexpected patch indentation: {line!r}')
+        # Multi-line raw strings in the embedded Python deliberately contain
+        # repository source at column zero. Preserve those lines verbatim;
+        # Python's triple-quoted string syntax does not require indentation.
+        code_lines.append(line)
 
 code = '\n'.join(code_lines) + '\n'
 exec(compile(code, str(source), 'exec'), {'__name__': '__main__'})
