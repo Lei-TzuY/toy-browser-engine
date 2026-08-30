@@ -1,0 +1,261 @@
+name: Agent CORS preflight cache patch
+
+on:
+  push:
+    branches:
+      - agent/fetch-cors-preflight-cache
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fetch-cors-preflight-cache
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Apply preflight cache implementation and regressions
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          interp_path = Path("src/script/interp.rs")
+          interp = interp_path.read_text()
+          interp = replace_once(
+              interp,
+              '''    pub fetches: FetchRegistry<PendingFetch>,\n    detached: Vec<DetachedSlot>,''',
+              '''    pub fetches: FetchRegistry<PendingFetch>,\n    /// Successful CORS preflight permissions owned by this browsing runtime.\n    pub(crate) cors_preflight_cache: Vec<super::fetch_api::CorsPreflightCacheEntry>,\n    detached: Vec<DetachedSlot>,''',
+              "runtime cache field",
+          )
+          interp = replace_once(
+              interp,
+              '''            fetches: FetchRegistry::new(),\n            url: crate::net::url::Url::parse("demo:///index.html").unwrap(),''',
+              '''            fetches: FetchRegistry::new(),\n            cors_preflight_cache: Vec::new(),\n            url: crate::net::url::Url::parse("demo:///index.html").unwrap(),''',
+              "runtime cache init",
+          )
+          interp_path.write_text(interp)
+
+          fetch_path = Path("src/script/fetch_api.rs")
+          fetch = fetch_path.read_text()
+          fetch = replace_once(
+              fetch,
+              '''const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];\n\n/// Browser-only state needed while a CORS fetch is in flight.''',
+              '''const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];\n\n/// Default Fetch preflight-cache lifetime when Access-Control-Max-Age is absent\n/// or cannot be parsed. Fetch specifies five seconds.\nconst DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 5;\n/// Keep the toy engine deterministic while following a widely deployed UA cap.\nconst MAX_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 7_200;\n\n/// One successful preflight permission set. Fetch models method/header entries\n/// individually; grouping permissions from one response is equivalent here\n/// because they share one origin, URL, credentials bit and expiry.\n#[derive(Debug, Clone)]\npub(crate) struct CorsPreflightCacheEntry {\n    source_origin: String,\n    target_url: String,\n    credentialed: bool,\n    allowed_methods: Vec<String>,\n    allowed_headers: Vec<String>,\n    expires_at_ms: f64,\n}\n\n/// Browser-only state needed while a CORS fetch is in flight.''',
+              "cache type",
+          )
+          fetch = replace_once(
+              fetch,
+              '''                    let needs_preflight = cors\n                        .as_ref()\n                        .is_some_and(|state| state.needs_preflight);''',
+              '''                    let needs_preflight = match cors.as_ref() {\n                        Some(state) if state.needs_preflight => {\n                            !self.cors_preflight_cache_allows(&request, state)\n                        }\n                        _ => false,\n                    };''',
+              "cache lookup",
+          )
+          fetch = replace_once(
+              fetch,
+              '''                if let Err(error) = validate_cors_preflight_response(&cors, &response) {\n                    self.reject_with(&promise, &error);\n                    return;\n                }\n\n                let wire = request.to_wire();''',
+              '''                if let Err(error) = validate_cors_preflight_response(&cors, &response) {\n                    self.reject_with(&promise, &error);\n                    return;\n                }\n                self.store_cors_preflight_permissions(&request, &cors, &response);\n\n                let wire = request.to_wire();''',
+              "cache store",
+          )
+          fetch = replace_once(
+              fetch,
+              '''    fn queue_fetch(\n        &mut self,\n        request: FetchRequest,''',
+              '''    fn cors_preflight_cache_allows(\n        &mut self,\n        request: &RequestData,\n        cors: &CorsFetchState,\n    ) -> bool {\n        let now = self.now_ms;\n        self.cors_preflight_cache\n            .retain(|entry| entry.expires_at_ms > now);\n        let source = cors.source_origin.header_value();\n        let target = request.url.to_string();\n\n        self.cors_preflight_cache.iter().any(|entry| {\n            if entry.source_origin != source\n                || entry.target_url != target\n                || !(entry.credentialed || !cors.credentialed)\n            {\n                return false;\n            }\n\n            let method_allowed = is_cors_safelisted_method(cors.requested_method)\n                || entry.allowed_methods.iter().any(|method| {\n                    method == "*" || method == cors.requested_method.as_str()\n                });\n            if !method_allowed {\n                return false;\n            }\n\n            cors.requested_headers.iter().all(|requested| {\n                entry.allowed_headers.iter().any(|allowed| {\n                    allowed.eq_ignore_ascii_case(requested)\n                        || (allowed == "*" && !is_cors_non_wildcard_request_header_name(requested))\n                })\n            })\n        })\n    }\n\n    fn store_cors_preflight_permissions(\n        &mut self,\n        request: &RequestData,\n        cors: &CorsFetchState,\n        response: &FetchResponse,\n    ) {\n        let max_age = cors_preflight_max_age_seconds(response);\n        if max_age == 0 {\n            return;\n        }\n        let source_origin = cors.source_origin.header_value();\n        let target_url = request.url.to_string();\n        let expires_at_ms = self.now_ms + max_age as f64 * 1_000.0;\n        let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));\n        let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));\n\n        // A newer successful preflight for the same cache key supersedes the\n        // grouped permission set. This is conservative when server policy changes.\n        self.cors_preflight_cache.retain(|entry| {\n            entry.source_origin != source_origin\n                || entry.target_url != target_url\n                || entry.credentialed != cors.credentialed\n        });\n        self.cors_preflight_cache.push(CorsPreflightCacheEntry {\n            source_origin,\n            target_url,\n            credentialed: cors.credentialed,\n            allowed_methods,\n            allowed_headers,\n            expires_at_ms,\n        });\n    }\n\n    fn queue_fetch(\n        &mut self,\n        request: FetchRequest,''',
+              "runtime cache methods",
+          )
+          fetch = replace_once(
+              fetch,
+              '''fn cors_preflight_cookie_policy() -> CookieRequestPolicy {''',
+              '''fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {\n    name.eq_ignore_ascii_case("authorization")\n}\n\nfn cors_preflight_max_age_seconds(response: &FetchResponse) -> u64 {\n    response\n        .headers\n        .get("access-control-max-age")\n        .and_then(|value| value.parse::<u64>().ok())\n        .unwrap_or(DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS)\n        .min(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)\n}\n\nfn cors_preflight_cookie_policy() -> CookieRequestPolicy {''',
+              "max age helper",
+          )
+          fetch_path.write_text(fetch)
+
+          old_test_path = Path("tests/fetch_cors_preflight.rs")
+          old_test = old_test_path.read_text()
+          stale = '''fn complete_preflight_and_send_actual(browser: &mut Browser, transport: &Rc<ManualNetwork>) {\n    assert_eq!(transport.complete_all(), 1, "preflight should complete");\n    let completion = browser.tick();\n    assert_eq!(completion.network_completions, 1);\n    assert_eq!(transport.requests().len(), 1, "actual request waits for a later send phase");\n    let send = browser.tick();\n    assert_eq!(send.requests_sent, 1);\n}'''
+          fixed = '''fn complete_preflight_and_send_actual(browser: &mut Browser, transport: &Rc<ManualNetwork>) {\n    assert_eq!(transport.complete_all(), 1, "preflight should complete");\n    let completion = browser.tick();\n    assert_eq!(completion.network_completions, 1);\n    assert_eq!(\n        transport.requests().len(),\n        2,\n        "a permitted actual request is dispatched in the preflight completion turn"\n    );\n}'''
+          if stale in old_test:
+              old_test = old_test.replace(stale, fixed, 1)
+              old_test_path.write_text(old_test)
+
+          Path("tests/fetch_cors_preflight_cache.rs").write_text(r'''use std::rc::Rc;
+
+use browser_engine::browser::Browser;
+use browser_engine::eventloop::ManualClock;
+use browser_engine::net::{FetchResponse, ManualNetwork, MemoryLoader, Url};
+
+fn url(input: &str) -> Url {
+    Url::parse(input).expect("valid URL")
+}
+
+fn response(endpoint: &str, max_age: &str, methods: &str, headers: &str) -> FetchResponse {
+    let mut response = FetchResponse::synthetic(
+        url(endpoint),
+        200,
+        Some("text/plain"),
+        b"ok".to_vec(),
+    );
+    response
+        .headers
+        .append_raw("access-control-allow-origin", "*");
+    response
+        .headers
+        .append_raw("access-control-allow-methods", methods);
+    response
+        .headers
+        .append_raw("access-control-allow-headers", headers);
+    response
+        .headers
+        .append_raw("access-control-max-age", max_age);
+    response
+}
+
+fn browser_for(script: &str, endpoint: &str, response: FetchResponse) -> (Browser, Rc<ManualNetwork>) {
+    let page = "http://page.test/index.html";
+    let mut loader = MemoryLoader::new();
+    loader.insert(page, format!("<script>{script}</script>"));
+    let transport = Rc::new(ManualNetwork::new());
+    transport.respond(endpoint, response);
+    let browser = Browser::open_with_network(
+        Box::new(loader),
+        transport.clone(),
+        &url(page),
+        Rc::new(ManualClock::new()),
+    )
+    .expect("page loads");
+    (browser, transport)
+}
+
+fn drive(browser: &mut Browser, transport: &Rc<ManualNetwork>) {
+    for _ in 0..12 {
+        browser.tick();
+        transport.complete_all();
+    }
+    browser.tick();
+}
+
+fn methods(transport: &ManualNetwork) -> Vec<&'static str> {
+    transport
+        .requests()
+        .iter()
+        .map(|request| match request.method.as_str() {
+            "OPTIONS" => "OPTIONS",
+            "PUT" => "PUT",
+            "PATCH" => "PATCH",
+            other => panic!("unexpected method {other}"),
+        })
+        .collect()
+}
+
+#[test]
+fn positive_max_age_reuses_preflight_for_an_identical_request() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+            return fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "two" }, body: "b" });
+          })
+          .then(function () { console.log("done"); })
+          .catch(function () { console.log("blocked"); });
+    "#;
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(endpoint, "60", "PUT", "x-token"),
+    );
+
+    drive(&mut browser, &transport);
+
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "PUT"]);
+    assert_eq!(browser.document().runtime.console, vec!["done"]);
+}
+
+#[test]
+fn cache_reuses_all_method_and_header_permissions_granted_by_the_response() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+            return fetch("http://api.test/data", { method: "PATCH", headers: { "X-Other": "two" }, body: "b" });
+          })
+          .then(function () { console.log("done"); });
+    "#;
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(endpoint, "60", "PUT, PATCH", "x-token, x-other"),
+    );
+
+    drive(&mut browser, &transport);
+
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "PATCH"]);
+    assert_eq!(browser.document().runtime.console, vec!["done"]);
+}
+
+#[test]
+fn zero_max_age_forces_the_next_request_to_preflight_again() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+            return fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "two" }, body: "b" });
+          })
+          .then(function () { console.log("done"); });
+    "#;
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(endpoint, "0", "PUT", "x-token"),
+    );
+
+    drive(&mut browser, &transport);
+
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "OPTIONS", "PUT"]);
+    assert_eq!(browser.document().runtime.console, vec!["done"]);
+}
+
+#[test]
+fn authorization_is_not_satisfied_by_the_allow_headers_wildcard() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+            return fetch("http://api.test/data", { method: "PUT", headers: { "Authorization": "Bearer x" }, body: "b" });
+          })
+          .catch(function () { console.log("blocked"); });
+    "#;
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(endpoint, "60", "*", "*"),
+    );
+
+    drive(&mut browser, &transport);
+
+    // The wildcard cached by the first preflight cannot authorize the Fetch
+    // non-wildcard request-header name Authorization, so a second OPTIONS is required.
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "OPTIONS"]);
+    assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+''')
+
+          Path(".github/workflows/agent-cors-preflight-cache.yml").unlink()
+      - name: Format and test
+        run: |
+          cargo fmt --all -- --check || cargo fmt --all
+          cargo test --locked
+      - name: Commit implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Cache successful CORS preflights"
+          git push origin HEAD:agent/fetch-cors-preflight-cache
