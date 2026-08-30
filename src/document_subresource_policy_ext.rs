@@ -2,6 +2,8 @@
 // document_subresource_policy_ext.rs — bootstrap element fetch policy
 // ============================================================
 
+const MAX_DYNAMIC_ELEMENT_SUBRESOURCES_PER_REFRESH: usize = 64;
+
 /// Browser/session bootstrap path for document-owned subresources.
 ///
 /// The older standalone Document constructors deliberately keep their simple
@@ -37,6 +39,10 @@ impl Document {
             &referrer,
             &mut diagnostics,
         );
+        // Parser-time stylesheet links were prepared by the collection pass.
+        // Freeze that fact before scripts can add new links to the live tree.
+        mark_existing_stylesheet_links_started(&mut dom);
+
         let runtime = run_scripts_with_subresource_policy(
             &mut dom,
             &base_url,
@@ -62,7 +68,10 @@ impl Document {
             animations: std::cell::RefCell::new(crate::animation::AnimationManager::new()),
         };
         document.run_microtask_checkpoint();
-        document.refresh_images_with_referrer_context(navigation, &referrer);
+        // Parser-time scripts and their microtasks may have appended external
+        // scripts or stylesheet links. Activate those before the first paint,
+        // then load images produced by the whole settled chain.
+        document.refresh_dynamic_element_subresources_with_referrer_context(navigation, &referrer);
         document
     }
 
@@ -86,6 +95,104 @@ impl Document {
             policy,
         );
         self.refresh_images_with_referrer_context(navigation, &referrer);
+    }
+
+    /// Activate script/link elements added after parsing, in current document
+    /// order, then refresh images produced by those scripts.
+    ///
+    /// Script/link preparation is stored on the element itself rather than in
+    /// a URL cache: two distinct elements referencing one URL are two loads,
+    /// while removing and re-inserting the same script node cannot execute it
+    /// twice. Each fetch reuses the same CORS/credentials/referrer/HSTS path as
+    /// parser-time element fetches.
+    pub(crate) fn refresh_dynamic_element_subresources_with_referrer_context(
+        &mut self,
+        navigation: &crate::navigation_network::NavigationNetwork,
+        referrer: &crate::document_referrer::DocumentReferrerContext,
+    ) {
+        let mut activated = 0usize;
+        while let Some(source) = take_next_dynamic_element_subresource(&mut self.dom) {
+            if activated >= MAX_DYNAMIC_ELEMENT_SUBRESOURCES_PER_REFRESH {
+                self.diagnostics.push(Diagnostic {
+                    url: self.url.to_string(),
+                    message: format!(
+                        "dynamic element subresource activation budget exhausted after {} loads",
+                        MAX_DYNAMIC_ELEMENT_SUBRESOURCES_PER_REFRESH
+                    ),
+                });
+                break;
+            }
+            activated += 1;
+
+            match source {
+                DynamicElementSubresource::Stylesheet {
+                    href,
+                    crossorigin,
+                    referrerpolicy,
+                } => {
+                    let Ok(url) = self.base_url.join(&href) else {
+                        self.diagnostics.push(Diagnostic {
+                            url: href,
+                            message: "could not resolve stylesheet URL".into(),
+                        });
+                        continue;
+                    };
+                    match fetch_document_subresource(
+                        navigation,
+                        referrer,
+                        &url,
+                        crossorigin.as_deref(),
+                        referrerpolicy.as_deref(),
+                    ) {
+                        Ok(response) => {
+                            let css = String::from_utf8_lossy(&response.body);
+                            let parsed = parse_css(&css);
+                            self.stylesheet.rules.extend(parsed.rules);
+                            self.stylesheet.keyframes.extend(parsed.keyframes);
+                        }
+                        Err(message) => self.diagnostics.push(Diagnostic {
+                            url: url.to_string(),
+                            message,
+                        }),
+                    }
+                }
+                DynamicElementSubresource::Script {
+                    src,
+                    crossorigin,
+                    referrerpolicy,
+                } => {
+                    let Ok(url) = self.base_url.join(&src) else {
+                        self.diagnostics.push(Diagnostic {
+                            url: src,
+                            message: "could not resolve script URL".into(),
+                        });
+                        continue;
+                    };
+                    match fetch_document_subresource(
+                        navigation,
+                        referrer,
+                        &url,
+                        crossorigin.as_deref(),
+                        referrerpolicy.as_deref(),
+                    ) {
+                        Ok(response) => {
+                            let code = String::from_utf8_lossy(&response.body);
+                            self.runtime.run_script(&mut self.dom, &code);
+                            // A dynamically loaded script is a script task too:
+                            // settle its promise callbacks before preparing the
+                            // next element that it may just have inserted.
+                            self.run_microtask_checkpoint();
+                        }
+                        Err(message) => self.diagnostics.push(Diagnostic {
+                            url: url.to_string(),
+                            message,
+                        }),
+                    }
+                }
+            }
+        }
+
+        self.refresh_images_with_referrer_context(navigation, referrer);
     }
 
     fn refresh_images_with_referrer_context(
@@ -245,6 +352,28 @@ fn policy_style_sources(dom: &Node) -> Vec<PolicyStyleSource> {
     out
 }
 
+fn mark_existing_stylesheet_links_started(dom: &mut Node) {
+    fn walk(node: &mut Node) {
+        if let NodeType::Element(element) = &mut node.node_type {
+            if element.tag_name == "link" {
+                let is_stylesheet = element
+                    .get_attr("rel")
+                    .unwrap_or_default()
+                    .split_ascii_whitespace()
+                    .any(|token| token.eq_ignore_ascii_case("stylesheet"));
+                if is_stylesheet && element.get_attr("href").is_some() {
+                    element.start_stylesheet_once();
+                }
+                return;
+            }
+        }
+        for child in &mut node.children {
+            walk(child);
+        }
+    }
+    walk(dom);
+}
+
 #[derive(Debug, Clone)]
 enum PolicyScriptSource {
     Inline(String),
@@ -264,7 +393,12 @@ fn run_scripts_with_subresource_policy(
     storage: Option<crate::script::interp::StorageRef>,
     cookie_jar: Option<crate::cookie_network::CookieJarRef>,
 ) -> JsRuntime {
+    // Snapshot parser-time sources, then mark every parser-created script as
+    // already prepared before execution. Scripts created by those scripts are
+    // therefore distinguishable later without exposing an internal attribute.
     let sources = policy_script_sources(dom);
+    mark_existing_scripts_started(dom);
+
     let mut runtime = JsRuntime::new();
     runtime.url = base_url.clone();
     if let Some(storage) = storage {
@@ -312,6 +446,21 @@ fn run_scripts_with_subresource_policy(
     runtime
 }
 
+fn mark_existing_scripts_started(dom: &mut Node) {
+    fn walk(node: &mut Node) {
+        if let NodeType::Element(element) = &mut node.node_type {
+            if element.tag_name == "script" {
+                element.start_script_once();
+                return;
+            }
+        }
+        for child in &mut node.children {
+            walk(child);
+        }
+    }
+    walk(dom);
+}
+
 fn policy_script_sources(dom: &Node) -> Vec<PolicyScriptSource> {
     fn walk(node: &Node, out: &mut Vec<PolicyScriptSource>) {
         if let NodeType::Element(element) = &node.node_type {
@@ -349,6 +498,76 @@ fn policy_script_sources(dom: &Node) -> Vec<PolicyScriptSource> {
     let mut out = Vec::new();
     walk(dom, &mut out);
     out
+}
+
+#[derive(Debug, Clone)]
+enum DynamicElementSubresource {
+    Stylesheet {
+        href: String,
+        crossorigin: Option<String>,
+        referrerpolicy: Option<String>,
+    },
+    Script {
+        src: String,
+        crossorigin: Option<String>,
+        referrerpolicy: Option<String>,
+    },
+}
+
+/// Take and mark the next unprepared dynamic script/link in live document
+/// order. Marking happens before URL or network work so failures are one-shot.
+fn take_next_dynamic_element_subresource(dom: &mut Node) -> Option<DynamicElementSubresource> {
+    fn walk(node: &mut Node) -> Option<DynamicElementSubresource> {
+        if let NodeType::Element(element) = &mut node.node_type {
+            match element.tag_name.as_str() {
+                "script" => {
+                    let src = element.get_attr("src")?.trim().to_string();
+                    if !src.is_empty() && element.start_script_once() {
+                        return Some(DynamicElementSubresource::Script {
+                            src,
+                            crossorigin: element.get_attr("crossorigin").map(str::to_string),
+                            referrerpolicy: element
+                                .get_attr("referrerpolicy")
+                                .map(str::to_string),
+                        });
+                    }
+                    return None;
+                }
+                "link" => {
+                    let is_stylesheet = element
+                        .get_attr("rel")
+                        .unwrap_or_default()
+                        .split_ascii_whitespace()
+                        .any(|token| token.eq_ignore_ascii_case("stylesheet"));
+                    if is_stylesheet {
+                        if let Some(href) = element.get_attr("href").map(str::to_string) {
+                            if element.start_stylesheet_once() {
+                                return Some(DynamicElementSubresource::Stylesheet {
+                                    href,
+                                    crossorigin: element
+                                        .get_attr("crossorigin")
+                                        .map(str::to_string),
+                                    referrerpolicy: element
+                                        .get_attr("referrerpolicy")
+                                        .map(str::to_string),
+                                });
+                            }
+                        }
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        for child in &mut node.children {
+            if let Some(source) = walk(child) {
+                return Some(source);
+            }
+        }
+        None
+    }
+
+    walk(dom)
 }
 
 #[derive(Debug, Clone)]
