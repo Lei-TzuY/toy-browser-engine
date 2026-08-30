@@ -13,7 +13,9 @@ use crate::eventloop::Clock;
 use crate::hsts::HstsCache;
 use crate::hsts_network::{HstsCacheRef, HstsNetwork};
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin};
-use crate::session_redirect::SessionRedirectNetwork;
+use crate::session_redirect::{
+    register_redirect_policy_registry_for_jar, RedirectPolicyRegistry, SessionRedirectNetwork,
+};
 
 /// Async Fetch currently implements same-origin mode only. The legacy session
 /// constructor keeps its existing final-response redirect guard so embedders
@@ -196,11 +198,14 @@ impl SessionNetwork {
             hsts_cache.clone(),
             clock.clone(),
         ));
+        let redirect_policies = RedirectPolicyRegistry::new();
+        register_redirect_policy_registry_for_jar(&cookie_jar, redirect_policies.clone());
         let network: Rc<dyn NetworkBackend> = Rc::new(SessionRedirectNetwork::new(
             per_hop,
             cookie_policies.clone(),
             hsts_cache.clone(),
             clock,
+            redirect_policies,
         ));
         SessionNetwork {
             network,
