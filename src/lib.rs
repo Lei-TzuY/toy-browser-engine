@@ -33,6 +33,7 @@ pub mod forms;
 pub mod hsts;
 pub mod hsts_network;
 pub mod html;
+pub mod http_cache_policy;
 pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
@@ -80,6 +81,9 @@ pub use fetch_redirect_mode::{
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
+pub use http_cache_policy::{
+    cached_response_is_fresh, response_cache_policy, HttpResponseCachePolicy,
+};
 pub use hyperlink_referrer::{
     hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
 };
