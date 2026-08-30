@@ -33,8 +33,7 @@ use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
     IntersectionObserverEntryData, IntersectionObserverTarget, RequestCredentials, RequestData,
     RequestMode, RequestReferrer, ResizeObserverData, ResizeObserverEntryData, ResponseData,
-    ResponseType, UrlData,
-    UrlSearchParamsData,
+    ResponseType, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
@@ -60,6 +59,8 @@ enum PendingFetchStage {
     Actual {
         cors: Option<CorsFetchState>,
         opaque: bool,
+        integrity: String,
+        method: Method,
     },
     Preflight {
         request: RequestData,
@@ -102,18 +103,13 @@ impl JsRuntime {
             Ok((request, cookie_policy, cors, opaque)) => {
                 let signal = request.signal.clone();
                 let redirect = request.redirect;
-                let environment_url = self
-                    .referrer_source
-                    .as_ref()
-                    .unwrap_or(&self.url)
-                    .clone();
+                let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url).clone();
                 let referrer = request_referrer_state(
                     &request,
                     self.referrer_source.as_ref(),
                     self.referrer_policy,
                 );
-                let redirect_context =
-                    fetch_redirect_context(&request, environment_url, referrer);
+                let redirect_context = fetch_redirect_context(&request, environment_url, referrer);
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
@@ -140,6 +136,8 @@ impl JsRuntime {
                         };
                         self.queue_fetch(preflight, pending, cors_preflight_cookie_policy())
                     } else {
+                        let integrity = request.integrity.clone();
+                        let method = request.method;
                         let mut wire = request.to_wire();
                         redirect_context.referrer.prepare_request(&mut wire);
                         let pending = PendingFetch {
@@ -147,7 +145,12 @@ impl JsRuntime {
                             signal,
                             redirect,
                             redirect_context,
-                            stage: PendingFetchStage::Actual { cors, opaque },
+                            stage: PendingFetchStage::Actual {
+                                cors,
+                                opaque,
+                                integrity,
+                                method,
+                            },
                         };
                         self.queue_fetch(wire, pending, cookie_policy)
                     };
@@ -182,12 +185,24 @@ impl JsRuntime {
         }
 
         match stage {
-            PendingFetchStage::Actual { cors, opaque } => match result {
+            PendingFetchStage::Actual {
+                cors,
+                opaque,
+                integrity,
+                method,
+            } => match result {
                 Ok(mut response) => {
                     // SessionRedirectNetwork marks an intercepted manual redirect
                     // internally with redirected=true. The script-visible filter
                     // deliberately clears that bit along with URL/status/headers.
                     if redirect == FetchRedirectMode::Manual && response.redirected {
+                        if !integrity.is_empty() {
+                            self.reject_with(
+                                &promise,
+                                &FetchError::Blocked("Subresource Integrity check failed".into()),
+                            );
+                            return;
+                        }
                         let value = host_value(HostObject::Response(
                             ResponseData::opaque_redirect_from_wire(response),
                         ));
@@ -225,6 +240,23 @@ impl JsRuntime {
                             filter_cors_response_headers(&mut response, cors.credentialed);
                         }
                     }
+                    if !integrity.is_empty() {
+                        let null_body = method == Method::Head
+                            || matches!(response.status, 101 | 103 | 204 | 205 | 304);
+                        if null_body
+                            || !crate::fetch_integrity::bytes_match_integrity(
+                                &integrity,
+                                &response.body,
+                            )
+                        {
+                            self.reject_with(
+                                &promise,
+                                &FetchError::Blocked("Subresource Integrity check failed".into()),
+                            );
+                            return;
+                        }
+                    }
+
                     let mut response_data = if opaque {
                         debug_assert!(
                             cors.is_none(),
@@ -260,6 +292,8 @@ impl JsRuntime {
                 }
                 self.store_cors_preflight_permissions(&request, &cors, &response);
 
+                let integrity = request.integrity.clone();
+                let method = request.method;
                 let mut wire = request.to_wire();
                 redirect_context.referrer.prepare_request(&mut wire);
                 let actual = PendingFetch {
@@ -270,6 +304,8 @@ impl JsRuntime {
                     stage: PendingFetchStage::Actual {
                         cors: Some(cors),
                         opaque: false,
+                        integrity,
+                        method,
                     },
                 };
                 if let Err(error) = self.queue_fetch(wire, actual, cookie_policy) {
@@ -279,11 +315,7 @@ impl JsRuntime {
         }
     }
 
-    fn cors_preflight_cache_allows(
-        &self,
-        request: &RequestData,
-        cors: &CorsFetchState,
-    ) -> bool {
+    fn cors_preflight_cache_allows(&self, request: &RequestData, cors: &CorsFetchState) -> bool {
         crate::fetch_cors_preflight::cache_allows(
             &self.cookie_jar,
             self.now_ms.max(0.0) as u64,
@@ -397,6 +429,12 @@ impl JsRuntime {
         let cross_origin_web = matches!(environment_url.scheme(), "http" | "https")
             && matches!(request.url.scheme(), "http" | "https")
             && !same_origin;
+
+        if !request.integrity.is_empty() && mode == RequestMode::NoCors && cross_origin_web {
+            return Err(FetchError::Blocked(
+                "Subresource Integrity requires CORS for cross-origin requests".into(),
+            ));
+        }
 
         if mode == RequestMode::NoCors {
             if !is_cors_safelisted_method(request.method) {
@@ -523,6 +561,7 @@ impl JsRuntime {
             mut redirect,
             mut referrer,
             mut referrer_policy,
+            mut integrity,
         ) = match &input {
             JsValue::Host(host) => match host.as_request() {
                 Some(existing) => (
@@ -536,6 +575,7 @@ impl JsRuntime {
                     existing.redirect,
                     existing.referrer.clone(),
                     existing.referrer_policy,
+                    existing.integrity.clone(),
                 ),
                 None => return Err(FetchError::InvalidUrl(to_string(&input))),
             },
@@ -550,6 +590,7 @@ impl JsRuntime {
                 FetchRedirectMode::Follow,
                 RequestReferrer::Client,
                 None,
+                String::new(),
             ),
         };
 
@@ -582,9 +623,8 @@ impl JsRuntime {
                     "credentials" => credentials = check_credentials(&to_string(value))?,
                     "redirect" => redirect = check_redirect(&to_string(value))?,
                     "referrer" => referrer = self.check_referrer(&to_string(value))?,
-                    "referrerPolicy" => {
-                        referrer_policy = check_referrer_policy(&to_string(value))?
-                    }
+                    "referrerPolicy" => referrer_policy = check_referrer_policy(&to_string(value))?,
+                    "integrity" => integrity = to_string(value),
                     _ => {}
                 }
             }
@@ -613,6 +653,7 @@ impl JsRuntime {
             redirect,
             referrer,
             referrer_policy,
+            integrity,
         })
     }
 
@@ -897,6 +938,7 @@ impl JsRuntime {
                         .unwrap_or("")
                         .to_string(),
                 ),
+                "integrity" => JsValue::Str(request.integrity.clone()),
                 "signal" => match &request.signal {
                     Some(state) => host_value(HostObject::AbortSignal(state.clone())),
                     None => JsValue::Null,
@@ -1867,10 +1909,7 @@ fn request_referrer_state(
         RequestReferrer::NoReferrer => None,
         RequestReferrer::Url(url) => Some(url.clone()),
     };
-    RedirectReferrerState::new(
-        source,
-        request.referrer_policy.unwrap_or(client_policy),
-    )
+    RedirectReferrerState::new(source, request.referrer_policy.unwrap_or(client_policy))
 }
 
 fn check_referrer_policy(value: &str) -> Result<Option<ReferrerPolicy>, FetchError> {
@@ -1980,10 +2019,7 @@ fn cors_unsafe_request_header_names(request: &RequestData) -> Vec<String> {
     names
 }
 
-fn build_cors_preflight_request(
-    request: &RequestData,
-    cors: &CorsFetchState,
-) -> FetchRequest {
+fn build_cors_preflight_request(request: &RequestData, cors: &CorsFetchState) -> FetchRequest {
     crate::fetch_cors_preflight::build_preflight_request(
         request.url.clone(),
         &cors.source_origin.header_value(),

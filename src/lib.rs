@@ -28,6 +28,7 @@ pub mod eventloop;
 pub(crate) mod fetch_cors;
 pub(crate) mod fetch_cors_preflight;
 pub(crate) mod fetch_cors_redirect;
+pub(crate) mod fetch_integrity;
 pub mod fetch_redirect_policy;
 pub mod form_state;
 pub mod forms;

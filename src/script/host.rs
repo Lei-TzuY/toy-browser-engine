@@ -18,8 +18,8 @@ use std::rc::Rc;
 
 use crate::fetch_redirect_policy::FetchRedirectMode;
 use crate::net::fetch::{FetchRequest, FetchResponse, HeaderMap, Method};
-use crate::referrer_policy::ReferrerPolicy;
 use crate::net::Url;
+use crate::referrer_policy::ReferrerPolicy;
 
 /// A shared, mutable header list.
 ///
@@ -209,6 +209,9 @@ pub struct RequestData {
     /// `None` is the script-visible empty-string policy and means inherit the
     /// environment's committed document policy when Fetch starts.
     pub referrer_policy: Option<ReferrerPolicy>,
+    /// Subresource Integrity metadata. This is browser-only request metadata,
+    /// never an authored transport header.
+    pub integrity: String,
 }
 
 impl RequestData {
@@ -726,6 +729,7 @@ mod tests {
             redirect: FetchRedirectMode::Follow,
             referrer: RequestReferrer::Client,
             referrer_policy: None,
+            integrity: String::new(),
         };
 
         let wire = request.to_wire();
@@ -737,6 +741,7 @@ mod tests {
         assert_eq!(request.redirect, FetchRedirectMode::Follow);
         assert_eq!(request.referrer, RequestReferrer::Client);
         assert_eq!(request.referrer_policy, None);
+        assert!(request.integrity.is_empty());
     }
 
     #[test]
