@@ -27,7 +27,8 @@ use crate::net::Url;
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
     IntersectionObserverEntryData, IntersectionObserverTarget, RequestCredentials, RequestData,
-    ResizeObserverData, ResizeObserverEntryData, ResponseData, UrlData, UrlSearchParamsData,
+    RequestMode, ResizeObserverData, ResizeObserverEntryData, ResponseData, UrlData,
+    UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
@@ -36,16 +37,11 @@ use super::promise::{self, PromiseRef};
 /// The schemes a page may fetch, on top of its own.
 const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FetchMode {
-    Cors,
-    SameOrigin,
-}
-
 /// Browser-only state needed when the response task completes.
 #[derive(Debug, Clone)]
 struct CorsFetchState {
     source_origin: Origin,
+    credentialed: bool,
 }
 
 /// What the runtime keeps for one request it is waiting on.
@@ -89,8 +85,7 @@ impl JsRuntime {
                         Ok(id) => {
                             // Attach the complete cookie policy, not merely
                             // credentials=omit. Cross-origin CORS requests are
-                            // subresources, so Strict/Lax cookies must not leak
-                            // even when a later credentials=include mode exists.
+                            // subresources, so Strict/Lax cookies do not leak.
                             if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
                                 registry.set(id, cookie_policy);
                             }
@@ -116,8 +111,11 @@ impl JsRuntime {
         match result {
             Ok(response) => {
                 if let Some(cors) = &pending.cors {
-                    if let Err(error) = validate_simple_cors_response(&cors.source_origin, &response)
-                    {
+                    if let Err(error) = validate_simple_cors_response(
+                        &cors.source_origin,
+                        cors.credentialed,
+                        &response,
+                    ) {
                         self.reject_with(&pending.promise, &error);
                         return;
                     }
@@ -155,17 +153,8 @@ impl JsRuntime {
     ) -> Result<(RequestData, CookieRequestPolicy, Option<CorsFetchState>), FetchError> {
         let input = args.first().cloned().unwrap_or(JsValue::Undefined);
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-        let input_is_request = matches!(&input, JsValue::Host(host) if host.as_request().is_some());
-        let request = self.build_request(input, init.clone())?;
-        let mode = fetch_mode_from_init(&init)?.unwrap_or(if input_is_request {
-            // RequestData does not yet persist mode. Stay conservative for a
-            // Request object unless this fetch call explicitly opts into CORS;
-            // this avoids turning a cloned same-origin Request into a broader
-            // cross-origin capability.
-            FetchMode::SameOrigin
-        } else {
-            FetchMode::Cors
-        });
+        let request = self.build_request(input, init)?;
+        let mode = request.mode;
 
         let scheme = request.url.scheme();
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
@@ -179,14 +168,14 @@ impl JsRuntime {
             && !same_origin;
 
         let cors = match mode {
-            FetchMode::SameOrigin if !same_origin => {
+            RequestMode::SameOrigin if !same_origin => {
                 return Err(FetchError::Blocked(format!(
                     "{} may not fetch {} in same-origin mode",
                     source_origin.header_value(),
                     request.url
                 )))
             }
-            FetchMode::Cors if cross_origin_web => {
+            RequestMode::Cors if cross_origin_web => {
                 // Origin is browser-owned and must not affect safelist
                 // classification even if authored input attempted to forge it.
                 request.headers.borrow_mut().delete("origin");
@@ -201,9 +190,10 @@ impl JsRuntime {
                     .insert_raw("origin", &source_origin.header_value());
                 Some(CorsFetchState {
                     source_origin: source_origin.clone(),
+                    credentialed: request.credentials == RequestCredentials::Include,
                 })
             }
-            FetchMode::Cors if !same_origin => {
+            RequestMode::Cors if !same_origin => {
                 // CORS is only meaningful for network tuple origins here. Keep
                 // the existing local-file containment boundary intact.
                 return Err(FetchError::Blocked(format!(
@@ -219,6 +209,7 @@ impl JsRuntime {
             RequestCredentials::Omit => CookieCredentials::Omit,
             RequestCredentials::SameOrigin if same_origin => CookieCredentials::Include,
             RequestCredentials::SameOrigin => CookieCredentials::Omit,
+            RequestCredentials::Include => CookieCredentials::Include,
         };
         let same_site = if conservative_same_site(&self.url, &request.url) {
             SameSiteRequestContext::same_site(request.method)
@@ -232,28 +223,37 @@ impl JsRuntime {
 
     /// The `Request` constructor, shared with `fetch`'s first argument.
     fn build_request(&mut self, input: JsValue, init: JsValue) -> Result<RequestData, FetchError> {
-        let (mut url, mut method, mut headers, mut body, mut signal, mut credentials) =
-            match &input {
-                JsValue::Host(host) => match host.as_request() {
-                    Some(existing) => (
-                        existing.url.clone(),
-                        existing.method,
-                        existing.headers.borrow().clone(),
-                        existing.body.peek(),
-                        existing.signal.clone(),
-                        existing.credentials,
-                    ),
-                    None => return Err(FetchError::InvalidUrl(to_string(&input))),
-                },
-                other => (
-                    self.resolve_fetch_url(&to_string(other))?,
-                    Method::Get,
-                    HeaderMap::new(),
-                    None,
-                    None,
-                    RequestCredentials::SameOrigin,
+        let (
+            mut url,
+            mut method,
+            mut headers,
+            mut body,
+            mut signal,
+            mut mode,
+            mut credentials,
+        ) = match &input {
+            JsValue::Host(host) => match host.as_request() {
+                Some(existing) => (
+                    existing.url.clone(),
+                    existing.method,
+                    existing.headers.borrow().clone(),
+                    existing.body.peek(),
+                    existing.signal.clone(),
+                    existing.mode,
+                    existing.credentials,
                 ),
-            };
+                None => return Err(FetchError::InvalidUrl(to_string(&input))),
+            },
+            other => (
+                self.resolve_fetch_url(&to_string(other))?,
+                Method::Get,
+                HeaderMap::new(),
+                None,
+                None,
+                RequestMode::Cors,
+                RequestCredentials::SameOrigin,
+            ),
+        };
 
         if let JsValue::Object(props) = &init {
             for (key, value) in props.borrow().iter() {
@@ -280,17 +280,8 @@ impl JsRuntime {
                             }
                         }
                     }
-                    "mode" => {
-                        // Validation happens here for Request construction;
-                        // fetch() reads it again to select browser policy.
-                        check_mode(&to_string(value))?;
-                    }
-                    "credentials" => {
-                        credentials = match check_credentials(&to_string(value))? {
-                            CookieCredentials::Include => RequestCredentials::SameOrigin,
-                            CookieCredentials::Omit => RequestCredentials::Omit,
-                        };
-                    }
+                    "mode" => mode = check_mode(&to_string(value))?,
+                    "credentials" => credentials = check_credentials(&to_string(value))?,
                     _ => {}
                 }
             }
@@ -314,6 +305,7 @@ impl JsRuntime {
                 None => Body::empty(),
             },
             signal,
+            mode,
             credentials,
         })
     }
@@ -556,6 +548,7 @@ impl JsRuntime {
                 "method" => JsValue::Str(request.method.as_str().to_string()),
                 "headers" => host_value(HostObject::Headers(request.headers.clone())),
                 "bodyUsed" => JsValue::Bool(request.body.used()),
+                "mode" => JsValue::Str(request.mode.as_str().to_string()),
                 "credentials" => JsValue::Str(request.credentials.as_str().to_string()),
                 "signal" => match &request.signal {
                     Some(state) => host_value(HostObject::AbortSignal(state.clone())),
@@ -1384,34 +1377,23 @@ fn host_value(object: HostObject) -> JsValue {
     JsValue::Host(Rc::new(object))
 }
 
-fn fetch_mode_from_init(init: &JsValue) -> Result<Option<FetchMode>, FetchError> {
-    let JsValue::Object(props) = init else {
-        return Ok(None);
-    };
-    for (key, value) in props.borrow().iter() {
-        if key == "mode" {
-            return check_mode(&to_string(value)).map(Some);
-        }
-    }
-    Ok(None)
-}
-
-fn check_mode(mode: &str) -> Result<FetchMode, FetchError> {
+fn check_mode(mode: &str) -> Result<RequestMode, FetchError> {
     match mode {
-        "cors" | "" => Ok(FetchMode::Cors),
-        "same-origin" => Ok(FetchMode::SameOrigin),
+        "cors" | "" => Ok(RequestMode::Cors),
+        "same-origin" => Ok(RequestMode::SameOrigin),
         other => Err(FetchError::BadRequest(format!(
             "unsupported fetch mode {other:?}: this engine supports cors and same-origin"
         ))),
     }
 }
 
-fn check_credentials(credentials: &str) -> Result<CookieCredentials, FetchError> {
+fn check_credentials(credentials: &str) -> Result<RequestCredentials, FetchError> {
     match credentials {
-        "same-origin" | "" => Ok(CookieCredentials::Include),
-        "omit" => Ok(CookieCredentials::Omit),
+        "same-origin" | "" => Ok(RequestCredentials::SameOrigin),
+        "omit" => Ok(RequestCredentials::Omit),
+        "include" => Ok(RequestCredentials::Include),
         other => Err(FetchError::BadRequest(format!(
-            "unsupported credentials mode {other:?}: this engine supports same-origin and omit"
+            "unsupported credentials mode {other:?}: this engine supports same-origin, omit, and include"
         ))),
     }
 }
@@ -1456,10 +1438,33 @@ fn is_cors_safelisted_request(request: &RequestData) -> bool {
 
 fn validate_simple_cors_response(
     source_origin: &Origin,
+    credentialed: bool,
     response: &FetchResponse,
 ) -> Result<(), FetchError> {
     let allow_origin = response.headers.get("access-control-allow-origin");
     let serialized = source_origin.header_value();
+
+    if credentialed {
+        if allow_origin.as_deref() != Some(serialized.as_str()) {
+            return Err(FetchError::Blocked(
+                "CORS: credentialed response requires an exact Access-Control-Allow-Origin value"
+                    .into(),
+            ));
+        }
+        if response
+            .headers
+            .get("access-control-allow-credentials")
+            .as_deref()
+            != Some("true")
+        {
+            return Err(FetchError::Blocked(
+                "CORS: credentialed response requires Access-Control-Allow-Credentials: true"
+                    .into(),
+            ));
+        }
+        return Ok(());
+    }
+
     if matches!(allow_origin.as_deref(), Some("*"))
         || allow_origin.as_deref() == Some(serialized.as_str())
     {
