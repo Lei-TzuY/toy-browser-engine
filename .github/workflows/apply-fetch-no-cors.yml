@@ -18,6 +18,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Repair helper test patch point
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/apply_fetch_no_cors.py')
+          text = path.read_text()
+          text = text.replace(
+              "'''            assert_eq!(browser.document().runtime.console, vec![\"basic\"]);'''",
+              "'''    assert_eq!(browser.document().runtime.console, vec![\"basic\"]);'''",
+          )
+          text = text.replace(
+              "'''            assert_eq!(browser.document().runtime.console, vec![\"default\"]);'''",
+              "'''    assert_eq!(browser.document().runtime.console, vec![\"default\"]);'''",
+          )
+          path.write_text(text)
+          PY
       - name: Apply no-cors implementation
         run: python3 .github/scripts/apply_fetch_no_cors.py
       - name: Check formatting
