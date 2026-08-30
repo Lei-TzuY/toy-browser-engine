@@ -1,6 +1,5 @@
-use browser_engine::{
-    CorpOriginRelation, CrossOriginEmbedderPolicy, DocumentPolicyContainer, HeaderMap,
-};
+use browser_engine::{CorpOriginRelation, CrossOriginEmbedderPolicy, DocumentPolicyContainer};
+use browser_engine::net::HeaderMap;
 
 fn headers(entries: &[(&str, &str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
