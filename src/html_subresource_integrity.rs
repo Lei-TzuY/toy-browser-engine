@@ -9,6 +9,7 @@ use crate::cookie_same_site::SameSiteRequestContext;
 use crate::document_referrer::DocumentReferrerContext;
 use crate::integrity_policy::{IntegrityPolicyDestination, IntegrityPolicyRequestMode};
 use crate::integrity_policy_headers::IntegrityPolicyContainer;
+use crate::integrity_report_queue::IntegrityReportQueue;
 use crate::navigation_network::NavigationNetwork;
 use crate::net::{FetchRequest, FetchResponse, Method, Origin, Url};
 use crate::subresource_integrity_policy::{
@@ -20,8 +21,8 @@ use crate::subresource_integrity_policy::{
 #[derive(Debug, Clone)]
 pub struct HtmlSubresourceIntegrityResult {
     pub response: FetchResponse,
-    /// The report-only policy would have rejected this request. A future
-    /// Reporting API layer can turn this bit into an integrity-violation report.
+    /// The report-only policy would have rejected this request. Callers that do
+    /// not use the reporting-aware helper can still observe the violation bit.
     pub report_only_violation: bool,
 }
 
@@ -147,6 +148,68 @@ pub fn fetch_html_subresource_with_integrity(
         response,
         report_only_violation: integrity.report_only_violation || policy.report_only_violation,
     })
+}
+
+/// Fetch an HTML subresource while materializing any Integrity-Policy
+/// violations into the document/session report queue.
+///
+/// Reporting happens from the same pre-dispatch policy decision used by the
+/// loader. Consequently an enforced violation is queued even though transport
+/// is never entered, while a report-only violation is queued and loading
+/// continues normally. The actual Reporting API delivery mechanism remains
+/// decoupled from element loading; this helper only creates pending work.
+pub fn fetch_html_subresource_with_integrity_reporting(
+    navigation: &NavigationNetwork,
+    referrer: &DocumentReferrerContext,
+    container: &IntegrityPolicyContainer,
+    report_queue: &mut IntegrityReportQueue,
+    destination: IntegrityPolicyDestination,
+    url: &Url,
+    crossorigin: Option<&str>,
+    referrerpolicy: Option<&str>,
+    integrity_metadata: &str,
+) -> Result<HtmlSubresourceIntegrityResult, HtmlSubresourceIntegrityError> {
+    let effective_target = navigation.effective_url(url);
+    let same_origin = referrer.source().is_some_and(|source| {
+        Origin::of(source) == Origin::of(&effective_target)
+    });
+    let mode = if same_origin {
+        IntegrityPolicyRequestMode::SameOrigin
+    } else if crossorigin.is_some() {
+        IntegrityPolicyRequestMode::Cors
+    } else {
+        IntegrityPolicyRequestMode::NoCors
+    };
+    let is_local = !matches!(effective_target.scheme(), "http" | "https");
+    let decision = evaluate_subresource_integrity_policy(
+        container,
+        destination,
+        integrity_metadata,
+        mode,
+        is_local,
+    );
+
+    if let Some(document_url) = referrer.source() {
+        report_queue.enqueue_decision(
+            document_url,
+            url,
+            destination,
+            decision,
+            &container.enforced,
+            &container.report_only,
+        );
+    }
+
+    fetch_html_subresource_with_integrity(
+        navigation,
+        referrer,
+        container,
+        destination,
+        url,
+        crossorigin,
+        referrerpolicy,
+        integrity_metadata,
+    )
 }
 
 #[cfg(test)]
