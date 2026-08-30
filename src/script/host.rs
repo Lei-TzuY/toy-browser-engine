@@ -16,6 +16,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::fetch_redirect_policy::FetchRedirectMode;
 use crate::net::fetch::{FetchRequest, FetchResponse, HeaderMap, Method};
 use crate::net::Url;
 
@@ -178,6 +179,7 @@ pub struct RequestData {
     pub signal: Option<Rc<AbortState>>,
     pub mode: RequestMode,
     pub credentials: RequestCredentials,
+    pub redirect: FetchRedirectMode,
 }
 
 impl RequestData {
@@ -212,6 +214,7 @@ pub enum ResponseType {
     Basic,
     Cors,
     Opaque,
+    OpaqueRedirect,
 }
 
 impl ResponseType {
@@ -221,6 +224,7 @@ impl ResponseType {
             ResponseType::Basic => "basic",
             ResponseType::Cors => "cors",
             ResponseType::Opaque => "opaque",
+            ResponseType::OpaqueRedirect => "opaqueredirect",
         }
     }
 }
@@ -268,8 +272,25 @@ impl ResponseData {
         }
     }
 
+    /// Whether script sees a null-body opaque filtered response.
     pub fn is_opaque(&self) -> bool {
-        self.response_type == ResponseType::Opaque
+        matches!(
+            self.response_type,
+            ResponseType::Opaque | ResponseType::OpaqueRedirect
+        )
+    }
+
+    /// Build the opaque-redirect filtered view returned by redirect=manual.
+    pub fn opaque_redirect_from_wire(response: FetchResponse) -> ResponseData {
+        ResponseData {
+            url: response.url,
+            status: 0,
+            status_text: String::new(),
+            headers: headers_ref(HeaderMap::new()),
+            body: Body::empty(),
+            redirected: false,
+            response_type: ResponseType::OpaqueRedirect,
+        }
     }
 
     pub fn script_url(&self) -> String {
@@ -383,7 +404,9 @@ impl UrlSearchParamsData {
     }
 
     pub fn append(&self, name: &str, value: &str) {
-        self.pairs.borrow_mut().push((name.to_string(), value.to_string()));
+        self.pairs
+            .borrow_mut()
+            .push((name.to_string(), value.to_string()));
         self.sync_to_parent();
     }
 
@@ -457,7 +480,11 @@ impl IntersectionObserverData {
         Self {
             root: None,
             root_margin: "0px".to_string(),
-            thresholds: if thresholds.is_empty() { vec![0.0] } else { thresholds },
+            thresholds: if thresholds.is_empty() {
+                vec![0.0]
+            } else {
+                thresholds
+            },
             targets: Vec::new(),
         }
     }
@@ -667,6 +694,7 @@ mod tests {
             signal: None,
             mode: RequestMode::SameOrigin,
             credentials: RequestCredentials::Omit,
+            redirect: FetchRedirectMode::Follow,
         };
 
         let wire = request.to_wire();
@@ -675,6 +703,7 @@ mod tests {
         assert!(!request.body.used(), "sending is not reading");
         assert_eq!(request.mode, RequestMode::SameOrigin);
         assert_eq!(request.credentials, RequestCredentials::Omit);
+        assert_eq!(request.redirect, FetchRedirectMode::Follow);
     }
 
     #[test]
@@ -684,6 +713,9 @@ mod tests {
         assert_eq!(RequestCredentials::default().as_str(), "same-origin");
         assert_eq!(RequestCredentials::Omit.as_str(), "omit");
         assert_eq!(RequestCredentials::Include.as_str(), "include");
+        assert_eq!(FetchRedirectMode::default().as_str(), "follow");
+        assert_eq!(FetchRedirectMode::Error.as_str(), "error");
+        assert_eq!(FetchRedirectMode::Manual.as_str(), "manual");
     }
 
     #[test]
