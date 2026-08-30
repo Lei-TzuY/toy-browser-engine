@@ -27,6 +27,30 @@ impl CrossOriginResourcePolicy {
     }
 }
 
+/// Fetch's Cross-Origin-Embedder-Policy value used by the CORP internal check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CrossOriginEmbedderPolicy {
+    /// No embedder-imposed CORP requirement.
+    #[default]
+    UnsafeNone,
+    /// Cross-origin no-CORS resources require an explicit CORP opt-in.
+    RequireCorp,
+    /// Like `require-corp` for credentialed resources, but credentialless
+    /// cross-origin no-CORS responses may be embedded without an explicit CORP
+    /// header.
+    Credentialless,
+}
+
+impl CrossOriginEmbedderPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UnsafeNone => "unsafe-none",
+            Self::RequireCorp => "require-corp",
+            Self::Credentialless => "credentialless",
+        }
+    }
+}
+
 /// Relationship between the request origin and the response URL origin.
 ///
 /// `SameSite` here means Fetch's *schemelessly same site* relationship. Keeping
@@ -65,13 +89,12 @@ pub fn parse_cross_origin_resource_policy(
     }
 }
 
-/// Apply the explicit CORP policy for Fetch's ordinary `unsafe-none` embedder
-/// policy case.
+/// Apply one already-resolved CORP policy token.
 ///
 /// `initiator_is_https` and `response_is_https` encode Fetch's asymmetric
-/// same-site downgrade guard: an HTTP initiator must not use `same-site` to read
-/// a response delivered over HTTPS, even when the two origins are otherwise
-/// schemelessly same-site.
+/// same-site secure-transport guard: an HTTP initiator must not use
+/// `same-site` to consume a response delivered over HTTPS, even when the two
+/// origins are otherwise schemelessly same-site.
 pub fn cross_origin_resource_policy_allows(
     policy: Option<CrossOriginResourcePolicy>,
     relation: CorpOriginRelation,
@@ -90,7 +113,55 @@ pub fn cross_origin_resource_policy_allows(
     }
 }
 
-/// Parse the response header and immediately apply the explicit CORP policy.
+/// Resolve Fetch's CORP *internal check* under a concrete embedder policy.
+///
+/// This captures the subtle defaulting rules that are otherwise easy for
+/// callers to get wrong:
+///
+/// - `unsafe-none`: an absent/invalid CORP header imposes no restriction.
+/// - `require-corp`: an absent/invalid header behaves as `same-origin`.
+/// - `credentialless`: an absent/invalid header behaves as `same-origin` when
+///   the response request included credentials, or for nested navigation; a
+///   credentialless subresource is allowed without an explicit CORP header.
+/// - nested navigation bypasses `unsafe-none` entirely, matching Fetch's
+///   `forNavigation` exception.
+pub fn cross_origin_resource_policy_internal_check(
+    policy: Option<CrossOriginResourcePolicy>,
+    embedder_policy: CrossOriginEmbedderPolicy,
+    relation: CorpOriginRelation,
+    initiator_is_https: bool,
+    response_is_https: bool,
+    request_includes_credentials: bool,
+    for_navigation: bool,
+) -> bool {
+    if for_navigation && embedder_policy == CrossOriginEmbedderPolicy::UnsafeNone {
+        return true;
+    }
+
+    let effective_policy = match policy {
+        Some(policy) => Some(policy),
+        None => match embedder_policy {
+            CrossOriginEmbedderPolicy::UnsafeNone => None,
+            CrossOriginEmbedderPolicy::RequireCorp => Some(CrossOriginResourcePolicy::SameOrigin),
+            CrossOriginEmbedderPolicy::Credentialless
+                if request_includes_credentials || for_navigation =>
+            {
+                Some(CrossOriginResourcePolicy::SameOrigin)
+            }
+            CrossOriginEmbedderPolicy::Credentialless => None,
+        },
+    };
+
+    cross_origin_resource_policy_allows(
+        effective_policy,
+        relation,
+        initiator_is_https,
+        response_is_https,
+    )
+}
+
+/// Parse the response header and immediately apply the explicit CORP policy for
+/// the ordinary `unsafe-none` embedder-policy case.
 pub fn response_allows_cross_origin_resource(
     headers: &HeaderMap,
     relation: CorpOriginRelation,
@@ -102,6 +173,28 @@ pub fn response_allows_cross_origin_resource(
         relation,
         initiator_is_https,
         response_is_https,
+    )
+}
+
+/// Parse the response header and run Fetch's CORP internal check under the
+/// supplied Cross-Origin-Embedder-Policy value.
+pub fn response_allows_cross_origin_resource_with_embedder_policy(
+    headers: &HeaderMap,
+    embedder_policy: CrossOriginEmbedderPolicy,
+    relation: CorpOriginRelation,
+    initiator_is_https: bool,
+    response_is_https: bool,
+    request_includes_credentials: bool,
+    for_navigation: bool,
+) -> bool {
+    cross_origin_resource_policy_internal_check(
+        parse_cross_origin_resource_policy(headers),
+        embedder_policy,
+        relation,
+        initiator_is_https,
+        response_is_https,
+        request_includes_credentials,
+        for_navigation,
     )
 }
 
@@ -226,6 +319,85 @@ mod tests {
             CorpOriginRelation::CrossSite,
             false,
             true
+        ));
+    }
+
+    #[test]
+    fn require_corp_defaults_missing_policy_to_same_origin() {
+        assert!(cross_origin_resource_policy_internal_check(
+            None,
+            CrossOriginEmbedderPolicy::RequireCorp,
+            CorpOriginRelation::SameOrigin,
+            true,
+            true,
+            false,
+            false,
+        ));
+        assert!(!cross_origin_resource_policy_internal_check(
+            None,
+            CrossOriginEmbedderPolicy::RequireCorp,
+            CorpOriginRelation::CrossSite,
+            true,
+            true,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn credentialless_defaults_only_credentialed_resources_to_same_origin() {
+        assert!(cross_origin_resource_policy_internal_check(
+            None,
+            CrossOriginEmbedderPolicy::Credentialless,
+            CorpOriginRelation::CrossSite,
+            true,
+            true,
+            false,
+            false,
+        ));
+        assert!(!cross_origin_resource_policy_internal_check(
+            None,
+            CrossOriginEmbedderPolicy::Credentialless,
+            CorpOriginRelation::CrossSite,
+            true,
+            true,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn explicit_cross_origin_overrides_require_corp_default() {
+        assert!(cross_origin_resource_policy_internal_check(
+            Some(CrossOriginResourcePolicy::CrossOrigin),
+            CrossOriginEmbedderPolicy::RequireCorp,
+            CorpOriginRelation::CrossSite,
+            true,
+            true,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn navigation_exception_and_credentialless_navigation_match_fetch() {
+        assert!(cross_origin_resource_policy_internal_check(
+            None,
+            CrossOriginEmbedderPolicy::UnsafeNone,
+            CorpOriginRelation::CrossSite,
+            true,
+            true,
+            true,
+            true,
+        ));
+        assert!(!cross_origin_resource_policy_internal_check(
+            None,
+            CrossOriginEmbedderPolicy::Credentialless,
+            CorpOriginRelation::CrossSite,
+            true,
+            true,
+            false,
+            true,
         ));
     }
 }
