@@ -41,6 +41,7 @@ pub mod image;
 pub mod input;
 pub mod integrity_policy;
 pub mod integrity_policy_headers;
+pub mod integrity_policy_reporting;
 pub mod layout;
 #[path = "navigation_network_with_credentials.rs"]
 pub mod navigation_network;
@@ -89,6 +90,10 @@ pub use integrity_policy::{
 };
 pub use integrity_policy_headers::{
     IntegrityPolicyContainer, INTEGRITY_POLICY_HEADER, INTEGRITY_POLICY_REPORT_ONLY_HEADER,
+};
+pub use integrity_policy_reporting::{
+    build_integrity_violation_reports, IntegrityViolationReport, IntegrityViolationReportBody,
+    INTEGRITY_VIOLATION_REPORT_TYPE,
 };
 pub use navigation_network::NavigationNetwork;
 pub use net::{MemoryLoader, ResourceLoader, Url};
