@@ -1,0 +1,53 @@
+name: Agent Fetch policy patch
+
+on:
+  push:
+    branches:
+      - agent/fetch-request-mode-credentialed-cors
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fetch-request-mode-credentialed-cors
+      - name: Apply focused policy fix and remove helper
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/script/fetch_api.rs")
+          text = path.read_text()
+          old = '''        if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
+              return Err(FetchError::UnsupportedScheme(scheme.to_string()));
+          }
+
+          let source_origin = Origin::of(&self.url);'''
+          new = '''        if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
+              return Err(FetchError::UnsupportedScheme(scheme.to_string()));
+          }
+          if request.credentials == RequestCredentials::Include
+              && !matches!(scheme, "http" | "https")
+          {
+              return Err(FetchError::BadRequest(format!(
+                  "credentials mode \\"include\\" is only supported for HTTP(S) requests"
+              )));
+          }
+
+          let source_origin = Origin::of(&self.url);'''
+          if old not in text:
+              raise SystemExit("target Fetch policy block not found")
+          path.write_text(text.replace(old, new, 1))
+          Path(".github/workflows/agent-patch-fetch-policy.yml").unlink()
+      - name: Commit focused fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/script/fetch_api.rs .github/workflows/agent-patch-fetch-policy.yml
+          git commit -m "Restrict credentialed Fetch to HTTP transports"
+          git push origin HEAD:agent/fetch-request-mode-credentialed-cors
