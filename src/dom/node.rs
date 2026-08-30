@@ -78,12 +78,20 @@ pub struct ElementData {
     id: ElementId,
     /// Present once this element has live form/option state.
     control: Option<Box<ControlState>>,
+    /// HTML's per-element "already started" bit for external scripts. This is
+    /// engine state, deliberately not represented as a content attribute.
+    script_started: bool,
+    /// Whether this stylesheet link has already been prepared by the loader.
+    /// Failed loads count as prepared so unrelated DOM activity cannot retry
+    /// the same element forever.
+    stylesheet_started: bool,
     /// Present once this <canvas> element has a 2D rendering context.
     pub canvas: Option<std::rc::Rc<std::cell::RefCell<crate::canvas::CanvasContext2D>>>,
 }
 
 // Cloning an element produces a *new* element, as `cloneNode` does: it gets a
-// fresh identity rather than aliasing the original.
+// fresh identity rather than aliasing the original. Resource activation state
+// is reset too, so a cloned <script> or stylesheet <link> is a new element.
 impl Clone for ElementData {
     fn clone(&self) -> Self {
         Self {
@@ -91,6 +99,8 @@ impl Clone for ElementData {
             attributes: self.attributes.clone(),
             id: ElementId::next(),
             control: self.control.clone(),
+            script_started: false,
+            stylesheet_started: false,
             canvas: self.canvas.clone(),
         }
     }
@@ -103,6 +113,8 @@ impl ElementData {
             attributes,
             id: ElementId::next(),
             control: None,
+            script_started: false,
+            stylesheet_started: false,
             canvas: None,
         }
     }
@@ -133,6 +145,30 @@ impl ElementData {
     /// This element's stable identity.
     pub fn element_id(&self) -> ElementId {
         self.id
+    }
+
+    /// Mark an external script element as prepared for execution.
+    ///
+    /// Returns true only for the first preparation attempt. The bit is set
+    /// before URL/network work, matching the important browser invariant that
+    /// a failed script is not retried merely because another event fires.
+    pub(crate) fn start_script_once(&mut self) -> bool {
+        if self.script_started {
+            false
+        } else {
+            self.script_started = true;
+            true
+        }
+    }
+
+    /// Mark a stylesheet link as prepared for loading, once per element.
+    pub(crate) fn start_stylesheet_once(&mut self) -> bool {
+        if self.stylesheet_started {
+            false
+        } else {
+            self.stylesheet_started = true;
+            true
+        }
     }
 
     /// Look up an attribute value by name (case-insensitive).
@@ -455,7 +491,7 @@ impl fmt::Display for Node {
     }
 }
 
-// ── Unit tests ───────────────────────────────────────────────────────────────
+// ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -467,6 +503,21 @@ mod tests {
         assert_eq!(e.get_attr("href"), Some("https://example.com"));
         assert_eq!(e.get_attr("HREF"), Some("https://example.com"));
         assert_eq!(e.get_attr("class"), None);
+    }
+
+    #[test]
+    fn cloned_resource_elements_get_fresh_activation_state() {
+        let mut script = ElementData::new("script", vec![("src".into(), "a.js".into())]);
+        assert!(script.start_script_once());
+        assert!(!script.start_script_once());
+        let mut clone = script.clone();
+        assert!(clone.start_script_once(), "cloneNode-style clones are new script elements");
+
+        let mut link = ElementData::new("link", vec![("href".into(), "a.css".into())]);
+        assert!(link.start_stylesheet_once());
+        assert!(!link.start_stylesheet_once());
+        let mut clone = link.clone();
+        assert!(clone.start_stylesheet_once(), "cloned links get their own load lifecycle");
     }
 
     #[test]
