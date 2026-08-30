@@ -396,6 +396,8 @@ fn run_scripts_with_subresource_policy(
 
     let mut runtime = JsRuntime::new();
     runtime.url = base_url.clone();
+    runtime.referrer_source = referrer.source().cloned();
+    runtime.referrer_policy = referrer.policy();
     if let Some(storage) = storage {
         runtime.local_storage = storage;
     }

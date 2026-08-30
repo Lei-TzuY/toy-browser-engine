@@ -27,11 +27,13 @@ use crate::fetch_cors_redirect::{
 use crate::fetch_redirect_policy::{redirect_policy_registry_for_jar, FetchRedirectMode};
 use crate::net::fetch::{FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin};
 use crate::net::Url;
+use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 
 use super::host::{
     decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
     IntersectionObserverEntryData, IntersectionObserverTarget, RequestCredentials, RequestData,
-    RequestMode, ResizeObserverData, ResizeObserverEntryData, ResponseData, ResponseType, UrlData,
+    RequestMode, RequestReferrer, ResizeObserverData, ResizeObserverEntryData, ResponseData,
+    ResponseType, UrlData,
     UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
@@ -100,7 +102,18 @@ impl JsRuntime {
             Ok((request, cookie_policy, cors, opaque)) => {
                 let signal = request.signal.clone();
                 let redirect = request.redirect;
-                let redirect_context = fetch_redirect_context(&request, self.url.clone());
+                let environment_url = self
+                    .referrer_source
+                    .as_ref()
+                    .unwrap_or(&self.url)
+                    .clone();
+                let referrer = request_referrer_state(
+                    &request,
+                    self.referrer_source.as_ref(),
+                    self.referrer_policy,
+                );
+                let redirect_context =
+                    fetch_redirect_context(&request, environment_url, referrer);
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
@@ -112,7 +125,8 @@ impl JsRuntime {
                     };
                     let queued = if needs_preflight {
                         let cors = cors.expect("preflight requires CORS state");
-                        let preflight = build_cors_preflight_request(&request, &cors);
+                        let mut preflight = build_cors_preflight_request(&request, &cors);
+                        redirect_context.referrer.prepare_request(&mut preflight);
                         let pending = PendingFetch {
                             promise: promise.clone(),
                             signal,
@@ -126,7 +140,8 @@ impl JsRuntime {
                         };
                         self.queue_fetch(preflight, pending, cors_preflight_cookie_policy())
                     } else {
-                        let wire = request.to_wire();
+                        let mut wire = request.to_wire();
+                        redirect_context.referrer.prepare_request(&mut wire);
                         let pending = PendingFetch {
                             promise: promise.clone(),
                             signal,
@@ -245,7 +260,8 @@ impl JsRuntime {
                 }
                 self.store_cors_preflight_permissions(&request, &cors, &response);
 
-                let wire = request.to_wire();
+                let mut wire = request.to_wire();
+                redirect_context.referrer.prepare_request(&mut wire);
                 let actual = PendingFetch {
                     promise: promise.clone(),
                     signal,
@@ -375,9 +391,10 @@ impl JsRuntime {
             ));
         }
 
-        let source_origin = Origin::of(&self.url);
+        let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url);
+        let source_origin = Origin::of(environment_url);
         let same_origin = source_origin.can_fetch(&request.url);
-        let cross_origin_web = matches!(self.url.scheme(), "http" | "https")
+        let cross_origin_web = matches!(environment_url.scheme(), "http" | "https")
             && matches!(request.url.scheme(), "http" | "https")
             && !same_origin;
 
@@ -483,7 +500,7 @@ impl JsRuntime {
             RequestCredentials::SameOrigin => CookieCredentials::Omit,
             RequestCredentials::Include => CookieCredentials::Include,
         };
-        let same_site = if conservative_same_site(&self.url, &request.url) {
+        let same_site = if conservative_same_site(environment_url, &request.url) {
             SameSiteRequestContext::same_site(request.method)
         } else {
             SameSiteRequestContext::cross_site_subresource(request.method)
@@ -504,6 +521,8 @@ impl JsRuntime {
             mut mode,
             mut credentials,
             mut redirect,
+            mut referrer,
+            mut referrer_policy,
         ) = match &input {
             JsValue::Host(host) => match host.as_request() {
                 Some(existing) => (
@@ -515,6 +534,8 @@ impl JsRuntime {
                     existing.mode,
                     existing.credentials,
                     existing.redirect,
+                    existing.referrer.clone(),
+                    existing.referrer_policy,
                 ),
                 None => return Err(FetchError::InvalidUrl(to_string(&input))),
             },
@@ -527,6 +548,8 @@ impl JsRuntime {
                 RequestMode::Cors,
                 RequestCredentials::SameOrigin,
                 FetchRedirectMode::Follow,
+                RequestReferrer::Client,
+                None,
             ),
         };
 
@@ -558,6 +581,10 @@ impl JsRuntime {
                     "mode" => mode = check_mode(&to_string(value))?,
                     "credentials" => credentials = check_credentials(&to_string(value))?,
                     "redirect" => redirect = check_redirect(&to_string(value))?,
+                    "referrer" => referrer = self.check_referrer(&to_string(value))?,
+                    "referrerPolicy" => {
+                        referrer_policy = check_referrer_policy(&to_string(value))?
+                    }
                     _ => {}
                 }
             }
@@ -584,7 +611,29 @@ impl JsRuntime {
             mode,
             credentials,
             redirect,
+            referrer,
+            referrer_policy,
         })
+    }
+
+    fn check_referrer(&self, value: &str) -> Result<RequestReferrer, FetchError> {
+        if value.is_empty() {
+            return Ok(RequestReferrer::NoReferrer);
+        }
+        if value == "about:client" {
+            return Ok(RequestReferrer::Client);
+        }
+
+        let mut url = self.resolve_fetch_url(value)?;
+        let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url);
+        if !Origin::of(environment_url).can_fetch(&url) {
+            return Err(FetchError::BadRequest(format!(
+                "referrer URL {} is not same-origin with {}",
+                url, environment_url
+            )));
+        }
+        url.set_fragment(None);
+        Ok(RequestReferrer::Url(url))
     }
 
     fn resolve_fetch_url(&self, reference: &str) -> Result<Url, FetchError> {
@@ -840,6 +889,14 @@ impl JsRuntime {
                 "mode" => JsValue::Str(request.mode.as_str().to_string()),
                 "credentials" => JsValue::Str(request.credentials.as_str().to_string()),
                 "redirect" => JsValue::Str(request.redirect.as_str().to_string()),
+                "referrer" => JsValue::Str(request.referrer.as_str()),
+                "referrerPolicy" => JsValue::Str(
+                    request
+                        .referrer_policy
+                        .map(ReferrerPolicy::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
                 "signal" => match &request.signal {
                     Some(state) => host_value(HostObject::AbortSignal(state.clone())),
                     None => JsValue::Null,
@@ -1779,7 +1836,11 @@ fn host_value(object: HostObject) -> JsValue {
     JsValue::Host(Rc::new(object))
 }
 
-fn fetch_redirect_context(request: &RequestData, source_url: Url) -> FetchCorsRedirectPolicy {
+fn fetch_redirect_context(
+    request: &RequestData,
+    source_url: Url,
+    referrer: RedirectReferrerState,
+) -> FetchCorsRedirectPolicy {
     FetchCorsRedirectPolicy {
         mode: match request.mode {
             RequestMode::Cors => FetchRequestMode::Cors,
@@ -1792,7 +1853,44 @@ fn fetch_redirect_context(request: &RequestData, source_url: Url) -> FetchCorsRe
             RequestCredentials::SameOrigin => FetchCredentialsMode::SameOrigin,
             RequestCredentials::Include => FetchCredentialsMode::Include,
         },
+        referrer,
     }
+}
+
+fn request_referrer_state(
+    request: &RequestData,
+    client_source: Option<&Url>,
+    client_policy: ReferrerPolicy,
+) -> RedirectReferrerState {
+    let source = match &request.referrer {
+        RequestReferrer::Client => client_source.cloned(),
+        RequestReferrer::NoReferrer => None,
+        RequestReferrer::Url(url) => Some(url.clone()),
+    };
+    RedirectReferrerState::new(
+        source,
+        request.referrer_policy.unwrap_or(client_policy),
+    )
+}
+
+fn check_referrer_policy(value: &str) -> Result<Option<ReferrerPolicy>, FetchError> {
+    let policy = match value {
+        "" => return Ok(None),
+        "no-referrer" => ReferrerPolicy::NoReferrer,
+        "no-referrer-when-downgrade" => ReferrerPolicy::NoReferrerWhenDowngrade,
+        "origin" => ReferrerPolicy::Origin,
+        "origin-when-cross-origin" => ReferrerPolicy::OriginWhenCrossOrigin,
+        "same-origin" => ReferrerPolicy::SameOrigin,
+        "strict-origin" => ReferrerPolicy::StrictOrigin,
+        "strict-origin-when-cross-origin" => ReferrerPolicy::StrictOriginWhenCrossOrigin,
+        "unsafe-url" => ReferrerPolicy::UnsafeUrl,
+        other => {
+            return Err(FetchError::BadRequest(format!(
+                "unsupported referrer policy {other:?}"
+            )))
+        }
+    };
+    Ok(Some(policy))
 }
 
 fn check_mode(mode: &str) -> Result<RequestMode, FetchError> {

@@ -225,7 +225,19 @@ impl Document {
         seed_textarea_values(&mut dom);
 
         let stylesheet = collect_stylesheet(&dom, &base_url, loader, &mut diagnostics);
-        let runtime = run_scripts(&mut dom, &base_url, loader, &mut diagnostics, storage);
+        let referrer_policy = crate::referrer_meta::apply_meta_referrer_policies(
+            &dom,
+            crate::referrer_policy::ReferrerPolicy::default(),
+        );
+        let runtime = run_scripts(
+            &mut dom,
+            &base_url,
+            url,
+            referrer_policy,
+            loader,
+            &mut diagnostics,
+            storage,
+        );
 
         let mut document = Document {
             url: url.clone(),
@@ -1149,6 +1161,8 @@ fn style_sources(dom: &Node) -> Vec<StyleSource> {
 fn run_scripts(
     dom: &mut Node,
     base_url: &Url,
+    document_url: &Url,
+    referrer_policy: crate::referrer_policy::ReferrerPolicy,
     loader: &dyn ResourceLoader,
     diagnostics: &mut Vec<Diagnostic>,
     storage: Option<crate::script::interp::StorageRef>,
@@ -1158,6 +1172,8 @@ fn run_scripts(
     let sources = script_sources(dom);
     let mut runtime = JsRuntime::new();
     runtime.url = base_url.clone();
+    runtime.referrer_source = Some(document_url.clone());
+    runtime.referrer_policy = referrer_policy;
     if let Some(s) = storage {
         runtime.local_storage = s;
     }

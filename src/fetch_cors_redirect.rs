@@ -4,6 +4,7 @@ use std::rc::{Rc, Weak};
 
 use crate::cookie_network::CookieJarRef;
 use crate::net::{FetchId, Url};
+use crate::referrer_policy::RedirectReferrerState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FetchRequestMode {
@@ -25,6 +26,7 @@ pub(crate) struct FetchCorsRedirectPolicy {
     pub(crate) mode: FetchRequestMode,
     pub(crate) source_url: Url,
     pub(crate) credentials: FetchCredentialsMode,
+    pub(crate) referrer: RedirectReferrerState,
 }
 
 #[derive(Clone, Default)]
