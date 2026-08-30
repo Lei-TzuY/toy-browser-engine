@@ -15,34 +15,34 @@ fn response(
     allow_headers: Option<&str>,
     allow_credentials: bool,
 ) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(endpoint),
-        200,
-        Some("text/plain"),
-        b"ok".to_vec(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url(endpoint), 200, Some("text/plain"), b"ok".to_vec());
     response
         .headers
         .append_raw("access-control-allow-origin", allow_origin);
     if let Some(value) = allow_methods {
         response
-  .headers
-  .append_raw("access-control-allow-methods", value);
+            .headers
+            .append_raw("access-control-allow-methods", value);
     }
     if let Some(value) = allow_headers {
         response
-  .headers
-  .append_raw("access-control-allow-headers", value);
+            .headers
+            .append_raw("access-control-allow-headers", value);
     }
     if allow_credentials {
         response
-  .headers
-  .append_raw("access-control-allow-credentials", "true");
+            .headers
+            .append_raw("access-control-allow-credentials", "true");
     }
     response
 }
 
-fn browser_for(script: &str, endpoint: &str, response: FetchResponse) -> (Browser, Rc<ManualNetwork>) {
+fn browser_for(
+    script: &str,
+    endpoint: &str,
+    response: FetchResponse,
+) -> (Browser, Rc<ManualNetwork>) {
     let page = "http://page.test/index.html";
     let mut loader = MemoryLoader::new();
     loader.insert(page, format!("<script>{script}</script>"));
@@ -62,9 +62,11 @@ fn complete_preflight_and_send_actual(browser: &mut Browser, transport: &Rc<Manu
     assert_eq!(transport.complete_all(), 1, "preflight should complete");
     let completion = browser.tick();
     assert_eq!(completion.network_completions, 1);
-    assert_eq!(transport.requests().len(), 1, "actual request waits for a later send phase");
-    let send = browser.tick();
-    assert_eq!(send.requests_sent, 1);
+    assert_eq!(
+        transport.requests().len(),
+        2,
+        "a permitted actual request is dispatched in the preflight completion turn"
+    );
 }
 
 #[test]
@@ -86,13 +88,22 @@ fn put_with_custom_header_preflights_then_sends_actual_request() {
     let requests = transport.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method.as_str(), "OPTIONS");
-    assert_eq!(requests[0].headers.get("origin").as_deref(), Some("http://page.test"));
     assert_eq!(
-        requests[0].headers.get("access-control-request-method").as_deref(),
+        requests[0].headers.get("origin").as_deref(),
+        Some("http://page.test")
+    );
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("access-control-request-method")
+            .as_deref(),
         Some("PUT")
     );
     assert_eq!(
-        requests[0].headers.get("access-control-request-headers").as_deref(),
+        requests[0]
+            .headers
+            .get("access-control-request-headers")
+            .as_deref(),
         Some("x-token")
     );
     assert!(requests[0].headers.get("cookie").is_none());
@@ -101,10 +112,22 @@ fn put_with_custom_header_preflights_then_sends_actual_request() {
     let requests = transport.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].method.as_str(), "PUT");
-    assert_eq!(requests[1].headers.get("x-token").as_deref(), Some("secret"));
-    assert_eq!(requests[1].headers.get("origin").as_deref(), Some("http://page.test"));
-    assert!(requests[1].headers.get("access-control-request-method").is_none());
-    assert!(requests[1].headers.get("access-control-request-headers").is_none());
+    assert_eq!(
+        requests[1].headers.get("x-token").as_deref(),
+        Some("secret")
+    );
+    assert_eq!(
+        requests[1].headers.get("origin").as_deref(),
+        Some("http://page.test")
+    );
+    assert!(requests[1]
+        .headers
+        .get("access-control-request-method")
+        .is_none());
+    assert!(requests[1]
+        .headers
+        .get("access-control-request-headers")
+        .is_none());
 
     assert_eq!(transport.complete_all(), 1);
     browser.tick();
@@ -174,8 +197,8 @@ fn credentialed_preflight_omits_cookie_then_actual_request_includes_it() {
     browser.tick();
     assert_eq!(
         jar.borrow()
-  .get_http_cookie_header(&url(endpoint), 0)
-  .as_deref(),
+            .get_http_cookie_header(&url(endpoint), 0)
+            .as_deref(),
         Some("sid=abc"),
         "preflight credentials are omitted, including response Set-Cookie"
     );
@@ -183,7 +206,10 @@ fn credentialed_preflight_omits_cookie_then_actual_request_includes_it() {
     browser.tick();
     let requests = transport.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1].headers.get("cookie").as_deref(), Some("sid=abc"));
+    assert_eq!(
+        requests[1].headers.get("cookie").as_deref(),
+        Some("sid=abc")
+    );
 
     assert_eq!(transport.complete_all(), 1);
     browser.tick();

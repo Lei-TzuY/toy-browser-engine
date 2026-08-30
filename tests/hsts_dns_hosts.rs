@@ -43,11 +43,7 @@ fn malformed_dns_names_cannot_reach_a_parent_include_subdomains_policy() {
 #[test]
 fn ascii_punycode_hosts_are_supported_but_raw_unicode_is_conservative() {
     let mut cache = HstsCache::new();
-    assert!(cache.observe_response(
-        &url("https://xn--bcher-kva.example/"),
-        "max-age=60",
-        0,
-    ));
+    assert!(cache.observe_response(&url("https://xn--bcher-kva.example/"), "max-age=60", 0,));
 
     assert!(cache.is_known_host("XN--BCHER-KVA.EXAMPLE", 1));
     assert!(!cache.is_known_host("bücher.example", 1));
@@ -63,7 +59,10 @@ fn hsts_upgrade_uses_the_validated_canonical_host() {
     ));
 
     let upgraded = cache.upgrade_url(&url("http://api.example.test:80/path?q=1#frag"), 1);
-    assert_eq!(upgraded.to_string(), "https://api.example.test:443/path?q=1#frag");
+    assert_eq!(
+        upgraded.to_string(),
+        "https://api.example.test:443/path?q=1#frag"
+    );
 
     // Public host queries that are not valid DNS names must not accidentally
     // inherit a parent's includeSubDomains policy through string suffixes.

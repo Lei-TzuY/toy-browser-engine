@@ -10,11 +10,7 @@ fn browser_for(html: &str) -> Browser {
     loader.insert("demo:///form.html", html);
     loader.insert("demo:///next", "<title>Next</title>");
     loader.insert("demo:///publish", "<title>Publish</title>");
-    Browser::open(
-        Box::new(loader),
-        &Url::parse("demo:///form.html").unwrap(),
-    )
-    .unwrap()
+    Browser::open(Box::new(loader), &Url::parse("demo:///form.html").unwrap()).unwrap()
 }
 
 #[test]
@@ -60,9 +56,8 @@ fn explicit_form_attribute_reassociates_a_nested_control() {
 
 #[test]
 fn invalid_explicit_form_id_does_not_fall_back_to_ancestor_form() {
-    let browser = browser_for(
-        r#"<form id="a"><input id="orphan" name="q" value="x" form="missing"></form>"#,
-    );
+    let browser =
+        browser_for(r#"<form id="a"><input id="orphan" name="q" value="x" form="missing"></form>"#);
     let dom = &browser.document().dom;
     let a = dom_api::get_element_by_id(dom, "a").unwrap();
     let orphan = dom_api::get_element_by_id(dom, "orphan").unwrap();
@@ -123,13 +118,13 @@ fn external_controls_appear_in_script_form_elements() {
         </script>
         "#,
     );
-    let browser = Browser::open(
-        Box::new(loader),
-        &Url::parse("demo:///form.html").unwrap(),
-    )
-    .unwrap();
+    let browser =
+        Browser::open(Box::new(loader), &Url::parse("demo:///form.html").unwrap()).unwrap();
 
-    assert_eq!(browser.document().runtime.console.join("\n"), "3\nbefore,inside,after");
+    assert_eq!(
+        browser.document().runtime.console.join("\n"),
+        "3\nbefore,inside,after"
+    );
 }
 
 #[test]
@@ -143,11 +138,8 @@ fn external_control_form_property_resolves_explicit_owner() {
         <script>console.log(document.getElementById("external").form.id);</script>
         "#,
     );
-    let browser = Browser::open(
-        Box::new(loader),
-        &Url::parse("demo:///form.html").unwrap(),
-    )
-    .unwrap();
+    let browser =
+        Browser::open(Box::new(loader), &Url::parse("demo:///form.html").unwrap()).unwrap();
 
     assert_eq!(browser.document().runtime.console, vec!["f"]);
 }
@@ -174,7 +166,10 @@ fn reset_button_restores_external_controls_owned_by_form() {
     element.set_control_value("typed");
 
     let _ = browser.click_node(&reset);
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?q=default");
 }
 

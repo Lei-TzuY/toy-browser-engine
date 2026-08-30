@@ -68,10 +68,7 @@ mod tests {
     #[test]
     fn recognized_attribute_overrides_document_policy() {
         assert_eq!(
-            subresource_referrer_policy(
-                ReferrerPolicy::NoReferrer,
-                Some("unsafe-url")
-            ),
+            subresource_referrer_policy(ReferrerPolicy::NoReferrer, Some("unsafe-url")),
             ReferrerPolicy::UnsafeUrl
         );
     }
@@ -79,10 +76,7 @@ mod tests {
     #[test]
     fn invalid_attribute_inherits_document_policy() {
         assert_eq!(
-            subresource_referrer_policy(
-                ReferrerPolicy::Origin,
-                Some(" future-policy ")
-            ),
+            subresource_referrer_policy(ReferrerPolicy::Origin, Some(" future-policy ")),
             ReferrerPolicy::Origin
         );
     }

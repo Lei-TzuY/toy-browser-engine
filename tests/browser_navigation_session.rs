@@ -61,10 +61,9 @@ impl ResourceLoader for RecordingLoader {
             response
                 .headers
                 .append_raw("strict-transport-security", "max-age=60");
-            response.headers.append_raw(
-                "set-cookie",
-                "secure_lax=1; Path=/; Secure; SameSite=Lax",
-            );
+            response
+                .headers
+                .append_raw("set-cookie", "secure_lax=1; Path=/; Secure; SameSite=Lax");
             response.headers.append_raw(
                 "set-cookie",
                 "secure_strict=1; Path=/; Secure; SameSite=Strict",
@@ -109,7 +108,10 @@ fn same_site_get_navigation_sends_strict_cookie_and_absorbs_response_cookie() {
     );
     assert_eq!(browser.document().title().as_deref(), Some("Loaded"));
 
-    let visible = browser.cookie_jar().borrow().get_document_cookie(browser.url(), 0);
+    let visible = browser
+        .cookie_jar()
+        .borrow()
+        .get_document_cookie(browser.url(), 0);
     assert!(visible.contains("strict=s"), "{visible}");
     assert!(visible.contains("seen=1"), "{visible}");
 }

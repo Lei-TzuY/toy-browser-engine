@@ -54,10 +54,7 @@ fn one_secure_response_updates_hsts_and_cookie_session_state() {
     transport.respond("https://example.test/bootstrap", response);
 
     let session = SessionNetwork::with_new_state(transport.clone(), clock);
-    session.start(
-        1,
-        FetchRequest::get(url("https://example.test/bootstrap")),
-    );
+    session.start(1, FetchRequest::get(url("https://example.test/bootstrap")));
     let completed = session.poll();
 
     assert_eq!(completed.len(), 1);
@@ -74,7 +71,10 @@ fn one_secure_response_updates_hsts_and_cookie_session_state() {
 
     session.start(2, FetchRequest::get(url("http://example.test/next")));
     let seen = transport.requests();
-    assert_eq!(seen.last().unwrap().url.to_string(), "https://example.test/next");
+    assert_eq!(
+        seen.last().unwrap().url.to_string(),
+        "https://example.test/next"
+    );
     assert_eq!(
         seen.last().unwrap().headers.get("cookie").as_deref(),
         Some("sid=learned")

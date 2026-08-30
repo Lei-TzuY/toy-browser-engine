@@ -13,7 +13,8 @@ fn run_js(js: &str) -> Document {
 
 #[test]
 fn test_crypto_random_uuid_and_get_random_values() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let uuid = crypto.randomUUID();
         console.log("uuid_len:" + uuid.length);
         console.log("uuid_valid:" + (uuid.indexOf("-") > 0));
@@ -22,7 +23,8 @@ fn test_crypto_random_uuid_and_get_random_values() {
         let filled = crypto.getRandomValues(arr);
         console.log("arr_len:" + filled.length);
         console.log("has_nonzero:" + (filled[0] >= 0));
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "uuid_len:36");

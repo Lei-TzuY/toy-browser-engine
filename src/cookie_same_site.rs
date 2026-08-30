@@ -82,10 +82,7 @@ pub const fn same_site_allows(policy: SameSite, context: SameSiteRequestContext)
 }
 
 /// Convenience wrapper for a stored cookie.
-pub const fn cookie_allows_request(
-    cookie: &Cookie,
-    context: SameSiteRequestContext,
-) -> bool {
+pub const fn cookie_allows_request(cookie: &Cookie, context: SameSiteRequestContext) -> bool {
     same_site_allows(cookie.same_site, context)
 }
 

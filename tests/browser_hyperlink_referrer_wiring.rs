@@ -62,12 +62,8 @@ impl ResourceLoader for LinkLoader {
         self.requests.lock().unwrap().push(request.clone());
 
         if request.url.path() == "/redirect" {
-            let mut response = FetchResponse::synthetic(
-                request.url.clone(),
-                302,
-                Some("text/plain"),
-                Vec::new(),
-            );
+            let mut response =
+                FetchResponse::synthetic(request.url.clone(), 302, Some("text/plain"), Vec::new());
             response
                 .headers
                 .insert_raw("location", "https://target.test/final");

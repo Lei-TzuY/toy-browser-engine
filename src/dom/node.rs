@@ -120,7 +120,9 @@ impl ElementData {
     }
 
     /// Get or lazily create the 2D rendering context for this canvas element.
-    pub fn canvas_context(&mut self) -> std::rc::Rc<std::cell::RefCell<crate::canvas::CanvasContext2D>> {
+    pub fn canvas_context(
+        &mut self,
+    ) -> std::rc::Rc<std::cell::RefCell<crate::canvas::CanvasContext2D>> {
         if let Some(c) = &self.canvas {
             return c.clone();
         }
@@ -132,7 +134,9 @@ impl ElementData {
             .get_attr("height")
             .and_then(|s| s.trim().trim_end_matches("px").parse::<u32>().ok())
             .unwrap_or(150);
-        let ctx = std::rc::Rc::new(std::cell::RefCell::new(crate::canvas::CanvasContext2D::new(w, h)));
+        let ctx = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::canvas::CanvasContext2D::new(w, h),
+        ));
         self.canvas = Some(ctx.clone());
         ctx
     }
@@ -511,13 +515,19 @@ mod tests {
         assert!(script.start_script_once());
         assert!(!script.start_script_once());
         let mut clone = script.clone();
-        assert!(clone.start_script_once(), "cloneNode-style clones are new script elements");
+        assert!(
+            clone.start_script_once(),
+            "cloneNode-style clones are new script elements"
+        );
 
         let mut link = ElementData::new("link", vec![("href".into(), "a.css".into())]);
         assert!(link.start_stylesheet_once());
         assert!(!link.start_stylesheet_once());
         let mut clone = link.clone();
-        assert!(clone.start_stylesheet_once(), "cloned links get their own load lifecycle");
+        assert!(
+            clone.start_stylesheet_once(),
+            "cloned links get their own load lifecycle"
+        );
     }
 
     #[test]

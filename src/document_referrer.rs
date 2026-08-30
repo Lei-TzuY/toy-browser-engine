@@ -131,11 +131,8 @@ impl DocumentReferrerContext {
         request: &FetchRequest,
         context: SameSiteRequestContext,
     ) -> Result<(FetchResponse, DocumentReferrerContext), FetchError> {
-        let response = network.fetch_with_referrer(
-            request,
-            context,
-            Some(self.redirect_state()),
-        )?;
+        let response =
+            network.fetch_with_referrer(request, context, Some(self.redirect_state()))?;
         let next = Self::from_response(&response);
         Ok((response, next))
     }
@@ -261,9 +258,8 @@ mod tests {
             Vec::new(),
         );
         response.headers.append_raw("referrer-policy", "origin");
-        let dom = parse_html(
-            r#"<html><head><meta name="referrer" content="no-referrer"></head></html>"#,
-        );
+        let dom =
+            parse_html(r#"<html><head><meta name="referrer" content="no-referrer"></head></html>"#);
 
         let context = DocumentReferrerContext::from_response_and_document(&response, &dom);
         assert_eq!(context.policy(), ReferrerPolicy::NoReferrer);

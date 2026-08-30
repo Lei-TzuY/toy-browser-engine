@@ -28,8 +28,5 @@ fn submit_listener_can_change_the_submitter_destination_before_navigation() {
 
     let outcome = browser.click_node(&go);
     assert!(matches!(outcome, ClickOutcome::Navigated(_)), "{outcome:?}");
-    assert_eq!(
-        browser.url().to_string(),
-        "demo:///new?q=live&intent=save"
-    );
+    assert_eq!(browser.url().to_string(), "demo:///new?q=live&intent=save");
 }

@@ -62,11 +62,8 @@ impl ResourceLoader for ReferrerLoader {
                 b"done".to_vec(),
             )),
             ("hsts.test", "/start") => {
-                let mut response = Self::redirect(
-                    request,
-                    "http://hsts.test/final",
-                    "strict-origin",
-                );
+                let mut response =
+                    Self::redirect(request, "http://hsts.test/final", "strict-origin");
                 response
                     .headers
                     .append_raw("strict-transport-security", "max-age=60");
@@ -90,7 +87,9 @@ impl ResourceLoader for ReferrerLoader {
 
 fn navigation(loader: Arc<ReferrerLoader>) -> NavigationNetwork {
     let clock = Rc::new(ManualClock::new());
-    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(clock.clone())));
+    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(
+        clock.clone(),
+    )));
     let hsts = Rc::new(std::cell::RefCell::new(HstsCache::new()));
     NavigationNetwork::new(loader, jar, hsts, clock)
 }
@@ -100,10 +99,8 @@ fn redirect_policy_recomputes_referer_from_original_source() {
     let loader = Arc::new(ReferrerLoader::default());
     let network = navigation(loader.clone());
     let source = url("https://source.test/private/page?q=1#secret");
-    let state = RedirectReferrerState::new(
-        Some(source),
-        ReferrerPolicy::StrictOriginWhenCrossOrigin,
-    );
+    let state =
+        RedirectReferrerState::new(Some(source), ReferrerPolicy::StrictOriginWhenCrossOrigin);
 
     let response = network
         .get_with_referrer(
@@ -133,9 +130,8 @@ fn redirect_policy_recomputes_referer_from_original_source() {
 fn redirect_no_referrer_policy_suppresses_the_next_hop() {
     let loader = Arc::new(ReferrerLoader::default());
     let network = navigation(loader.clone());
-    let state = RedirectReferrerState::from_source(url(
-        "https://source.test/private/page?q=1#secret",
-    ));
+    let state =
+        RedirectReferrerState::from_source(url("https://source.test/private/page?q=1#secret"));
 
     network
         .get_with_referrer(

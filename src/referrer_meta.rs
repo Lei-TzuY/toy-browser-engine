@@ -103,9 +103,7 @@ mod tests {
 
     #[test]
     fn legacy_default_restores_the_modern_default() {
-        let dom = parse_html(
-            r#"<meta name="referrer" content="default">"#,
-        );
+        let dom = parse_html(r#"<meta name="referrer" content="default">"#);
         assert_eq!(
             apply_meta_referrer_policies(&dom, ReferrerPolicy::NoReferrer),
             ReferrerPolicy::default()
@@ -114,9 +112,7 @@ mod tests {
 
     #[test]
     fn meta_matching_is_case_insensitive() {
-        let dom = parse_html(
-            r#"<META NAME="ReFeRrEr" CONTENT="STRICT-ORIGIN">"#,
-        );
+        let dom = parse_html(r#"<META NAME="ReFeRrEr" CONTENT="STRICT-ORIGIN">"#);
         assert_eq!(
             apply_meta_referrer_policies(&dom, ReferrerPolicy::UnsafeUrl),
             ReferrerPolicy::StrictOrigin
@@ -137,9 +133,7 @@ mod tests {
 
     #[test]
     fn empty_or_missing_content_does_not_change_policy() {
-        let dom = parse_html(
-            r#"<meta name="referrer"><meta name="referrer" content="">"#,
-        );
+        let dom = parse_html(r#"<meta name="referrer"><meta name="referrer" content="">"#);
         assert_eq!(
             apply_meta_referrer_policies(&dom, ReferrerPolicy::SameOrigin),
             ReferrerPolicy::SameOrigin

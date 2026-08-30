@@ -287,7 +287,9 @@ impl TimingFunction {
             TimingFunction::EaseIn => cubic_bezier_solve(0.42, 0.0, 1.0, 1.0, p),
             TimingFunction::EaseOut => cubic_bezier_solve(0.0, 0.0, 0.58, 1.0, p),
             TimingFunction::EaseInOut => cubic_bezier_solve(0.42, 0.0, 0.58, 1.0, p),
-            TimingFunction::CubicBezier(x1, y1, x2, y2) => cubic_bezier_solve(*x1, *y1, *x2, *y2, p),
+            TimingFunction::CubicBezier(x1, y1, x2, y2) => {
+                cubic_bezier_solve(*x1, *y1, *x2, *y2, p)
+            }
         }
     }
 }
@@ -298,7 +300,8 @@ pub fn cubic_bezier_solve(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
     let mut t = x.clamp(0.0, 1.0);
 
     for _ in 0..16 {
-        let sample = 3.0 * (1.0 - t).powi(2) * t * x1 + 3.0 * (1.0 - t) * t.powi(2) * x2 + t.powi(3);
+        let sample =
+            3.0 * (1.0 - t).powi(2) * t * x1 + 3.0 * (1.0 - t) * t.powi(2) * x2 + t.powi(3);
         if (sample - x).abs() < 1e-4 {
             break;
         }
@@ -420,7 +423,11 @@ pub fn parse_filter(input: &str) -> Option<Vec<FilterFunction>> {
 
         match fname.as_str() {
             "blur" => {
-                let px = arg.trim_end_matches("px").trim().parse::<f32>().unwrap_or(0.0);
+                let px = arg
+                    .trim_end_matches("px")
+                    .trim()
+                    .parse::<f32>()
+                    .unwrap_or(0.0);
                 funcs.push(FilterFunction::Blur(px));
             }
             "grayscale" => {
@@ -537,9 +544,11 @@ impl Value {
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
             Value::Animation(_) => "animation(...)".to_string(),
-            Value::Filter(funcs) => {
-                funcs.iter().map(|f| f.to_css_string()).collect::<Vec<_>>().join(" ")
-            }
+            Value::Filter(funcs) => funcs
+                .iter()
+                .map(|f| f.to_css_string())
+                .collect::<Vec<_>>()
+                .join(" "),
         }
     }
 }
@@ -1492,7 +1501,9 @@ impl Parser {
             let position = if self.peek().is_ascii_digit() || self.peek() == '.' {
                 let num_s = self.consume_while(|c| c.is_ascii_digit() || c == '.');
                 let num: f32 = num_s.parse().unwrap_or(0.0);
-                let unit = self.consume_while(|c| c.is_alphabetic() || c == '%').to_ascii_lowercase();
+                let unit = self
+                    .consume_while(|c| c.is_alphabetic() || c == '%')
+                    .to_ascii_lowercase();
                 if unit == "%" {
                     Some(num / 100.0)
                 } else if unit == "deg" {
@@ -1518,7 +1529,10 @@ impl Parser {
         if self.peek() == ')' {
             self.consume();
         }
-        Value::ConicGradient(ConicGradient { from_angle_deg, stops })
+        Value::ConicGradient(ConicGradient {
+            from_angle_deg,
+            stops,
+        })
     }
 
     // ── Declaration parsing ───────────────────────────────────────────────
@@ -1663,7 +1677,11 @@ impl Parser {
                 let ratio = if let Some((w, h)) = raw.split_once('/') {
                     let w: f32 = w.trim().parse().unwrap_or(1.0);
                     let h: f32 = h.trim().parse().unwrap_or(1.0);
-                    if h > 0.0 { w / h } else { 1.0 }
+                    if h > 0.0 {
+                        w / h
+                    } else {
+                        1.0
+                    }
                 } else {
                     raw.trim().parse().unwrap_or(1.0)
                 };
@@ -1769,7 +1787,10 @@ impl Parser {
                 if let Some(filters) = parse_filter(&raw) {
                     vec![Declaration::new(name, Value::Filter(filters))]
                 } else {
-                    vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
+                    vec![Declaration::new(
+                        name,
+                        Value::Keyword(raw.trim().to_string()),
+                    )]
                 }
             }
             _ => vec![Declaration::new(name, first_value)],
@@ -2042,9 +2063,14 @@ impl Parser {
             self.consume();
         }
 
-        steps.sort_by(|a, b| a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal));
+        steps.sort_by(|a, b| {
+            a.offset
+                .partial_cmp(&b.offset)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if !name.is_empty() {
-            self.keyframes.insert(name.clone(), KeyframeRule { name, steps });
+            self.keyframes
+                .insert(name.clone(), KeyframeRule { name, steps });
         }
     }
 
@@ -2291,7 +2317,8 @@ pub fn expand_grid_template_tracks_with_width(
             let inner = &token_trim[7..token_trim.len() - 1];
             if let Some((count_str, track_spec)) = inner.split_once(',') {
                 let count_kw = count_str.trim().to_ascii_lowercase();
-                let sub_tracks = expand_grid_template_tracks_with_width(track_spec.trim(), container_width, gap);
+                let sub_tracks =
+                    expand_grid_template_tracks_with_width(track_spec.trim(), container_width, gap);
                 let count = if count_kw == "auto-fill" || count_kw == "auto-fit" {
                     if let Some(w) = container_width {
                         let mut min_track_px = 0.0f32;
@@ -2361,12 +2388,16 @@ pub fn evaluate_supports_condition(cond: &str) -> bool {
 
     // Check for ' or '
     if s.contains(" or ") {
-        return s.split(" or ").any(|part| evaluate_supports_condition(part.trim()));
+        return s
+            .split(" or ")
+            .any(|part| evaluate_supports_condition(part.trim()));
     }
 
     // Check for ' and '
     if s.contains(" and ") {
-        return s.split(" and ").all(|part| evaluate_supports_condition(part.trim()));
+        return s
+            .split(" and ")
+            .all(|part| evaluate_supports_condition(part.trim()));
     }
 
     // Single declaration: e.g. (display: grid)
@@ -2391,24 +2422,41 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
             v.as_str(),
             "none" | "block" | "inline" | "inline-block" | "flex" | "grid"
         ),
-        "flex-direction" => matches!(v.as_str(), "row" | "row-reverse" | "column" | "column-reverse"),
+        "flex-direction" => matches!(
+            v.as_str(),
+            "row" | "row-reverse" | "column" | "column-reverse"
+        ),
         "flex-wrap" => matches!(v.as_str(), "nowrap" | "wrap" | "wrap-reverse"),
         "flex-flow" => true,
         "justify-content" | "align-items" | "align-self" | "justify-items" | "justify-self" => true,
         "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height" => true,
         "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left" => true,
         "padding" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => true,
-        "border" | "border-top" | "border-right" | "border-bottom" | "border-left" | "border-width" | "border-color" | "border-style" => true,
+        "border" | "border-top" | "border-right" | "border-bottom" | "border-left"
+        | "border-width" | "border-color" | "border-style" => true,
         "border-radius" => true,
         "color" | "background" | "background-color" => true,
         "opacity" | "transform" | "transition" | "animation" | "box-shadow" | "filter" => true,
-        "grid-template-columns" | "grid-template-rows" | "grid-column" | "grid-row" | "gap" | "row-gap" | "column-gap" => true,
-        "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" => true,
-        "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
-        "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
+        "grid-template-columns"
+        | "grid-template-rows"
+        | "grid-column"
+        | "grid-row"
+        | "gap"
+        | "row-gap"
+        | "column-gap" => true,
+        "font-size" | "font-weight" | "font-family" | "line-height" | "text-align"
+        | "text-decoration" => true,
+        "overflow" | "overflow-x" | "overflow-y" => {
+            matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto")
+        }
+        "position" => matches!(
+            v.as_str(),
+            "static" | "relative" | "absolute" | "fixed" | "sticky"
+        ),
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
         "aspect-ratio" => true,
-        "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
+        "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space"
+        | "text-transform" => true,
         _ => false,
     }
 }
@@ -2594,7 +2642,9 @@ pub fn parse_timing_func(s: &str) -> Option<TimingFunction> {
                 .filter_map(|p| p.trim().parse::<f32>().ok())
                 .collect();
             if parts.len() == 4 {
-                Some(TimingFunction::CubicBezier(parts[0], parts[1], parts[2], parts[3]))
+                Some(TimingFunction::CubicBezier(
+                    parts[0], parts[1], parts[2], parts[3],
+                ))
             } else {
                 None
             }
@@ -2668,7 +2718,10 @@ pub fn parse_transition_value(raw: &str) -> Vec<TransitionSpec> {
 
         for token in &tokens {
             if let Some(time) = parse_time_to_ms(token) {
-                if token.ends_with('s') || token.ends_with("ms") || token.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                if token.ends_with('s')
+                    || token.ends_with("ms")
+                    || token.chars().all(|c| c.is_ascii_digit() || c == '.')
+                {
                     if !found_duration {
                         duration_ms = time;
                         found_duration = true;

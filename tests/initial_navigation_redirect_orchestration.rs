@@ -1,9 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use browser_engine::browser::Browser;
-use browser_engine::net::{
-    FetchRequest, FetchResponse, LoadError, Resource, ResourceLoader, Url,
-};
+use browser_engine::net::{FetchRequest, FetchResponse, LoadError, Resource, ResourceLoader, Url};
 
 fn url(input: &str) -> Url {
     Url::parse(input).expect("valid URL")
@@ -51,10 +49,9 @@ impl ResourceLoader for RedirectingDocumentLoader {
                     Vec::new(),
                 );
                 response.headers.insert_raw("location", "/final");
-                response.headers.insert_raw(
-                    "set-cookie",
-                    "bootstrap=ready; Path=/; SameSite=Strict",
-                );
+                response
+                    .headers
+                    .insert_raw("set-cookie", "bootstrap=ready; Path=/; SameSite=Strict");
                 response
             }
             "/final" if self.final_status == 200 => FetchResponse::synthetic(

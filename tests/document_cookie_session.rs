@@ -68,12 +68,15 @@ fn external_bootstrap_script_uses_the_same_shared_jar() {
     );
 
     assert_eq!(text(&document, "seen"), "before=load");
+    assert!(jar
+        .borrow()
+        .get_document_cookie(&url, 0)
+        .contains("external=yes"));
     assert!(
-        jar.borrow()
-            .get_document_cookie(&url, 0)
-            .contains("external=yes")
+        document.diagnostics.is_empty(),
+        "{:?}",
+        document.diagnostics
     );
-    assert!(document.diagnostics.is_empty(), "{:?}", document.diagnostics);
 }
 
 #[test]
@@ -92,13 +95,8 @@ fn session_state_loader_installs_jar_before_scripts_run() {
     seeded.set_document_cookie("loaded=yes; Path=/", &url, 0);
     let jar = Rc::new(RefCell::new(seeded));
 
-    let document = Document::load_with_session_state(
-        &url,
-        &loader,
-        None,
-        Some(jar.clone()),
-    )
-    .expect("document loads");
+    let document = Document::load_with_session_state(&url, &loader, None, Some(jar.clone()))
+        .expect("document loads");
 
     assert_eq!(text(&document, "cookie"), "loaded=yes");
     assert!(Rc::ptr_eq(&document.runtime.cookie_jar, &jar));
@@ -123,7 +121,11 @@ fn omitting_cookie_session_keeps_standalone_document_isolated() {
 
     assert_eq!(text(&document, "cookie"), "");
     assert_eq!(
-        document.runtime.cookie_jar.borrow().get_document_cookie(&url, 0),
+        document
+            .runtime
+            .cookie_jar
+            .borrow()
+            .get_document_cookie(&url, 0),
         "private=one"
     );
 }

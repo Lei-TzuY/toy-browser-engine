@@ -32,7 +32,10 @@ fn default_fetch_once_preserves_custom_fetch_overrides() {
 
     assert_eq!(response.status, 299);
     assert_eq!(response.body, b"custom-fetch");
-    assert_eq!(response.headers.get("x-custom-fetch").as_deref(), Some("yes"));
+    assert_eq!(
+        response.headers.get("x-custom-fetch").as_deref(),
+        Some("yes")
+    );
 }
 
 #[test]
@@ -58,7 +61,10 @@ fn http_loader_fetch_once_exposes_an_intermediate_redirect() {
 
     assert_eq!(response.status, 302);
     assert_eq!(response.url, start);
-    assert_eq!(response.headers.get("location").as_deref(), Some("/final.txt"));
+    assert_eq!(
+        response.headers.get("location").as_deref(),
+        Some("/final.txt")
+    );
     assert!(!response.redirected);
     server.join().unwrap();
 }

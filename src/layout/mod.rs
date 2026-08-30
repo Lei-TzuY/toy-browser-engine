@@ -1031,8 +1031,8 @@ impl<'a> LayoutBox<'a> {
             container.content.y
         };
 
-        let total_cross_lines: f32 = line_cross.iter().sum::<f32>()
-            + cross_gap * line_cross.len().saturating_sub(1) as f32;
+        let total_cross_lines: f32 =
+            line_cross.iter().sum::<f32>() + cross_gap * line_cross.len().saturating_sub(1) as f32;
         let is_wrap_reverse = self.flex_wrap_reverse();
 
         let mut line_cross_offsets = Vec::with_capacity(lines.len());
@@ -1620,9 +1620,18 @@ impl<'a> LayoutBox<'a> {
                     );
                     if border_box {
                         let d = &self.dimensions;
-                        let full_w = d.content.width + d.padding.left + d.padding.right + d.border.left + d.border.right;
+                        let full_w = d.content.width
+                            + d.padding.left
+                            + d.padding.right
+                            + d.border.left
+                            + d.border.right;
                         let full_h = full_w / ratio;
-                        self.dimensions.content.height = (full_h - d.border.top - d.border.bottom - d.padding.top - d.padding.bottom).max(0.0);
+                        self.dimensions.content.height = (full_h
+                            - d.border.top
+                            - d.border.bottom
+                            - d.padding.top
+                            - d.padding.bottom)
+                            .max(0.0);
                     } else {
                         self.dimensions.content.height = self.dimensions.content.width / ratio;
                     }
@@ -1658,8 +1667,10 @@ impl<'a> LayoutBox<'a> {
         let row_gap = style.value("row-gap").map(|v| v.to_px()).unwrap_or(gap);
         let col_gap = style.value("column-gap").map(|v| v.to_px()).unwrap_or(gap);
 
-        let container_justify_items = parse_alignment_keyword(Some(style), "justify-items").unwrap_or("stretch");
-        let container_align_items = parse_alignment_keyword(Some(style), "align-items").unwrap_or("stretch");
+        let container_justify_items =
+            parse_alignment_keyword(Some(style), "justify-items").unwrap_or("stretch");
+        let container_align_items =
+            parse_alignment_keyword(Some(style), "align-items").unwrap_or("stretch");
 
         // Parse grid-template-columns and grid-template-rows
         let col_spec = match style.value("grid-template-columns") {
@@ -1672,7 +1683,11 @@ impl<'a> LayoutBox<'a> {
         };
 
         let container_w = self.dimensions.content.width;
-        let col_tokens = crate::css::expand_grid_template_tracks_with_width(&col_spec, Some(container_w), col_gap);
+        let col_tokens = crate::css::expand_grid_template_tracks_with_width(
+            &col_spec,
+            Some(container_w),
+            col_gap,
+        );
         let row_tokens = if row_spec.is_empty() {
             Vec::new()
         } else {
@@ -1704,8 +1719,10 @@ impl<'a> LayoutBox<'a> {
         let mut pending = Vec::new();
         for (i, child) in self.children.iter().enumerate() {
             let (c_req, c_span, r_req, r_span) = parse_grid_item_placement(child.style());
-            let j_self = parse_alignment_keyword(child.style(), "justify-self").unwrap_or(container_justify_items);
-            let a_self = parse_alignment_keyword(child.style(), "align-self").unwrap_or(container_align_items);
+            let j_self = parse_alignment_keyword(child.style(), "justify-self")
+                .unwrap_or(container_justify_items);
+            let a_self = parse_alignment_keyword(child.style(), "align-self")
+                .unwrap_or(container_align_items);
             pending.push(PendingItem {
                 child_idx: i,
                 col_req: c_req,
@@ -1872,7 +1889,11 @@ impl<'a> LayoutBox<'a> {
         placements.sort_by_key(|p| p.child_idx);
 
         // 2. Determine column widths
-        let max_col_used = placements.iter().map(|p| p.col + p.col_span).max().unwrap_or(0);
+        let max_col_used = placements
+            .iter()
+            .map(|p| p.col + p.col_span)
+            .max()
+            .unwrap_or(0);
         let num_cols = num_template_cols.max(max_col_used);
 
         let container_w = self.dimensions.content.width;
@@ -1892,12 +1913,17 @@ impl<'a> LayoutBox<'a> {
                 if let Some((min_s, max_s)) = inner.split_once(',') {
                     let min_px = crate::css::parser::parse_min_track_size(min_s);
                     if max_s.trim().ends_with("fr") {
-                        let weight: f32 = max_s.trim().trim_end_matches("fr").parse().unwrap_or(1.0);
+                        let weight: f32 =
+                            max_s.trim().trim_end_matches("fr").parse().unwrap_or(1.0);
                         fr_total += weight;
                         col_widths[i] = min_px;
                         allocated_w += min_px;
                     } else if max_s.trim().ends_with("px") {
-                        let px: f32 = max_s.trim().trim_end_matches("px").parse().unwrap_or(min_px);
+                        let px: f32 = max_s
+                            .trim()
+                            .trim_end_matches("px")
+                            .parse()
+                            .unwrap_or(min_px);
                         col_widths[i] = px;
                         allocated_w += px;
                     } else {
@@ -1977,7 +2003,11 @@ impl<'a> LayoutBox<'a> {
         }
 
         // 3. Determine row count and heights
-        let max_row_used = placements.iter().map(|p| p.row + p.row_span).max().unwrap_or(0);
+        let max_row_used = placements
+            .iter()
+            .map(|p| p.row + p.row_span)
+            .max()
+            .unwrap_or(0);
         let num_rows = row_tokens.len().max(max_row_used).max(1);
 
         let mut row_heights = vec![0.0f32; num_rows];
@@ -1996,7 +2026,9 @@ impl<'a> LayoutBox<'a> {
 
         // Measure children across cells
         for p in &placements {
-            let cell_w = (p.col..p.col + p.col_span).map(|c| col_widths[c]).sum::<f32>()
+            let cell_w = (p.col..p.col + p.col_span)
+                .map(|c| col_widths[c])
+                .sum::<f32>()
                 + col_gap * (p.col_span.saturating_sub(1) as f32);
 
             let cell_containing = Dimensions {
@@ -2031,14 +2063,16 @@ impl<'a> LayoutBox<'a> {
 
         // 4. Final layout and alignment pass
         for p in &placements {
-            let cell_x = grid_x
-                + (0..p.col).map(|c| col_widths[c] + col_gap).sum::<f32>();
-            let cell_w = (p.col..p.col + p.col_span).map(|c| col_widths[c]).sum::<f32>()
+            let cell_x = grid_x + (0..p.col).map(|c| col_widths[c] + col_gap).sum::<f32>();
+            let cell_w = (p.col..p.col + p.col_span)
+                .map(|c| col_widths[c])
+                .sum::<f32>()
                 + col_gap * (p.col_span.saturating_sub(1) as f32);
 
-            let cell_y = grid_y
-                + (0..p.row).map(|r| row_heights[r] + row_gap).sum::<f32>();
-            let cell_h = (p.row..p.row + p.row_span).map(|r| row_heights[r]).sum::<f32>()
+            let cell_y = grid_y + (0..p.row).map(|r| row_heights[r] + row_gap).sum::<f32>();
+            let cell_h = (p.row..p.row + p.row_span)
+                .map(|r| row_heights[r])
+                .sum::<f32>()
                 + row_gap * (p.row_span.saturating_sub(1) as f32);
 
             let cell_containing = Dimensions {
@@ -2070,13 +2104,25 @@ impl<'a> LayoutBox<'a> {
                 _ => 0.0,
             };
 
-            if p.justify_self == "stretch" && child.style().and_then(|s| s.value("width")).is_none() {
-                let h_edges = d.margin.left + d.margin.right + d.border.left + d.border.right + d.padding.left + d.padding.right;
+            if p.justify_self == "stretch" && child.style().and_then(|s| s.value("width")).is_none()
+            {
+                let h_edges = d.margin.left
+                    + d.margin.right
+                    + d.border.left
+                    + d.border.right
+                    + d.padding.left
+                    + d.padding.right;
                 child.dimensions.content.width = (cell_w - h_edges).max(d.content.width);
             }
 
-            if p.align_self == "stretch" && child.style().and_then(|s| s.value("height")).is_none() {
-                let v_edges = d.margin.top + d.margin.bottom + d.border.top + d.border.bottom + d.padding.top + d.padding.bottom;
+            if p.align_self == "stretch" && child.style().and_then(|s| s.value("height")).is_none()
+            {
+                let v_edges = d.margin.top
+                    + d.margin.bottom
+                    + d.border.top
+                    + d.border.bottom
+                    + d.padding.top
+                    + d.padding.bottom;
                 child.dimensions.content.height = (cell_h - v_edges).max(d.content.height);
             }
 

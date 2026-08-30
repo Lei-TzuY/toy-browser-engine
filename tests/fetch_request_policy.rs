@@ -13,12 +13,8 @@ fn response(
     allow_origin: Option<&str>,
     allow_credentials: Option<&str>,
 ) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(endpoint),
-        200,
-        Some("text/plain"),
-        b"ok".to_vec(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url(endpoint), 200, Some("text/plain"), b"ok".to_vec());
     if let Some(value) = allow_origin {
         response
             .headers
@@ -82,7 +78,10 @@ fn request_cors_mode_is_visible_cloned_and_used_by_fetch_request() {
 
     assert_eq!(transport.complete_all(), 1);
     browser.tick();
-    assert_eq!(browser.document().runtime.console, vec!["cors", "cors", "ok"]);
+    assert_eq!(
+        browser.document().runtime.console,
+        vec!["cors", "cors", "ok"]
+    );
 }
 
 #[test]
@@ -128,7 +127,10 @@ fn fetch_init_can_override_mode_without_mutating_the_request() {
     assert_eq!(browser.tick().requests_sent, 1);
     assert_eq!(transport.complete_all(), 1);
     browser.tick();
-    assert_eq!(browser.document().runtime.console, vec!["same-origin", "ok"]);
+    assert_eq!(
+        browser.document().runtime.console,
+        vec!["same-origin", "ok"]
+    );
 }
 
 #[test]
@@ -164,15 +166,27 @@ fn credentialed_cors_request_sends_and_stores_cookies_with_exact_permission() {
         0,
     ));
 
-    assert_eq!(browser.document().runtime.console, vec!["include", "include"]);
+    assert_eq!(
+        browser.document().runtime.console,
+        vec!["include", "include"]
+    );
     assert_eq!(browser.tick().requests_sent, 1);
     let sent = transport.requests();
-    assert_eq!(sent[0].headers.get("origin").as_deref(), Some("http://page.test:8000"));
-    assert_eq!(sent[0].headers.get("cookie").as_deref(), Some("session=old"));
+    assert_eq!(
+        sent[0].headers.get("origin").as_deref(),
+        Some("http://page.test:8000")
+    );
+    assert_eq!(
+        sent[0].headers.get("cookie").as_deref(),
+        Some("session=old")
+    );
 
     assert_eq!(transport.complete_all(), 1);
     browser.tick();
-    assert_eq!(browser.document().runtime.console, vec!["include", "include", "ok"]);
+    assert_eq!(
+        browser.document().runtime.console,
+        vec!["include", "include", "ok"]
+    );
 
     let stored = jar
         .borrow()

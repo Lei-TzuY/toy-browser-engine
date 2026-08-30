@@ -31,7 +31,10 @@ fn test_box_sizing_border_box_vs_content_box() {
     let styled = style_tree(&doc, &stylesheet);
     let layout = layout_tree(&styled, 800.0);
 
-    fn find_by_class<'a, 'b>(lb: &'b browser_engine::layout::LayoutBox<'a>, class: &str) -> Option<&'b browser_engine::layout::LayoutBox<'a>> {
+    fn find_by_class<'a, 'b>(
+        lb: &'b browser_engine::layout::LayoutBox<'a>,
+        class: &str,
+    ) -> Option<&'b browser_engine::layout::LayoutBox<'a>> {
         if let Some(s) = lb.styled_node() {
             if let browser_engine::dom::NodeType::Element(e) = &s.node.node_type {
                 if e.get_attr("class") == Some(class) {

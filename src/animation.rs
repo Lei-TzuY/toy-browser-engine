@@ -104,7 +104,8 @@ impl ActiveAnimation {
                 } else {
                     let cycle_index = (elapsed / duration).floor() as u64;
                     let raw_cycle_progress = ((elapsed % duration) / duration) as f32;
-                    let dir_progress = self.apply_direction_at_cycle(cycle_index, raw_cycle_progress);
+                    let dir_progress =
+                        self.apply_direction_at_cycle(cycle_index, raw_cycle_progress);
                     Some(self.spec.timing_function.evaluate(dir_progress))
                 }
             }
@@ -221,12 +222,7 @@ impl AnimationManager {
         self.walk_and_apply(root, stylesheet, now_ms);
     }
 
-    fn walk_and_apply(
-        &mut self,
-        node: &mut StyledNode<'_>,
-        stylesheet: &Stylesheet,
-        now_ms: f64,
-    ) {
+    fn walk_and_apply(&mut self, node: &mut StyledNode<'_>, stylesheet: &Stylesheet, now_ms: f64) {
         if let Some(element) = node.node.as_element() {
             let elem_id = element.element_id();
             self.process_element(elem_id, &mut node.specified_values, stylesheet, now_ms);

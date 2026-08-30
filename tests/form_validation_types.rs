@@ -8,11 +8,7 @@ fn browser_for(html: &str) -> Browser {
     let mut loader = MemoryLoader::new();
     loader.insert("demo:///form.html", html);
     loader.insert("demo:///next", "<title>Next</title>");
-    Browser::open(
-        Box::new(loader),
-        &Url::parse("demo:///form.html").unwrap(),
-    )
-    .unwrap()
+    Browser::open(Box::new(loader), &Url::parse("demo:///form.html").unwrap()).unwrap()
 }
 
 fn set_live_value(browser: &mut Browser, id: &str, value: &str) {
@@ -44,7 +40,10 @@ fn invalid_email_blocks_interactive_submission_but_valid_email_navigates() {
     </form>"#;
     let mut browser = browser_for(html);
     let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(
         browser.url().to_string(),
         "demo:///next?email=person%40example.com"
@@ -76,6 +75,9 @@ fn number_step_mismatch_blocks_submission_until_the_value_is_on_grid() {
     let mut browser = browser_for(html);
     set_live_value(&mut browser, "qty", "4");
     let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?qty=4");
 }

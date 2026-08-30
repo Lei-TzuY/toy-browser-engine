@@ -11,43 +11,26 @@ fn http(path: &str) -> Url {
 
 #[test]
 fn secure_cookie_cannot_be_established_over_cleartext_http() {
-    assert!(CookieJar::parse_set_cookie(
-        "sid=abc; Path=/; Secure",
-        &http("/login"),
-        0,
-    )
-    .is_none());
+    assert!(CookieJar::parse_set_cookie("sid=abc; Path=/; Secure", &http("/login"), 0,).is_none());
 
-    let cookie = CookieJar::parse_set_cookie(
-        "sid=abc; Path=/; Secure",
-        &https("/login"),
-        0,
-    )
-    .expect("HTTPS may establish Secure cookies");
+    let cookie = CookieJar::parse_set_cookie("sid=abc; Path=/; Secure", &https("/login"), 0)
+        .expect("HTTPS may establish Secure cookies");
     assert!(cookie.secure);
 }
 
 #[test]
 fn same_site_none_requires_secure_transport_and_secure_attribute() {
-    assert!(CookieJar::parse_set_cookie(
-        "cross=1; Path=/; SameSite=None",
-        &https("/"),
-        0,
-    )
-    .is_none());
-    assert!(CookieJar::parse_set_cookie(
-        "cross=1; Path=/; SameSite=None; Secure",
-        &http("/"),
-        0,
-    )
-    .is_none());
+    assert!(
+        CookieJar::parse_set_cookie("cross=1; Path=/; SameSite=None", &https("/"), 0,).is_none()
+    );
+    assert!(
+        CookieJar::parse_set_cookie("cross=1; Path=/; SameSite=None; Secure", &http("/"), 0,)
+            .is_none()
+    );
 
-    let cookie = CookieJar::parse_set_cookie(
-        "cross=1; Path=/; SameSite=None; Secure",
-        &https("/"),
-        0,
-    )
-    .expect("secure SameSite=None cookie");
+    let cookie =
+        CookieJar::parse_set_cookie("cross=1; Path=/; SameSite=None; Secure", &https("/"), 0)
+            .expect("secure SameSite=None cookie");
     assert_eq!(cookie.same_site, SameSite::None);
     assert!(cookie.secure);
 }
@@ -56,26 +39,17 @@ fn same_site_none_requires_secure_transport_and_secure_attribute() {
 fn secure_prefix_is_enforced_case_insensitively_by_the_user_agent() {
     for name in ["__Secure-id", "__secure-id", "__SECURE-id", "__SeCuRe-id"] {
         assert!(
-            CookieJar::parse_set_cookie(&format!("{name}=1; Path=/"), &https("/"), 0)
-                .is_none(),
+            CookieJar::parse_set_cookie(&format!("{name}=1; Path=/"), &https("/"), 0).is_none(),
             "UA accepted prefixed cookie without Secure: {name}"
         );
         assert!(
-            CookieJar::parse_set_cookie(
-                &format!("{name}=1; Path=/; Secure"),
-                &http("/"),
-                0,
-            )
-            .is_none(),
+            CookieJar::parse_set_cookie(&format!("{name}=1; Path=/; Secure"), &http("/"), 0,)
+                .is_none(),
             "clear-text origin established prefixed cookie: {name}"
         );
         assert!(
-            CookieJar::parse_set_cookie(
-                &format!("{name}=1; Path=/; Secure"),
-                &https("/"),
-                0,
-            )
-            .is_some(),
+            CookieJar::parse_set_cookie(&format!("{name}=1; Path=/; Secure"), &https("/"), 0,)
+                .is_some(),
             "secure origin rejected valid prefixed cookie: {name}"
         );
     }
@@ -92,31 +66,18 @@ fn host_prefix_requires_secure_host_only_root_path_and_explicit_path_attribute()
             0,
         )
         .is_none());
-        assert!(CookieJar::parse_set_cookie(
-            &format!("{name}=1; Path=/account; Secure"),
-            &url,
-            0,
-        )
-        .is_none());
-        assert!(CookieJar::parse_set_cookie(
-            &format!("{name}=1; Secure"),
-            &https("/"),
-            0,
-        )
-        .is_none(), "Path=/ must be explicitly represented by a Path attribute");
-        assert!(CookieJar::parse_set_cookie(
-            &format!("{name}=1; Path=/"),
-            &url,
-            0,
-        )
-        .is_none());
+        assert!(
+            CookieJar::parse_set_cookie(&format!("{name}=1; Path=/account; Secure"), &url, 0,)
+                .is_none()
+        );
+        assert!(
+            CookieJar::parse_set_cookie(&format!("{name}=1; Secure"), &https("/"), 0,).is_none(),
+            "Path=/ must be explicitly represented by a Path attribute"
+        );
+        assert!(CookieJar::parse_set_cookie(&format!("{name}=1; Path=/"), &url, 0,).is_none());
 
-        let cookie = CookieJar::parse_set_cookie(
-            &format!("{name}=1; Path=/; Secure"),
-            &url,
-            0,
-        )
-        .expect("valid __Host- family cookie");
+        let cookie = CookieJar::parse_set_cookie(&format!("{name}=1; Path=/; Secure"), &url, 0)
+            .expect("valid __Host- family cookie");
         assert!(cookie.secure);
         assert!(cookie.host_only);
         assert_eq!(cookie.domain, "example.test");
@@ -142,19 +103,10 @@ fn nameless_cookie_cannot_smuggle_a_reserved_prefix_in_its_value() {
 fn ip_domain_attributes_are_exact_only() {
     let url = Url::parse("http://127.0.0.1/app").unwrap();
 
-    assert!(CookieJar::parse_set_cookie(
-        "sid=1; Domain=0.0.1; Path=/",
-        &url,
-        0,
-    )
-    .is_none());
+    assert!(CookieJar::parse_set_cookie("sid=1; Domain=0.0.1; Path=/", &url, 0,).is_none());
 
-    let exact = CookieJar::parse_set_cookie(
-        "sid=1; Domain=127.0.0.1; Path=/",
-        &url,
-        0,
-    )
-    .expect("an exact IP Domain is not broadened into a suffix");
+    let exact = CookieJar::parse_set_cookie("sid=1; Domain=127.0.0.1; Path=/", &url, 0)
+        .expect("an exact IP Domain is not broadened into a suffix");
     assert!(exact.matches_domain("127.0.0.1"));
     assert!(!exact.matches_domain("127.0.0.2"));
 
@@ -177,12 +129,10 @@ fn ip_domain_attributes_are_exact_only() {
 
 #[test]
 fn trailing_dot_domain_does_not_domain_match_the_origin() {
-    assert!(CookieJar::parse_set_cookie(
-        "sid=1; Domain=example.test.; Path=/",
-        &https("/"),
-        0,
-    )
-    .is_none());
+    assert!(
+        CookieJar::parse_set_cookie("sid=1; Domain=example.test.; Path=/", &https("/"), 0,)
+            .is_none()
+    );
 }
 
 #[test]

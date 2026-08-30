@@ -35,12 +35,18 @@ fn test_conic_gradient_parsing_and_rasterization() {
     let r_top = canvas.pixels[top_idx];
     let g_top = canvas.pixels[top_idx + 1];
     let b_top = canvas.pixels[top_idx + 2];
-    assert!(r_top > g_top && r_top > b_top, "top of conic gradient should be red");
+    assert!(
+        r_top > g_top && r_top > b_top,
+        "top of conic gradient should be red"
+    );
 
     // Pixel directly below center (50, 75): angle ~ 180deg (50%) -> green dominates
     let bottom_idx = (75 * 100 + 50) * 3;
     let r_bottom = canvas.pixels[bottom_idx];
     let g_bottom = canvas.pixels[bottom_idx + 1];
     let b_bottom = canvas.pixels[bottom_idx + 2];
-    assert!(g_bottom > r_bottom && g_bottom > b_bottom, "bottom of conic gradient should be green");
+    assert!(
+        g_bottom > r_bottom && g_bottom > b_bottom,
+        "bottom of conic gradient should be green"
+    );
 }

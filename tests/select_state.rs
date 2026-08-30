@@ -8,11 +8,7 @@ fn browser_for(html: &str) -> Browser {
     let mut loader = MemoryLoader::new();
     loader.insert("demo:///form.html", html);
     loader.insert("demo:///next", "<title>Next</title>");
-    Browser::open(
-        Box::new(loader),
-        &Url::parse("demo:///form.html").unwrap(),
-    )
-    .unwrap()
+    Browser::open(Box::new(loader), &Url::parse("demo:///form.html").unwrap()).unwrap()
 }
 
 #[test]
@@ -37,7 +33,10 @@ fn setting_select_value_changes_the_submitted_query() {
         select_state::value(&browser.document().dom, &pick).as_deref(),
         Some("b")
     );
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?pick=b");
 }
 

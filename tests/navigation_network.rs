@@ -7,8 +7,8 @@ use browser_engine::cookie::CookieJar;
 use browser_engine::eventloop::{Clock, ManualClock};
 use browser_engine::hsts::HstsCache;
 use browser_engine::net::{
-    FetchError, FetchRequest, FetchResponse, HeaderMap, LoadError, Method, Resource, ResourceLoader,
-    Url,
+    FetchError, FetchRequest, FetchResponse, HeaderMap, LoadError, Method, Resource,
+    ResourceLoader, Url,
 };
 use browser_engine::{NavigationNetwork, SameSiteRequestContext};
 
@@ -50,7 +50,12 @@ fn url(input: &str) -> Url {
 }
 
 fn response(url: &str) -> FetchResponse {
-    FetchResponse::synthetic(url::parse(url).unwrap(), 200, Some("text/html"), b"ok".to_vec())
+    FetchResponse::synthetic(
+        url::parse(url).unwrap(),
+        200,
+        Some("text/html"),
+        b"ok".to_vec(),
+    )
 }
 
 mod url {
@@ -88,11 +93,8 @@ fn hsts_upgrade_precedes_samesite_and_secure_cookie_selection() {
     )]));
     let (navigation, jar, hsts, _) = navigation(loader.clone());
 
-    hsts.borrow_mut().observe_response(
-        &url("https://example.test/"),
-        "max-age=60",
-        0,
-    );
+    hsts.borrow_mut()
+        .observe_response(&url("https://example.test/"), "max-age=60", 0);
     for cookie in [
         "strict=s; Path=/; Secure; SameSite=Strict",
         "lax=l; Path=/; Secure; SameSite=Lax",
@@ -105,12 +107,7 @@ fn hsts_upgrade_precedes_samesite_and_secure_cookie_selection() {
 
     let mut headers = HeaderMap::new();
     headers.insert_raw("cookie", "forged=page");
-    let request = FetchRequest::new(
-        url("http://example.test/next"),
-        Method::Get,
-        headers,
-        None,
-    );
+    let request = FetchRequest::new(url("http://example.test/next"), Method::Get, headers, None);
 
     navigation
         .fetch(

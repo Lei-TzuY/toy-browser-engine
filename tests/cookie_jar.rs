@@ -20,7 +20,9 @@ fn test_cookie_jar_rfc6265_basic_and_scoping() {
     let url_diff_domain = Url::parse("https://otherdomain.com/app/index.html").unwrap();
 
     // Set cookies via Set-Cookie header strings
-    let c1 = CookieJar::parse_set_cookie("sessionId=xyz123; Path=/app; Secure; HttpOnly", &url1, 1000).unwrap();
+    let c1 =
+        CookieJar::parse_set_cookie("sessionId=xyz123; Path=/app; Secure; HttpOnly", &url1, 1000)
+            .unwrap();
     let c2 = CookieJar::parse_set_cookie("theme=dark; Path=/; Max-Age=3600", &url1, 1000).unwrap();
     let c3 = CookieJar::parse_set_cookie("temp=1; Path=/; Max-Age=0", &url1, 1000).unwrap();
 

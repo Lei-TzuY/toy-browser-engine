@@ -65,7 +65,9 @@ impl DynamicLoader {
         };
         let mut response = FetchResponse::synthetic(request.url.clone(), 200, Some(mime), body);
         if self.allow_cors {
-            response.headers.insert_raw("access-control-allow-origin", "*");
+            response
+                .headers
+                .insert_raw("access-control-allow-origin", "*");
         }
         response
     }
@@ -103,7 +105,12 @@ fn target_color(browser: &Browser) -> Option<Value> {
         .document()
         .style_tree(800.0, &PointerState::default());
     fn find(node: &browser_engine::style::StyledNode<'_>) -> Option<Value> {
-        if node.node.as_element().and_then(|element| element.get_attr("id")) == Some("target") {
+        if node
+            .node
+            .as_element()
+            .and_then(|element| element.get_attr("id"))
+            == Some("target")
+        {
             return node.value("color").cloned();
         }
         node.children.iter().find_map(find)
@@ -142,15 +149,24 @@ fn parser_script_inserted_external_script_runs_before_first_paint_and_only_once(
         .iter()
         .find(|request| request.url.path() == "/late.js")
         .expect("dynamic script request");
-    assert_eq!(late.headers.get("origin").as_deref(), Some("https://page.test"));
-    assert!(!late.headers.has("referer"), "dynamic referrerpolicy must reach transport");
+    assert_eq!(
+        late.headers.get("origin").as_deref(),
+        Some("https://page.test")
+    );
+    assert!(
+        !late.headers.has("referer"),
+        "dynamic referrerpolicy must reach transport"
+    );
     drop(first_requests);
 
     let noop = dom_api::get_element_by_id(&browser.document().dom, "noop").unwrap();
     browser.click_node(&noop);
     let requests = requests.lock().unwrap();
     assert_eq!(
-        requests.iter().filter(|request| request.url.path() == "/late.js").count(),
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/late.js")
+            .count(),
         1,
         "the same script element must not execute or fetch twice"
     );
@@ -175,11 +191,17 @@ fn click_inserted_stylesheet_uses_policy_and_updates_the_cascade() {
     let (loader, requests) = DynamicLoader::new(html, true);
     let mut browser = Browser::open(Box::new(loader), &url("https://page.test/index.html"))
         .expect("document loads");
-    assert_eq!(target_color(&browser), Some(Value::Color(Color::rgb(1, 2, 3))));
+    assert_eq!(
+        target_color(&browser),
+        Some(Value::Color(Color::rgb(1, 2, 3)))
+    );
 
     let add = dom_api::get_element_by_id(&browser.document().dom, "add").unwrap();
     browser.click_node(&add);
-    assert_eq!(target_color(&browser), Some(Value::Color(Color::rgb(7, 8, 9))));
+    assert_eq!(
+        target_color(&browser),
+        Some(Value::Color(Color::rgb(7, 8, 9)))
+    );
 
     let requests = requests.lock().unwrap();
     let stylesheet = requests
@@ -294,7 +316,10 @@ fn cors_failure_blocks_dynamic_script_and_stylesheet_without_retrying_raw_loader
         .as_element()
         .unwrap();
     assert_eq!(target.get_attr("data-dynamic-script"), None);
-    assert_eq!(target_color(&browser), Some(Value::Color(Color::rgb(1, 2, 3))));
+    assert_eq!(
+        target_color(&browser),
+        Some(Value::Color(Color::rgb(1, 2, 3)))
+    );
     assert!(
         browser
             .document()
@@ -307,9 +332,9 @@ fn cors_failure_blocks_dynamic_script_and_stylesheet_without_retrying_raw_loader
 
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
-    assert!(requests.iter().all(|request| {
-        request.headers.get("origin").as_deref() == Some("https://page.test")
-    }));
+    assert!(requests
+        .iter()
+        .all(|request| { request.headers.get("origin").as_deref() == Some("https://page.test") }));
 }
 
 #[test]

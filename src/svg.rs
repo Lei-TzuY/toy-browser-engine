@@ -5,11 +5,11 @@
 //  Parses SVG DOM subtrees (<svg>, <rect>, <circle>, <line>, <polygon>, <path>)
 //  and renders them into rasterized vector pixel buffers using CanvasContext2D.
 
-use std::rc::Rc;
 use crate::canvas::CanvasContext2D;
 use crate::css::parser::{named_color, parse_color, Color};
 use crate::dom::Node;
 use crate::image::RasterImage;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SvgViewBox {
@@ -75,7 +75,9 @@ pub fn parse_points(val: &str) -> Vec<(f32, f32)> {
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.parse::<f32>().ok())
         .collect();
-    nums.chunks_exact(2).map(|pair| (pair[0], pair[1])).collect()
+    nums.chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
 }
 
 pub fn parse_svg_path_data(d: &str) -> Vec<SvgPathSegment> {
@@ -344,10 +346,22 @@ fn render_svg_children(node: &Node, ctx: &mut CanvasContext2D) {
 
         match tag {
             "rect" => {
-                let x: f32 = elem.get_attr("x").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let y: f32 = elem.get_attr("y").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let w: f32 = elem.get_attr("width").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let h: f32 = elem.get_attr("height").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let x: f32 = elem
+                    .get_attr("x")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let y: f32 = elem
+                    .get_attr("y")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let w: f32 = elem
+                    .get_attr("width")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let h: f32 = elem
+                    .get_attr("height")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
                 if fill_color.a > 0 {
                     ctx.fill_rect(x, y, w, h);
                 }
@@ -356,9 +370,18 @@ fn render_svg_children(node: &Node, ctx: &mut CanvasContext2D) {
                 }
             }
             "circle" => {
-                let cx: f32 = elem.get_attr("cx").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let cy: f32 = elem.get_attr("cy").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let r: f32 = elem.get_attr("r").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let cx: f32 = elem
+                    .get_attr("cx")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let cy: f32 = elem
+                    .get_attr("cy")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let r: f32 = elem
+                    .get_attr("r")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
                 if r > 0.0 {
                     ctx.begin_path();
                     ctx.arc(cx, cy, r, 0.0, std::f32::consts::TAU, false);
@@ -371,10 +394,22 @@ fn render_svg_children(node: &Node, ctx: &mut CanvasContext2D) {
                 }
             }
             "line" => {
-                let x1: f32 = elem.get_attr("x1").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let y1: f32 = elem.get_attr("y1").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let x2: f32 = elem.get_attr("x2").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                let y2: f32 = elem.get_attr("y2").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let x1: f32 = elem
+                    .get_attr("x1")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let y1: f32 = elem
+                    .get_attr("y1")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let x2: f32 = elem
+                    .get_attr("x2")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
+                let y2: f32 = elem
+                    .get_attr("y2")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
                 if stroke_color.a > 0 && stroke_width > 0.0 {
                     ctx.begin_path();
                     ctx.move_to(x1, y1);

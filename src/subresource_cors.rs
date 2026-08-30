@@ -35,7 +35,9 @@ pub fn validate_subresource_cors_response(
     };
 
     let Some(source) = source else {
-        return Err(cors_blocked("CORS-enabled subresource has no request origin"));
+        return Err(cors_blocked(
+            "CORS-enabled subresource has no request origin",
+        ));
     };
 
     if Origin::of(source) == Origin::of(&response.url) {
@@ -52,7 +54,9 @@ pub fn validate_subresource_cors_response(
             {
                 Ok(())
             } else {
-                Err(cors_blocked("cross-origin response did not allow the document origin"))
+                Err(cors_blocked(
+                    "cross-origin response did not allow the document origin",
+                ))
             }
         }
         CorsSettingsAttribute::UseCredentials => {
@@ -62,7 +66,12 @@ pub fn validate_subresource_cors_response(
                 ));
             }
 
-            if response.headers.get("access-control-allow-credentials").as_deref() != Some("true") {
+            if response
+                .headers
+                .get("access-control-allow-credentials")
+                .as_deref()
+                != Some("true")
+            {
                 return Err(cors_blocked(
                     "credentialed CORS requires Access-Control-Allow-Credentials: true",
                 ));
@@ -115,7 +124,9 @@ mod tests {
     #[test]
     fn anonymous_cross_origin_accepts_wildcard() {
         let mut response = response("https://cdn.test/image.png");
-        response.headers.insert_raw("access-control-allow-origin", "*");
+        response
+            .headers
+            .insert_raw("access-control-allow-origin", "*");
 
         assert!(validate_subresource_cors_response(
             Some(&url("https://page.test/index.html")),
@@ -128,7 +139,9 @@ mod tests {
     #[test]
     fn credentialed_cross_origin_rejects_wildcard() {
         let mut response = response("https://cdn.test/image.png");
-        response.headers.insert_raw("access-control-allow-origin", "*");
+        response
+            .headers
+            .insert_raw("access-control-allow-origin", "*");
         response
             .headers
             .insert_raw("access-control-allow-credentials", "true");

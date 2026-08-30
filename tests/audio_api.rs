@@ -13,7 +13,8 @@ fn run_js(js: &str) -> Document {
 
 #[test]
 fn test_audio_context_nodes_and_params() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let ctx = new AudioContext();
         console.log("sampleRate:" + ctx.sampleRate);
         console.log("state:" + ctx.state);
@@ -34,7 +35,8 @@ fn test_audio_context_nodes_and_params() {
 
         osc.start();
         console.log("started:true");
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "sampleRate:44100");

@@ -8,11 +8,7 @@ fn browser_for(html: &str) -> Browser {
     let mut loader = MemoryLoader::new();
     loader.insert("demo:///form.html", html);
     loader.insert("demo:///next", "<title>Next</title>");
-    Browser::open(
-        Box::new(loader),
-        &Url::parse("demo:///form.html").unwrap(),
-    )
-    .unwrap()
+    Browser::open(Box::new(loader), &Url::parse("demo:///form.html").unwrap()).unwrap()
 }
 
 #[test]
@@ -35,16 +31,28 @@ fn reset_button_restores_select_default_before_submission() {
         &pick,
         "b"
     ));
-    assert_eq!(select_state::value(&browser.document().dom, &pick).as_deref(), Some("b"));
+    assert_eq!(
+        select_state::value(&browser.document().dom, &pick).as_deref(),
+        Some("b")
+    );
 
     // The existing Document reset path only visits form controls. The select's
     // own canonical live-selection override must therefore be reset by its
     // generic control reset rather than by treating <option> as form controls.
     let _ = browser.click_node(&reset);
-    assert_eq!(select_state::value(&browser.document().dom, &pick).as_deref(), Some("a"));
-    assert_eq!(select_state::selected_index(&browser.document().dom, &pick), Some(0));
+    assert_eq!(
+        select_state::value(&browser.document().dom, &pick).as_deref(),
+        Some("a")
+    );
+    assert_eq!(
+        select_state::selected_index(&browser.document().dom, &pick),
+        Some(0)
+    );
 
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?pick=a");
 }
 
@@ -66,7 +74,10 @@ fn script_form_reset_restores_select_default_through_pending_action() {
         &pick,
         "b"
     ));
-    assert_eq!(select_state::value(&browser.document().dom, &pick).as_deref(), Some("b"));
+    assert_eq!(
+        select_state::value(&browser.document().dom, &pick).as_deref(),
+        Some("b")
+    );
 
     {
         let document = browser.document_mut();
@@ -77,10 +88,19 @@ fn script_form_reset_restores_select_default_through_pending_action() {
 
     // With no selected attribute, resetting returns the single select to its
     // pristine state, so the first enabled option becomes selected again.
-    assert_eq!(select_state::value(&browser.document().dom, &pick).as_deref(), Some("a"));
-    assert_eq!(select_state::selected_index(&browser.document().dom, &pick), Some(0));
+    assert_eq!(
+        select_state::value(&browser.document().dom, &pick).as_deref(),
+        Some("a")
+    );
+    assert_eq!(
+        select_state::selected_index(&browser.document().dom, &pick),
+        Some(0)
+    );
 
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?pick=a");
 }
 
@@ -104,12 +124,21 @@ fn reset_revalidates_required_select_from_its_default_state() {
         &pick,
         "missing"
     ));
-    assert_eq!(select_state::selected_index(&browser.document().dom, &pick), Some(-1));
+    assert_eq!(
+        select_state::selected_index(&browser.document().dom, &pick),
+        Some(-1)
+    );
     assert_eq!(browser.click_node(&go), ClickOutcome::Script);
     assert_eq!(browser.url().to_string(), "demo:///form.html");
 
     let _ = browser.click_node(&reset);
-    assert_eq!(select_state::value(&browser.document().dom, &pick).as_deref(), Some("a"));
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert_eq!(
+        select_state::value(&browser.document().dom, &pick).as_deref(),
+        Some("a")
+    );
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?pick=a");
 }

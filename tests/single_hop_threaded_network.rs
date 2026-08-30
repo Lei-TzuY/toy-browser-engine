@@ -38,7 +38,10 @@ impl ResourceLoader for DistinctFetchLoader {
 
 fn one_completion(network: &ThreadedNetwork) -> browser_engine::net::FetchCompletion {
     if !network.wait(Duration::from_secs(2)) {
-        assert!(network.is_busy(), "network became idle without exposing a completion");
+        assert!(
+            network.is_busy(),
+            "network became idle without exposing a completion"
+        );
     }
     let completions = network.poll();
     assert_eq!(completions.len(), 1);
@@ -97,7 +100,10 @@ fn single_hop_threaded_http_exposes_real_redirect_response() {
     let response = completion.result.expect("wire response");
     assert_eq!(response.status, 307);
     assert_eq!(response.url, url);
-    assert_eq!(response.headers.get("location").as_deref(), Some("/upload-next"));
+    assert_eq!(
+        response.headers.get("location").as_deref(),
+        Some("/upload-next")
+    );
     assert!(!response.redirected);
 
     server.join().unwrap();

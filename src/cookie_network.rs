@@ -85,11 +85,7 @@ impl CookiePolicyRegistry {
 
     /// Attach browser-owned cookie policy to an id before `NetworkBackend::start`.
     /// Re-registering an id replaces its previous pending policy.
-    pub fn set(
-        &self,
-        id: FetchId,
-        policy: CookieRequestPolicy,
-    ) -> Option<CookieRequestPolicy> {
+    pub fn set(&self, id: FetchId, policy: CookieRequestPolicy) -> Option<CookieRequestPolicy> {
         self.policies.borrow_mut().insert(id, policy)
     }
 
@@ -217,12 +213,7 @@ impl CookieNetwork {
         jar: CookieJarRef,
         clock: Rc<dyn Clock>,
     ) -> CookieNetwork {
-        CookieNetwork::with_policy_registry(
-            inner,
-            jar,
-            clock,
-            CookiePolicyRegistry::new(),
-        )
+        CookieNetwork::with_policy_registry(inner, jar, clock, CookiePolicyRegistry::new())
     }
 
     /// Build a decorator around an existing registry. This is useful to a
@@ -313,11 +304,7 @@ impl CookieNetwork {
         request
     }
 
-    fn absorb_response(
-        &self,
-        response: &mut FetchResponse,
-        credentials: CookieCredentials,
-    ) {
+    fn absorb_response(&self, response: &mut FetchResponse, credentials: CookieCredentials) {
         if matches!(response.url.scheme(), "http" | "https")
             && credentials == CookieCredentials::Include
         {

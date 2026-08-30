@@ -41,7 +41,9 @@ impl ResourceLoader for CorsLoader {
         match self.reply {
             CorsReply::None => {}
             CorsReply::Wildcard => {
-                response.headers.insert_raw("access-control-allow-origin", "*");
+                response
+                    .headers
+                    .insert_raw("access-control-allow-origin", "*");
             }
             CorsReply::Exact => {
                 response
@@ -63,7 +65,9 @@ impl ResourceLoader for CorsLoader {
 
 fn network(reply: CorsReply) -> NavigationNetwork {
     let clock = Rc::new(ManualClock::new());
-    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(clock.clone())));
+    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(
+        clock.clone(),
+    )));
     let hsts = Rc::new(std::cell::RefCell::new(HstsCache::new()));
     NavigationNetwork::new(Arc::new(CorsLoader { reply }), jar, hsts, clock)
 }

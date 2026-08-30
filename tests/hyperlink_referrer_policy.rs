@@ -17,17 +17,10 @@ fn recognized_attribute_overrides_document_policy() {
 #[test]
 fn invalid_attribute_inherits_document_policy() {
     assert_eq!(
-        hyperlink_referrer_policy(
-            ReferrerPolicy::Origin,
-            Some(" origin "),
-            Some("external"),
-        ),
+        hyperlink_referrer_policy(ReferrerPolicy::Origin, Some(" origin "), Some("external"),),
         ReferrerPolicy::Origin
     );
-    assert_eq!(
-        parse_referrer_policy_attribute("origin, no-referrer"),
-        None
-    );
+    assert_eq!(parse_referrer_policy_attribute("origin, no-referrer"), None);
 }
 
 #[test]

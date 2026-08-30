@@ -87,7 +87,10 @@ fn test_stop_propagation() {
     let url = Url::parse("http://example.com/").unwrap();
     let doc = Document::from_html(html, &url, &loader);
 
-    assert_eq!(doc.runtime.console.last().unwrap(), "child:true,parent:false");
+    assert_eq!(
+        doc.runtime.console.last().unwrap(),
+        "child:true,parent:false"
+    );
 }
 
 #[test]
@@ -187,7 +190,10 @@ fn test_custom_event_dispatch_with_detail() {
     let url = Url::parse("http://example.com/").unwrap();
     let doc = Document::from_html(html, &url, &loader);
 
-    assert_eq!(doc.runtime.console.last().unwrap(), "user:login:alice:admin:true");
+    assert_eq!(
+        doc.runtime.console.last().unwrap(),
+        "user:login:alice:admin:true"
+    );
 }
 
 #[test]

@@ -150,7 +150,11 @@ impl<'a> StyledNode<'a> {
                 if let Some((w, h)) = s.split_once('/') {
                     let w: f32 = w.trim().parse().ok()?;
                     let h: f32 = h.trim().parse().ok()?;
-                    if h > 0.0 { Some(w / h) } else { None }
+                    if h > 0.0 {
+                        Some(w / h)
+                    } else {
+                        None
+                    }
                 } else {
                     s.trim().parse::<f32>().ok().filter(|&r| r > 0.0)
                 }
@@ -623,7 +627,8 @@ pub fn compute_element_style(
     viewport_width: f32,
 ) -> Option<PropertyMap> {
     let tree = style_tree_for_viewport(root, stylesheet, viewport_width);
-    tree.find_at_path(target_path).map(|sn| sn.specified_values.clone())
+    tree.find_at_path(target_path)
+        .map(|sn| sn.specified_values.clone())
 }
 
 /// Build a style tree assuming an 800 px viewport (for backwards compatibility).

@@ -62,7 +62,9 @@ impl ElementLoader {
         match self.cors {
             CorsReply::None => {}
             CorsReply::Wildcard => {
-                response.headers.insert_raw("access-control-allow-origin", "*");
+                response
+                    .headers
+                    .insert_raw("access-control-allow-origin", "*");
             }
             CorsReply::Credentialed => {
                 response
@@ -134,7 +136,11 @@ fn browser_bootstrap_routes_script_style_and_image_through_cors_policy() {
         .images
         .get(&url("https://cdn.test/dot.ppm"));
     assert!(image.is_some(), "CORS-approved image should decode");
-    assert!(browser.document().diagnostics.is_empty(), "{:?}", browser.document().diagnostics);
+    assert!(
+        browser.document().diagnostics.is_empty(),
+        "{:?}",
+        browser.document().diagnostics
+    );
 
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
@@ -149,7 +155,10 @@ fn browser_bootstrap_routes_script_style_and_image_through_cors_policy() {
         .iter()
         .find(|request| request.url.path().ends_with("app.js"))
         .unwrap();
-    assert!(!script.headers.has("referer"), "element referrerpolicy must reach transport");
+    assert!(
+        !script.headers.has("referer"),
+        "element referrerpolicy must reach transport"
+    );
 }
 
 #[test]
@@ -164,13 +173,11 @@ fn browser_bootstrap_blocks_cors_elements_without_response_permission() {
         .as_element()
         .unwrap();
     assert_eq!(target.get_attr("data-script"), None);
-    assert!(
-        browser
-            .document()
-            .images
-            .get(&url("https://cdn.test/dot.ppm"))
-            .is_none()
-    );
+    assert!(browser
+        .document()
+        .images
+        .get(&url("https://cdn.test/dot.ppm"))
+        .is_none());
     assert_eq!(browser.document().diagnostics.len(), 3);
     assert!(browser
         .document()
@@ -216,7 +223,10 @@ fn use_credentials_element_reaches_browser_cookie_selection() {
 
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].headers.get("cookie").as_deref(), Some("cdn=credential"));
+    assert_eq!(
+        requests[0].headers.get("cookie").as_deref(),
+        Some("cdn=credential")
+    );
     assert_eq!(
         requests[0].headers.get("origin").as_deref(),
         Some("https://page.test")

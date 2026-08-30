@@ -8,11 +8,7 @@ fn browser_for(html: &str) -> Browser {
     let mut loader = MemoryLoader::new();
     loader.insert("demo:///form.html", html);
     loader.insert("demo:///next", "<title>Next</title>");
-    Browser::open(
-        Box::new(loader),
-        &Url::parse("demo:///form.html").unwrap(),
-    )
-    .unwrap()
+    Browser::open(Box::new(loader), &Url::parse("demo:///form.html").unwrap()).unwrap()
 }
 
 #[test]
@@ -33,7 +29,10 @@ fn browser_get_submission_serializes_single_and_multiple_selects() {
     let mut browser = browser_for(html);
     let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
 
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(
         browser.url().to_string(),
         "demo:///next?theme=dark&tag=rust&tag=Toy+Browser"
@@ -53,7 +52,10 @@ fn single_select_without_selected_attribute_uses_first_enabled_option() {
     let mut browser = browser_for(html);
     let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
 
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?page=one");
 }
 
@@ -84,7 +86,10 @@ fn required_select_placeholder_blocks_submission_until_a_real_value_is_selected(
     let mut browser = browser_for(html);
     let go = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
 
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?pick=a");
 }
 
@@ -106,7 +111,10 @@ fn live_option_selection_changes_the_browser_submission_payload() {
         &b,
         true
     ));
-    assert!(matches!(browser.click_node(&go), ClickOutcome::Navigated(_)));
+    assert!(matches!(
+        browser.click_node(&go),
+        ClickOutcome::Navigated(_)
+    ));
     assert_eq!(browser.url().to_string(), "demo:///next?pick=b");
 }
 

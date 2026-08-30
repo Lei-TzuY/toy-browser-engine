@@ -139,9 +139,7 @@ pub fn form_controls(dom: &Node, form_path: &[usize]) -> Vec<NodePath> {
         out: &mut Vec<NodePath>,
     ) {
         if let NodeType::Element(element) = &node.node_type {
-            if element.is_form_control()
-                && owning_form(dom, path).as_deref() == Some(form_path)
-            {
+            if element.is_form_control() && owning_form(dom, path).as_deref() == Some(form_path) {
                 out.push(path.clone());
             }
         }
@@ -290,11 +288,13 @@ pub fn owning_select(dom: &Node, option_path: &[usize]) -> Option<NodePath> {
     if option.tag_name != "option" {
         return None;
     }
-    dom_api::ancestor_paths(option_path).into_iter().find(|candidate| {
-        dom_api::node_at(dom, candidate)
-            .and_then(|node| node.as_element())
-            .is_some_and(|element| element.tag_name == "select")
-    })
+    dom_api::ancestor_paths(option_path)
+        .into_iter()
+        .find(|candidate| {
+            dom_api::node_at(dom, candidate)
+                .and_then(|node| node.as_element())
+                .is_some_and(|element| element.tag_name == "select")
+        })
 }
 
 /// Effective selected option indexes for a select.
@@ -896,7 +896,10 @@ mod tests {
         );
         assert_eq!(
             form_data(&dom, &form),
-            vec![("chosen".into(), "b".into()), ("fallback".into(), "y".into())]
+            vec![
+                ("chosen".into(), "b".into()),
+                ("fallback".into(), "y".into())
+            ]
         );
     }
 
@@ -912,7 +915,10 @@ mod tests {
         );
         assert_eq!(
             form_data(&dom, &form),
-            vec![("tag".into(), "rust".into()), ("tag".into(), "Toy Browser".into())]
+            vec![
+                ("tag".into(), "rust".into()),
+                ("tag".into(), "Toy Browser".into())
+            ]
         );
     }
 
@@ -1035,7 +1041,10 @@ mod tests {
         let foreign = dom_api::get_element_by_id(&dom, "foreign").unwrap();
 
         assert_eq!(request_submitter(&dom, &form, None), Ok(None));
-        assert_eq!(request_submitter(&dom, &form, Some(&ok)), Ok(Some(ok.as_slice())));
+        assert_eq!(
+            request_submitter(&dom, &form, Some(&ok)),
+            Ok(Some(ok.as_slice()))
+        );
         assert_eq!(
             request_submitter(&dom, &form, Some(&plain)),
             Err(RequestSubmitterError::NotSubmitButton)
@@ -1071,7 +1080,10 @@ mod tests {
         let base = Url::parse("http://example.com/form").unwrap();
         let submission =
             prepare_submission_with_submitter(&dom, &form, Some(&image), &base).unwrap();
-        assert_eq!(submission.url.to_string(), "http://example.com/image?q=v&spot.x=0&spot.y=0");
+        assert_eq!(
+            submission.url.to_string(),
+            "http://example.com/image?q=v&spot.x=0&spot.y=0"
+        );
     }
 
     #[test]
@@ -1153,7 +1165,10 @@ mod tests {
         assert_eq!(submission.url.to_string(), "http://example.com/publish");
         assert_eq!(
             submission.entries,
-            vec![("q".into(), "v".into()), ("intent".into(), "publish".into())]
+            vec![
+                ("q".into(), "v".into()),
+                ("intent".into(), "publish".into())
+            ]
         );
     }
 
@@ -1184,7 +1199,8 @@ mod tests {
 
     #[test]
     fn novalidate_and_formnovalidate_skip_interactive_validation() {
-        let (dom, form) = form_of(r#"<form novalidate><input required><button id="go">Go</button></form>"#);
+        let (dom, form) =
+            form_of(r#"<form novalidate><input required><button id="go">Go</button></form>"#);
         let go = dom_api::get_element_by_id(&dom, "go").unwrap();
         assert!(submission_skips_validation(&dom, &form, Some(&go)));
 

@@ -15,14 +15,20 @@ fn planner_exposes_fetch_redirect_status_set_only() {
     for status in [301, 302, 303, 307, 308] {
         let mut planner = RedirectPlanner::new(1);
         assert!(planner
-            .next_request(&request, &response("http://example.test/a", status, Some("/b")))
+            .next_request(
+                &request,
+                &response("http://example.test/a", status, Some("/b"))
+            )
             .unwrap()
             .is_some());
     }
     for status in [200, 300, 304, 305, 306, 309] {
         let mut planner = RedirectPlanner::new(1);
         assert!(planner
-            .next_request(&request, &response("http://example.test/a", status, Some("/b")))
+            .next_request(
+                &request,
+                &response("http://example.test/a", status, Some("/b"))
+            )
             .unwrap()
             .is_none());
     }
@@ -96,16 +102,27 @@ fn same_origin_default_port_keeps_authorization_but_cross_port_drops_it() {
     let same = planner
         .next_request(
             &request,
-            &response("http://example.test:80/a", 302, Some("http://EXAMPLE.test/b")),
+            &response(
+                "http://example.test:80/a",
+                302,
+                Some("http://EXAMPLE.test/b"),
+            ),
         )
         .unwrap()
         .unwrap();
-    assert_eq!(same.headers.get("authorization").as_deref(), Some("Bearer secret"));
+    assert_eq!(
+        same.headers.get("authorization").as_deref(),
+        Some("Bearer secret")
+    );
 
     let cross_port = planner
         .next_request(
             &same,
-            &response("http://example.test/b", 302, Some("http://example.test:8080/c")),
+            &response(
+                "http://example.test/b",
+                302,
+                Some("http://example.test:8080/c"),
+            ),
         )
         .unwrap()
         .unwrap();
@@ -124,7 +141,10 @@ fn cookie_is_dropped_even_for_same_origin_same_path_redirect() {
     );
     let mut planner = RedirectPlanner::new(1);
     let next = planner
-        .next_request(&request, &response("http://example.test/a", 307, Some("/a?next=1")))
+        .next_request(
+            &request,
+            &response("http://example.test/a", 307, Some("/a?next=1")),
+        )
         .unwrap()
         .unwrap();
     assert!(!next.headers.has("cookie"));
@@ -180,9 +200,7 @@ fn zero_budget_rejects_first_real_redirect_but_not_ordinary_response() {
 
 #[test]
 fn location_without_fragment_inherits_current_request_fragment() {
-    let request = FetchRequest::get(
-        Url::parse("https://example.test/start#section-2").unwrap(),
-    );
+    let request = FetchRequest::get(Url::parse("https://example.test/start#section-2").unwrap());
     let mut planner = RedirectPlanner::new(1);
     let next = planner
         .next_request(

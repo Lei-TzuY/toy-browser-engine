@@ -263,7 +263,7 @@ impl Parser {
 
     fn parse_var_decl(&mut self) -> Option<Stmt> {
         self.bump(); // let / const / var
-        // Destructuring: `let { a, b } = …` or `let [x, y] = …`
+                     // Destructuring: `let { a, b } = …` or `let [x, y] = …`
         if *self.peek() == Tok::LBrace {
             let pattern = self.parse_destruct_object_pattern()?;
             self.eat(Tok::Assign);

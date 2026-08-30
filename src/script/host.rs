@@ -320,7 +320,9 @@ impl UrlSearchParamsData {
     }
 
     pub fn append(&self, name: &str, value: &str) {
-        self.pairs.borrow_mut().push((name.to_string(), value.to_string()));
+        self.pairs
+            .borrow_mut()
+            .push((name.to_string(), value.to_string()));
         self.sync_to_parent();
     }
 
@@ -394,7 +396,11 @@ impl IntersectionObserverData {
         Self {
             root: None,
             root_margin: "0px".to_string(),
-            thresholds: if thresholds.is_empty() { vec![0.0] } else { thresholds },
+            thresholds: if thresholds.is_empty() {
+                vec![0.0]
+            } else {
+                thresholds
+            },
             targets: Vec::new(),
         }
     }

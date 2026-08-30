@@ -175,17 +175,33 @@ impl ReferrerPolicy {
         match self {
             Self::NoReferrer => None,
             Self::NoReferrerWhenDowngrade => {
-                if downgrade { None } else { full_referrer(source) }
+                if downgrade {
+                    None
+                } else {
+                    full_referrer(source)
+                }
             }
             Self::Origin => origin_referrer(source),
             Self::OriginWhenCrossOrigin => {
-                if same { full_referrer(source) } else { origin_referrer(source) }
+                if same {
+                    full_referrer(source)
+                } else {
+                    origin_referrer(source)
+                }
             }
             Self::SameOrigin => {
-                if same { full_referrer(source) } else { None }
+                if same {
+                    full_referrer(source)
+                } else {
+                    None
+                }
             }
             Self::StrictOrigin => {
-                if downgrade { None } else { origin_referrer(source) }
+                if downgrade {
+                    None
+                } else {
+                    origin_referrer(source)
+                }
             }
             Self::StrictOriginWhenCrossOrigin => {
                 if same {
@@ -261,12 +277,8 @@ mod tests {
     }
 
     fn response_with_policies(fields: &[&str]) -> FetchResponse {
-        let mut response = FetchResponse::synthetic(
-            url("https://redirect.test/hop"),
-            302,
-            None,
-            Vec::new(),
-        );
+        let mut response =
+            FetchResponse::synthetic(url("https://redirect.test/hop"), 302, None, Vec::new());
         for value in fields {
             response.headers.append_raw("referrer-policy", value);
         }
@@ -276,10 +288,8 @@ mod tests {
     #[test]
     fn redirect_state_recomputes_from_stable_source_after_policy_change() {
         let source = url("https://source.test/private/page?q=1#secret");
-        let mut state = RedirectReferrerState::new(
-            Some(source),
-            ReferrerPolicy::StrictOriginWhenCrossOrigin,
-        );
+        let mut state =
+            RedirectReferrerState::new(Some(source), ReferrerPolicy::StrictOriginWhenCrossOrigin);
         let mut first = FetchRequest::get(url("https://source.test/first"));
         state.prepare_request(&mut first);
         assert_eq!(
@@ -299,14 +309,14 @@ mod tests {
 
     #[test]
     fn redirect_state_removes_stale_referer_when_policy_becomes_no_referrer() {
-        let mut state = RedirectReferrerState::from_source(url(
-            "https://source.test/private/page?q=1#secret",
-        ));
+        let mut state =
+            RedirectReferrerState::from_source(url("https://source.test/private/page?q=1#secret"));
         let response = response_with_policies(&["no-referrer"]);
         state.observe_redirect_response(&response);
 
         let mut next = FetchRequest::get(url("https://target.test/next"));
-        next.headers.insert_raw("referer", "https://stale.invalid/leak");
+        next.headers
+            .insert_raw("referer", "https://stale.invalid/leak");
         state.prepare_request(&mut next);
         assert!(!next.headers.has("referer"));
     }
@@ -395,7 +405,10 @@ mod tests {
     #[test]
     fn oversized_full_referrer_falls_back_to_origin() {
         let prefix = "https://example.test/";
-        let source = url(&format!("{prefix}{}", "a".repeat(4097 - prefix.chars().count())));
+        let source = url(&format!(
+            "{prefix}{}",
+            "a".repeat(4097 - prefix.chars().count())
+        ));
         assert_eq!(source.without_fragment().to_string().chars().count(), 4097);
         assert_eq!(
             ReferrerPolicy::UnsafeUrl.compute(&source, &url("https://other.test/")),
@@ -418,11 +431,13 @@ mod tests {
     #[test]
     fn local_and_opaque_sources_do_not_create_http_referrers() {
         assert_eq!(
-            ReferrerPolicy::UnsafeUrl.compute(&url("file:///tmp/a.html"), &url("https://example.test/")),
+            ReferrerPolicy::UnsafeUrl
+                .compute(&url("file:///tmp/a.html"), &url("https://example.test/")),
             None
         );
         assert_eq!(
-            ReferrerPolicy::UnsafeUrl.compute(&url("data:text/plain,hello"), &url("https://example.test/")),
+            ReferrerPolicy::UnsafeUrl
+                .compute(&url("data:text/plain,hello"), &url("https://example.test/")),
             None
         );
     }

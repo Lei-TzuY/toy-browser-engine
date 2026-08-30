@@ -73,5 +73,8 @@ fn test_overflow_visible_does_not_clip() {
         .iter()
         .any(|cmd| matches!(cmd, DisplayCommand::PushClip(_)));
 
-    assert!(!has_push_clip, "overflow: visible should not generate PushClip");
+    assert!(
+        !has_push_clip,
+        "overflow: visible should not generate PushClip"
+    );
 }

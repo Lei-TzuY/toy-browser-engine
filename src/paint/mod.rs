@@ -13,7 +13,9 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{Color, ColorStop, ConicGradient, LinearGradient, RadialGradient, Unit, Value};
+use crate::css::parser::{
+    Color, ColorStop, ConicGradient, LinearGradient, RadialGradient, Unit, Value,
+};
 use crate::dom::NodeType;
 use crate::image::RasterImage;
 use crate::layout::{BoxType, LayoutBox, ObjectFit, Rect, TextFragment};
@@ -1152,7 +1154,9 @@ impl Canvas {
 
         let cx = rect.x + rect.width / 2.0;
         let cy = rect.y + rect.height / 2.0;
-        let max_r = ((rect.width / 2.0).powi(2) + (rect.height / 2.0).powi(2)).sqrt().max(1.0);
+        let max_r = ((rect.width / 2.0).powi(2) + (rect.height / 2.0).powi(2))
+            .sqrt()
+            .max(1.0);
 
         let stops = resolve_gradient_stops(&grad.stops);
 

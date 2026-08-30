@@ -201,7 +201,11 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn email_address_valid(value: &str) -> bool {
-    if !value.is_ascii() || value.chars().any(|character| character.is_ascii_whitespace()) {
+    if !value.is_ascii()
+        || value
+            .chars()
+            .any(|character| character.is_ascii_whitespace())
+    {
         return false;
     }
     let mut parts = value.split('@');
@@ -218,8 +222,25 @@ fn email_address_valid(value: &str) -> bool {
         character.is_ascii_alphanumeric()
             || matches!(
                 character,
-                '.' | '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '/' | '=' | '?'
-                    | '^' | '_' | '`' | '{' | '|' | '}' | '~'
+                '.' | '!'
+                    | '#'
+                    | '$'
+                    | '%'
+                    | '&'
+                    | '\''
+                    | '*'
+                    | '+'
+                    | '-'
+                    | '/'
+                    | '='
+                    | '?'
+                    | '^'
+                    | '_'
+                    | '`'
+                    | '{'
+                    | '|'
+                    | '}'
+                    | '~'
             )
     }) {
         return false;
@@ -244,9 +265,7 @@ fn email_address_valid(value: &str) -> bool {
 
 fn url_value_valid(value: &str) -> bool {
     let value = trim_ascii_whitespace(value);
-    !value.is_empty()
-        && !value.chars().any(char::is_whitespace)
-        && Url::parse(value).is_ok()
+    !value.is_empty() && !value.chars().any(char::is_whitespace) && Url::parse(value).is_ok()
 }
 
 // ── type=number step= ────────────────────────────────────────────────────────
@@ -436,10 +455,7 @@ fn parse_class_character(chars: &[char], index: &mut usize) -> Option<char> {
     }
 }
 
-fn parse_counted_quantifier(
-    chars: &[char],
-    start: usize,
-) -> Option<(usize, Option<usize>, usize)> {
+fn parse_counted_quantifier(chars: &[char], start: usize) -> Option<(usize, Option<usize>, usize)> {
     let end = chars[start..].iter().position(|c| *c == '}')? + start;
     let text: String = chars[start..end].iter().collect();
     let (min, max) = if let Some((left, right)) = text.split_once(',') {
@@ -494,9 +510,9 @@ fn match_pattern(
         return false;
     }
 
-    (piece.min..=matched).rev().any(|count| {
-        match_pattern(pieces, value, piece_index + 1, positions[count])
-    })
+    (piece.min..=matched)
+        .rev()
+        .any(|count| match_pattern(pieces, value, piece_index + 1, positions[count]))
 }
 
 #[cfg(test)]
@@ -740,9 +756,7 @@ mod tests {
 
     #[test]
     fn malformed_or_unsupported_patterns_do_not_make_a_control_invalid() {
-        let dom = parse_html(
-            r#"<form><input id="x" pattern="(a|b)" value="z"></form>"#,
-        );
+        let dom = parse_html(r#"<form><input id="x" pattern="(a|b)" value="z"></form>"#);
         assert!(control_validity(&dom, &path(&dom, "x")).valid());
     }
 }

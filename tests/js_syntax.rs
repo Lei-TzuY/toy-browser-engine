@@ -148,7 +148,12 @@ fn test_destructuring_assignment() {
     );
     assert_eq!(
         console,
-        vec!["Bob 25 undefined", "Engineer 3", "100 200 300", "1 3 3 4 5 6"]
+        vec![
+            "Bob 25 undefined",
+            "Engineer 3",
+            "100 200 300",
+            "1 3 3 4 5 6"
+        ]
     );
 }
 
@@ -191,8 +196,5 @@ fn test_object_methods_entries_and_assign() {
         console.log(entries[1][0], entries[1][1]);
         "#,
     );
-    assert_eq!(
-        console,
-        vec!["1 2 30 4", "30", "2", "foo bar", "baz 42"]
-    );
+    assert_eq!(console, vec!["1 2 30 4", "30", "2", "foo bar", "baz 42"]);
 }

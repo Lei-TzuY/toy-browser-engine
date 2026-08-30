@@ -2,15 +2,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use browser_engine::cookie::CookieJar;
-use browser_engine::cookie_network::{
-    CookieCredentials, CookieNetwork, CookieRequestPolicy,
-};
+use browser_engine::cookie_network::{CookieCredentials, CookieNetwork, CookieRequestPolicy};
 use browser_engine::cookie_same_site::SameSiteRequestContext;
 use browser_engine::eventloop::ManualClock;
 use browser_engine::net::fetch::Method;
-use browser_engine::net::{
-    FetchRequest, FetchResponse, ManualNetwork, NetworkBackend, Url,
-};
+use browser_engine::net::{FetchRequest, FetchResponse, ManualNetwork, NetworkBackend, Url};
 
 fn url(input: &str) -> Url {
     Url::parse(input).expect("valid URL")
@@ -18,30 +14,14 @@ fn url(input: &str) -> Url {
 
 fn seed_same_site_variants(jar: &mut CookieJar) {
     let source = url("https://example.test/");
-    assert!(jar.store_set_cookie(
-        "strict=1; Path=/; SameSite=Strict",
-        &source,
-        0,
-    ));
-    assert!(jar.store_set_cookie(
-        "lax=1; Path=/; SameSite=Lax",
-        &source,
-        0,
-    ));
-    assert!(jar.store_set_cookie(
-        "none=1; Path=/; SameSite=None; Secure",
-        &source,
-        0,
-    ));
+    assert!(jar.store_set_cookie("strict=1; Path=/; SameSite=Strict", &source, 0,));
+    assert!(jar.store_set_cookie("lax=1; Path=/; SameSite=Lax", &source, 0,));
+    assert!(jar.store_set_cookie("none=1; Path=/; SameSite=None; Secure", &source, 0,));
 }
 
 fn response_with_cookie(url_text: &str, cookie: &str) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(url_text),
-        200,
-        Some("text/plain"),
-        b"ok".to_vec(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url(url_text), 200, Some("text/plain"), b"ok".to_vec());
     response.headers.append_raw("set-cookie", cookie);
     response
 }
@@ -52,11 +32,7 @@ fn unregistered_requests_keep_backward_compatible_same_site_include_behavior() {
     inner.set_auto_complete(true);
     let jar = Rc::new(RefCell::new(CookieJar::new()));
     seed_same_site_variants(&mut jar.borrow_mut());
-    let network = CookieNetwork::new(
-        inner.clone(),
-        jar,
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), jar, Rc::new(ManualClock::new()));
 
     network.start(1, FetchRequest::get(url("https://example.test/data")));
     let sent = inner.requests();
@@ -73,11 +49,7 @@ fn cross_site_subresource_filters_strict_and_lax_per_cookie() {
     inner.set_auto_complete(true);
     let jar = Rc::new(RefCell::new(CookieJar::new()));
     seed_same_site_variants(&mut jar.borrow_mut());
-    let network = CookieNetwork::new(
-        inner.clone(),
-        jar,
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), jar, Rc::new(ManualClock::new()));
 
     network.set_request_policy(
         2,
@@ -100,11 +72,7 @@ fn lax_cookie_is_restored_for_cross_site_top_level_safe_navigation() {
     inner.set_auto_complete(true);
     let jar = Rc::new(RefCell::new(CookieJar::new()));
     seed_same_site_variants(&mut jar.borrow_mut());
-    let network = CookieNetwork::new(
-        inner.clone(),
-        jar,
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), jar, Rc::new(ManualClock::new()));
 
     network.set_request_policy(
         3,
@@ -137,11 +105,7 @@ fn credentials_omit_suppresses_outgoing_and_incoming_cookie_state() {
         &url("https://example.test/"),
         0,
     ));
-    let network = CookieNetwork::new(
-        inner.clone(),
-        jar.clone(),
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), jar.clone(), Rc::new(ManualClock::new()));
 
     network.set_request_policy(
         9,
@@ -183,11 +147,7 @@ fn include_policy_accepts_response_cookie_and_cleans_up_after_completion() {
         response_with_cookie(endpoint, "accepted=yes; Path=/"),
     );
     let jar = Rc::new(RefCell::new(CookieJar::new()));
-    let network = CookieNetwork::new(
-        inner,
-        jar.clone(),
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner, jar.clone(), Rc::new(ManualClock::new()));
 
     let policy = CookieRequestPolicy::same_site(Method::Get);
     assert_eq!(network.set_request_policy(11, policy), None);
@@ -211,10 +171,7 @@ fn include_policy_accepts_response_cookie_and_cleans_up_after_completion() {
 #[test]
 fn cancellation_discards_pending_policy_without_touching_other_ids() {
     let inner = Rc::new(ManualNetwork::new());
-    let network = CookieNetwork::with_new_jar(
-        inner,
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::with_new_jar(inner, Rc::new(ManualClock::new()));
 
     let first = CookieRequestPolicy::omit(SameSiteRequestContext::same_site(Method::Get));
     let second = CookieRequestPolicy::new(

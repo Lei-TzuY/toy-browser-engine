@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use browser_engine::cookie::CookieJar;
 use browser_engine::cookie_network::{
-    policy_registry_for_jar, CookieCredentials, CookieJarRef, CookieNetwork,
-    CookiePolicyRegistry, CookieRequestPolicy,
+    policy_registry_for_jar, CookieCredentials, CookieJarRef, CookieNetwork, CookiePolicyRegistry,
+    CookieRequestPolicy,
 };
 use browser_engine::cookie_same_site::SameSiteRequestContext;
 use browser_engine::eventloop::ManualClock;
@@ -58,11 +58,7 @@ fn discovered_registry_controls_the_actual_cookie_network_request() {
         .borrow_mut()
         .store_set_cookie("sid=secret; Path=/", &source, 0));
 
-    let network = CookieNetwork::new(
-        inner.clone(),
-        session.clone(),
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), session.clone(), Rc::new(ManualClock::new()));
     let registry = policy_registry_for_jar(&session).expect("published registry");
     registry.set(11, omit());
 

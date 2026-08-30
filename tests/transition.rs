@@ -78,8 +78,14 @@ fn test_value_interpolation() {
     // Lengths
     let len1 = Value::Length(100.0, Unit::Px);
     let len2 = Value::Length(200.0, Unit::Px);
-    assert_eq!(interpolate(&len1, &len2, 0.25), Value::Length(125.0, Unit::Px));
-    assert_eq!(interpolate(&len1, &len2, 0.75), Value::Length(175.0, Unit::Px));
+    assert_eq!(
+        interpolate(&len1, &len2, 0.25),
+        Value::Length(125.0, Unit::Px)
+    );
+    assert_eq!(
+        interpolate(&len1, &len2, 0.75),
+        Value::Length(175.0, Unit::Px)
+    );
 
     // Numbers (opacity)
     let num1 = Value::Number(0.0);
@@ -167,7 +173,10 @@ fn test_document_transition_over_time() {
         .specified_values
         .get("opacity");
     assert_eq!(opacity_start, Some(&Value::Number(1.0)));
-    assert!(doc.has_pending_tasks(), "Active transition must count as pending task");
+    assert!(
+        doc.has_pending_tasks(),
+        "Active transition must count as pending task"
+    );
 
     // At t = 500ms: opacity is 0.5
     doc.runtime.now_ms = 500.0;
@@ -190,7 +199,10 @@ fn test_document_transition_over_time() {
         .specified_values
         .get("opacity");
     assert_eq!(opacity_end, Some(&Value::Number(0.0)));
-    assert!(!doc.has_pending_tasks(), "Completed transition leaves document idle");
+    assert!(
+        !doc.has_pending_tasks(),
+        "Completed transition leaves document idle"
+    );
 }
 
 #[test]
@@ -295,7 +307,9 @@ fn test_browser_advance_time_transitions() {
     let mut browser = Browser::open_with_clock(Box::new(loader), &url, clock.clone()).unwrap();
 
     // Before timer: opacity is 1
-    let styled0 = browser.document().style_tree(800.0, &PointerState::default());
+    let styled0 = browser
+        .document()
+        .style_tree(800.0, &PointerState::default());
     assert_eq!(
         find_styled_by_id(&styled0, "target")
             .unwrap()
@@ -307,24 +321,34 @@ fn test_browser_advance_time_transitions() {
     // Advance 100ms: timer fires, setting style.opacity = "0", initiating transition
     browser.advance_time(Duration::from_millis(100));
     // Sample frame at 100ms
-    let _ = browser.document().style_tree(800.0, &PointerState::default());
+    let _ = browser
+        .document()
+        .style_tree(800.0, &PointerState::default());
 
     // Advance 250ms into the transition (t = 350ms): opacity is 0.5
     browser.advance_time(Duration::from_millis(250));
-    let styled = browser.document().style_tree(800.0, &PointerState::default());
+    let styled = browser
+        .document()
+        .style_tree(800.0, &PointerState::default());
     let op = find_styled_by_id(&styled, "target")
         .unwrap()
         .specified_values
         .get("opacity");
     if let Some(Value::Number(n)) = op {
-        assert!((n - 0.5).abs() < 1e-3, "Expected opacity ~0.5 at midpoint, got {}", n);
+        assert!(
+            (n - 0.5).abs() < 1e-3,
+            "Expected opacity ~0.5 at midpoint, got {}",
+            n
+        );
     } else {
         panic!("expected Value::Number, got {:?}", op);
     }
 
     // Advance 250ms more (t = 600ms): transition finishes, opacity is 0.0
     browser.advance_time(Duration::from_millis(250));
-    let styled_done = browser.document().style_tree(800.0, &PointerState::default());
+    let styled_done = browser
+        .document()
+        .style_tree(800.0, &PointerState::default());
     assert_eq!(
         find_styled_by_id(&styled_done, "target")
             .unwrap()

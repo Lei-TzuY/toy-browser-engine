@@ -24,7 +24,9 @@ fn redirect_planner_rejects_non_http_fetch_schemes() {
         let mut planner = RedirectPlanner::new(5);
         assert_eq!(
             planner.next_request(&request, &redirect(location)),
-            Err(RedirectError::UnsupportedScheme(expected_scheme.to_string()))
+            Err(RedirectError::UnsupportedScheme(
+                expected_scheme.to_string()
+            ))
         );
         assert_eq!(planner.followed(), 0);
     }

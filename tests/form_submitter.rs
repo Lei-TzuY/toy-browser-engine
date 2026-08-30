@@ -19,8 +19,7 @@ fn submitter_overrides_destination_method_and_contributes_its_value() {
     let preview = dom_api::get_element_by_id(&dom, "preview").unwrap();
     let base = Url::parse("http://example.test/editor").unwrap();
 
-    let submission =
-        prepare_submission_with_submitter(&dom, &form, Some(&preview), &base).unwrap();
+    let submission = prepare_submission_with_submitter(&dom, &form, Some(&preview), &base).unwrap();
 
     assert_eq!(submission.method, SubmissionMethod::Get);
     assert_eq!(

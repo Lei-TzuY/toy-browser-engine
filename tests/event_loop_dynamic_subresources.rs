@@ -58,8 +58,8 @@ fn timer_inserted_external_script_runs_before_advance_time_returns() {
     );
 
     let clock = Rc::new(ManualClock::new());
-    let mut browser = Browser::open_with_clock(Box::new(loader), &url(page), clock)
-        .expect("page loads");
+    let mut browser =
+        Browser::open_with_clock(Box::new(loader), &url(page), clock).expect("page loads");
     assert_eq!(target_attr(&browser, "data-timer-script"), None);
 
     let report = browser.advance_time(Duration::from_millis(10));
@@ -96,7 +96,10 @@ fn animation_frame_inserted_stylesheet_reaches_the_next_paint() {
     );
 
     let mut browser = Browser::open(Box::new(loader), &url(page)).expect("page loads");
-    assert_eq!(target_color(&browser), Some(Value::Color(Color::rgb(1, 2, 3))));
+    assert_eq!(
+        target_color(&browser),
+        Some(Value::Color(Color::rgb(1, 2, 3)))
+    );
 
     let report = browser.tick();
     assert_eq!(report.frames_run, 1);

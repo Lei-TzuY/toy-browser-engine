@@ -45,7 +45,10 @@ fn test_keyframes_parsing() {
     );
 
     assert_eq!(css.keyframes.len(), 1);
-    let kf = css.keyframes.get("fade-and-move").expect("found fade-and-move keyframe");
+    let kf = css
+        .keyframes
+        .get("fade-and-move")
+        .expect("found fade-and-move keyframe");
     assert_eq!(kf.name, "fade-and-move");
     assert_eq!(kf.steps.len(), 3);
     assert_eq!(kf.steps[0].offset, 0.0);
@@ -81,15 +84,24 @@ fn test_sample_keyframes_interpolation() {
 
     let kf = css.keyframes.get("grow").unwrap();
     let sampled_start = sample_keyframes(kf, 0.0);
-    assert_eq!(sampled_start.get("width"), Some(&Value::Length(0.0, Unit::Px)));
+    assert_eq!(
+        sampled_start.get("width"),
+        Some(&Value::Length(0.0, Unit::Px))
+    );
     assert_eq!(sampled_start.get("opacity"), Some(&Value::Number(0.0)));
 
     let sampled_mid = sample_keyframes(kf, 0.5);
-    assert_eq!(sampled_mid.get("width"), Some(&Value::Length(100.0, Unit::Px)));
+    assert_eq!(
+        sampled_mid.get("width"),
+        Some(&Value::Length(100.0, Unit::Px))
+    );
     assert_eq!(sampled_mid.get("opacity"), Some(&Value::Number(0.5)));
 
     let sampled_end = sample_keyframes(kf, 1.0);
-    assert_eq!(sampled_end.get("width"), Some(&Value::Length(200.0, Unit::Px)));
+    assert_eq!(
+        sampled_end.get("width"),
+        Some(&Value::Length(200.0, Unit::Px))
+    );
     assert_eq!(sampled_end.get("opacity"), Some(&Value::Number(1.0)));
 }
 
@@ -122,26 +134,41 @@ fn test_document_animation_timeline_and_fill_mode() {
     // At t = 0ms: animation starts at width 0px
     doc.runtime.now_ms = 0.0;
     let styled0 = doc.style_tree(800.0, &PointerState::default());
-    let w0 = find_styled_by_id(&styled0, "box").unwrap().specified_values.get("width");
+    let w0 = find_styled_by_id(&styled0, "box")
+        .unwrap()
+        .specified_values
+        .get("width");
     assert_eq!(w0, Some(&Value::Length(0.0, Unit::Px)));
-    assert!(doc.has_pending_tasks(), "Active animation should keep document awake");
+    assert!(
+        doc.has_pending_tasks(),
+        "Active animation should keep document awake"
+    );
 
     // At t = 500ms: halfway (50px)
     doc.runtime.now_ms = 500.0;
     let styled_mid = doc.style_tree(800.0, &PointerState::default());
-    let w_mid = find_styled_by_id(&styled_mid, "box").unwrap().specified_values.get("width");
+    let w_mid = find_styled_by_id(&styled_mid, "box")
+        .unwrap()
+        .specified_values
+        .get("width");
     assert_eq!(w_mid, Some(&Value::Length(50.0, Unit::Px)));
 
     // At t = 1000ms: finished at 100px
     doc.runtime.now_ms = 1000.0;
     let styled_end = doc.style_tree(800.0, &PointerState::default());
-    let w_end = find_styled_by_id(&styled_end, "box").unwrap().specified_values.get("width");
+    let w_end = find_styled_by_id(&styled_end, "box")
+        .unwrap()
+        .specified_values
+        .get("width");
     assert_eq!(w_end, Some(&Value::Length(100.0, Unit::Px)));
 
     // At t = 2000ms: forwards fill mode holds 100px
     doc.runtime.now_ms = 2000.0;
     let styled_after = doc.style_tree(800.0, &PointerState::default());
-    let w_after = find_styled_by_id(&styled_after, "box").unwrap().specified_values.get("width");
+    let w_after = find_styled_by_id(&styled_after, "box")
+        .unwrap()
+        .specified_values
+        .get("width");
     assert_eq!(w_after, Some(&Value::Length(100.0, Unit::Px)));
 }
 
@@ -177,7 +204,10 @@ fn test_animation_alternate_direction() {
     // Cycle 1 (0 -> 1): at 500ms, opacity is 0.5
     doc.runtime.now_ms = 500.0;
     let styled1 = doc.style_tree(800.0, &PointerState::default());
-    let op1 = find_styled_by_id(&styled1, "box").unwrap().specified_values.get("opacity");
+    let op1 = find_styled_by_id(&styled1, "box")
+        .unwrap()
+        .specified_values
+        .get("opacity");
     if let Some(Value::Number(n)) = op1 {
         assert!((n - 0.5).abs() < 1e-3);
     } else {
@@ -187,7 +217,10 @@ fn test_animation_alternate_direction() {
     // Cycle 2 (1 -> 0 alternate): at 1500ms (50% of cycle 2), opacity is 0.5
     doc.runtime.now_ms = 1500.0;
     let styled2 = doc.style_tree(800.0, &PointerState::default());
-    let op2 = find_styled_by_id(&styled2, "box").unwrap().specified_values.get("opacity");
+    let op2 = find_styled_by_id(&styled2, "box")
+        .unwrap()
+        .specified_values
+        .get("opacity");
     if let Some(Value::Number(n)) = op2 {
         assert!((n - 0.5).abs() < 1e-3);
     } else {
@@ -197,7 +230,10 @@ fn test_animation_alternate_direction() {
     // At 2000ms: finished at 0.0 (end of cycle 2)
     doc.runtime.now_ms = 2000.0;
     let styled_end = doc.style_tree(800.0, &PointerState::default());
-    let op_end = find_styled_by_id(&styled_end, "box").unwrap().specified_values.get("opacity");
+    let op_end = find_styled_by_id(&styled_end, "box")
+        .unwrap()
+        .specified_values
+        .get("opacity");
     if let Some(Value::Number(n)) = op_end {
         assert!((n - 0.0).abs() < 1e-3);
     } else {
@@ -235,14 +271,24 @@ fn test_browser_advance_time_animations() {
     let mut browser = Browser::open_with_clock(Box::new(loader), &url, clock.clone()).unwrap();
 
     // Start of animation
-    let styled0 = browser.document().style_tree(800.0, &PointerState::default());
-    let op0 = find_styled_by_id(&styled0, "spinner").unwrap().specified_values.get("opacity");
+    let styled0 = browser
+        .document()
+        .style_tree(800.0, &PointerState::default());
+    let op0 = find_styled_by_id(&styled0, "spinner")
+        .unwrap()
+        .specified_values
+        .get("opacity");
     assert_eq!(op0, Some(&Value::Number(0.0)));
 
     // Advance 500ms
     browser.advance_time(Duration::from_millis(500));
-    let styled500 = browser.document().style_tree(800.0, &PointerState::default());
-    let op500 = find_styled_by_id(&styled500, "spinner").unwrap().specified_values.get("opacity");
+    let styled500 = browser
+        .document()
+        .style_tree(800.0, &PointerState::default());
+    let op500 = find_styled_by_id(&styled500, "spinner")
+        .unwrap()
+        .specified_values
+        .get("opacity");
     if let Some(Value::Number(n)) = op500 {
         assert!((n - 0.5).abs() < 1e-3);
     } else {

@@ -28,15 +28,7 @@ fn test_canvas_get_context_and_properties() {
         "##,
     );
     let runtime2 = execute_dom_scripts(&mut dom2);
-    assert_eq!(
-        runtime2.console,
-        vec![
-            "500 300",
-            "1",
-            "5",
-            "255 0 0 255",
-        ]
-    );
+    assert_eq!(runtime2.console, vec!["500 300", "1", "5", "255 0 0 255",]);
 }
 
 #[test]
@@ -59,13 +51,7 @@ fn test_canvas_draw_paths_and_circles() {
         "#,
     );
     let runtime = execute_dom_scripts(&mut dom);
-    assert_eq!(
-        runtime.console,
-        vec![
-            "center: 255 255",
-            "outside: 0",
-        ]
-    );
+    assert_eq!(runtime.console, vec!["center: 255 255", "outside: 0",]);
 }
 
 #[test]
@@ -160,8 +146,13 @@ fn test_canvas_renders_to_display_list_pipeline() {
     let layout = doc.layout(&styled, 800.0);
     let commands = browser_engine::paint::build_display_list(&layout);
 
-    let has_canvas_image = commands.iter().any(|cmd| matches!(cmd, DisplayCommand::Image { .. }));
-    assert!(has_canvas_image, "Display list must contain the rendered canvas Image command");
+    let has_canvas_image = commands
+        .iter()
+        .any(|cmd| matches!(cmd, DisplayCommand::Image { .. }));
+    assert!(
+        has_canvas_image,
+        "Display list must contain the rendered canvas Image command"
+    );
 
     // Also test full raster render output
     let canvas = doc.render(800, 600, 0.0, &browser_engine::PointerState::default());

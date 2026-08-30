@@ -13,7 +13,8 @@ fn run_js(js: &str) -> Document {
 
 #[test]
 fn test_js_map_operations() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let m = new Map([["a", 1], ["b", 2]]);
         console.log("init_size:" + m.size);
         console.log("get_a:" + m.get("a"));
@@ -33,7 +34,8 @@ fn test_js_map_operations() {
 
         m.clear();
         console.log("after_clear_size:" + m.size);
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "init_size:2");
@@ -51,7 +53,8 @@ fn test_js_map_operations() {
 
 #[test]
 fn test_js_set_operations() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let s = new Set(["apple", "banana", "apple"]);
         console.log("init_size:" + s.size);
         console.log("has_apple:" + s.has("apple"));
@@ -70,7 +73,8 @@ fn test_js_set_operations() {
 
         s.clear();
         console.log("after_clear_size:" + s.size);
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "init_size:2");

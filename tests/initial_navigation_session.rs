@@ -85,10 +85,9 @@ impl ResourceLoader for MetadataLoader {
             "#
             .to_vec(),
         );
-        response.headers.append_raw(
-            "set-cookie",
-            "boot=one; Path=/; Secure; SameSite=Lax",
-        );
+        response
+            .headers
+            .append_raw("set-cookie", "boot=one; Path=/; Secure; SameSite=Lax");
         response
             .headers
             .append_raw("strict-transport-security", "max-age=60");
@@ -113,14 +112,15 @@ fn initial_response_state_is_installed_before_bootstrap_scripts() {
     let mut browser = Browser::open(Box::new(loader), &url("http://example.test/start")).unwrap();
 
     assert_eq!(browser.url().to_string(), "https://example.test/home");
-    assert_eq!(browser.history()[0].to_string(), "https://example.test/home");
-    assert_eq!(text(&browser, "seen"), "boot=one");
-    assert!(
-        browser
-            .local_storage_pool
-            .borrow()
-            .contains_key("https://example.test")
+    assert_eq!(
+        browser.history()[0].to_string(),
+        "https://example.test/home"
     );
+    assert_eq!(text(&browser, "seen"), "boot=one");
+    assert!(browser
+        .local_storage_pool
+        .borrow()
+        .contains_key("https://example.test"));
     assert!(!browser
         .local_storage_pool
         .borrow()
@@ -133,7 +133,10 @@ fn initial_response_state_is_installed_before_bootstrap_scripts() {
     let requests = probe.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].url.to_string(), "https://example.test/next");
-    assert_eq!(requests[0].headers.get("cookie").as_deref(), Some("boot=one"));
+    assert_eq!(
+        requests[0].headers.get("cookie").as_deref(),
+        Some("boot=one")
+    );
 }
 
 #[test]
@@ -160,12 +163,12 @@ fn http_loader_load_response_retains_wire_headers() {
 
     assert_eq!(response.status, 200);
     assert_eq!(response.body, b"<p>served</p>");
-    assert_eq!(response.headers.get("set-cookie").as_deref(), Some("wire=one; Path=/"));
     assert_eq!(
-        response
-            .headers
-            .get("strict-transport-security")
-            .as_deref(),
+        response.headers.get("set-cookie").as_deref(),
+        Some("wire=one; Path=/")
+    );
+    assert_eq!(
+        response.headers.get("strict-transport-security").as_deref(),
         Some("max-age=60")
     );
     server.join().unwrap();

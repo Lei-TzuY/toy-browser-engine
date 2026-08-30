@@ -9,12 +9,8 @@ fn url(input: &str) -> Url {
 }
 
 fn response_with_cookie(url_text: &str, cookie: &str) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(url_text),
-        200,
-        Some("text/plain"),
-        b"ok".to_vec(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url(url_text), 200, Some("text/plain"), b"ok".to_vec());
     response.headers.append_raw("set-cookie", cookie);
     response
 }
@@ -27,10 +23,7 @@ fn browser_with_script(script: &str) -> (Browser, Rc<ManualNetwork>) {
     let transport = Rc::new(ManualNetwork::new());
     transport.respond(
         "http://example.test/api",
-        response_with_cookie(
-            "http://example.test/api",
-            "server=new; Path=/",
-        ),
+        response_with_cookie("http://example.test/api", "server=new; Path=/"),
     );
 
     let browser = Browser::open_with_network(

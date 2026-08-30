@@ -27,7 +27,10 @@ fn test_aspect_ratio_layout_dimensions() {
     let styled = style_tree(&doc, &stylesheet);
     let layout = layout_tree(&styled, 800.0);
 
-    fn find_by_class<'a, 'b>(lb: &'b browser_engine::layout::LayoutBox<'a>, class: &str) -> Option<&'b browser_engine::layout::LayoutBox<'a>> {
+    fn find_by_class<'a, 'b>(
+        lb: &'b browser_engine::layout::LayoutBox<'a>,
+        class: &str,
+    ) -> Option<&'b browser_engine::layout::LayoutBox<'a>> {
         if let Some(s) = lb.styled_node() {
             if let browser_engine::dom::NodeType::Element(e) = &s.node.node_type {
                 if e.get_attr("class") == Some(class) {
@@ -40,9 +43,15 @@ fn test_aspect_ratio_layout_dimensions() {
 
     let b1 = find_by_class(&layout, "box-16-9").expect("box-16-9 not found");
     assert_eq!(b1.dimensions.content.width, 160.0);
-    assert!((b1.dimensions.content.height - 90.0).abs() < 1.0, "160px width with 16/9 aspect-ratio should have 90px height");
+    assert!(
+        (b1.dimensions.content.height - 90.0).abs() < 1.0,
+        "160px width with 16/9 aspect-ratio should have 90px height"
+    );
 
     let b2 = find_by_class(&layout, "box-square").expect("box-square not found");
     assert_eq!(b2.dimensions.content.width, 120.0);
-    assert_eq!(b2.dimensions.content.height, 120.0, "120px width with 1:1 aspect-ratio should have 120px height");
+    assert_eq!(
+        b2.dimensions.content.height, 120.0,
+        "120px width with 1:1 aspect-ratio should have 120px height"
+    );
 }

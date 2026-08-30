@@ -5,10 +5,10 @@
 //! the browser owns `Origin`, anonymous CORS uses same-origin credentials, and
 //! `use-credentials` permits cross-origin credentials subject to cookie policy.
 
+use crate::cookie_same_site::SameSiteRequestContext;
 use crate::cors_settings::{
     parse_cors_settings_attribute, CorsCredentialsMode, CorsSettingsAttribute,
 };
-use crate::cookie_same_site::SameSiteRequestContext;
 use crate::document_referrer::DocumentReferrerContext;
 use crate::navigation_network::{NavigationNetwork, NetworkCredentialsMode};
 use crate::net::{FetchError, FetchRequest, FetchResponse, Origin};

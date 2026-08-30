@@ -35,11 +35,17 @@ fn test_radial_gradient_parsing_and_display_command() {
     let center_idx = (50 * 100 + 50) * 3;
     let r = canvas.pixels[center_idx];
     let b = canvas.pixels[center_idx + 2];
-    assert!(r > b, "center of radial gradient should have higher red than blue");
+    assert!(
+        r > b,
+        "center of radial gradient should have higher red than blue"
+    );
 
     // Corner pixel (0, 0) should be predominantly blue (#0000ff)
     let corner_idx = 0;
     let r_corner = canvas.pixels[corner_idx];
     let b_corner = canvas.pixels[corner_idx + 2];
-    assert!(b_corner > r_corner, "corner of radial gradient should have higher blue than red");
+    assert!(
+        b_corner > r_corner,
+        "corner of radial gradient should have higher blue than red"
+    );
 }

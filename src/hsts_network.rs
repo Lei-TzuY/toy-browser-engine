@@ -38,7 +38,11 @@ impl HstsNetwork {
         cache: HstsCacheRef,
         clock: Rc<dyn Clock>,
     ) -> HstsNetwork {
-        HstsNetwork { inner, cache, clock }
+        HstsNetwork {
+            inner,
+            cache,
+            clock,
+        }
     }
 
     pub fn with_new_cache(inner: Rc<dyn NetworkBackend>, clock: Rc<dyn Clock>) -> HstsNetwork {

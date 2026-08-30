@@ -13,7 +13,8 @@ fn run_js(js: &str) -> Document {
 
 #[test]
 fn test_intersection_observer_lifecycle() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let observer = new IntersectionObserver((entries) => {}, {
             threshold: [0.0, 0.5, 1.0]
         });
@@ -38,7 +39,8 @@ fn test_intersection_observer_lifecycle() {
         observer.disconnect();
         let after_disconnect = observer.takeRecords();
         console.log("after_disconnect_len:" + after_disconnect.length);
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "rootMargin:0px");

@@ -26,7 +26,10 @@ fn click_blocks_invalid_form_and_focuses_first_control() {
     let button = dom_api::get_element_by_id(&browser.document().dom, "go").unwrap();
     let outcome = browser.click_node(&button);
 
-    assert!(!matches!(outcome, ClickOutcome::Navigated(_)), "{outcome:?}");
+    assert!(
+        !matches!(outcome, ClickOutcome::Navigated(_)),
+        "{outcome:?}"
+    );
     assert_eq!(browser.url(), &start);
     assert_eq!(browser.history().len(), 1);
 
@@ -66,7 +69,10 @@ fn enter_submission_is_blocked_when_invalid() {
     browser.document_mut().focus_path(&field);
     let outcome = browser.press_key(&KeyEvent::new(Key::Enter));
 
-    assert!(!matches!(outcome, ClickOutcome::Navigated(_)), "{outcome:?}");
+    assert!(
+        !matches!(outcome, ClickOutcome::Navigated(_)),
+        "{outcome:?}"
+    );
     assert_eq!(browser.url(), &start);
     assert_eq!(browser.history().len(), 1);
 }

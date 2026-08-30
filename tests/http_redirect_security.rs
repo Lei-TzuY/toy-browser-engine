@@ -48,7 +48,9 @@ fn read_request(stream: &mut TcpStream) -> String {
 }
 
 fn write_response(stream: &mut TcpStream, response: &str) {
-    stream.write_all(response.as_bytes()).expect("write response");
+    stream
+        .write_all(response.as_bytes())
+        .expect("write response");
 }
 
 #[test]
@@ -87,7 +89,9 @@ fn post_302_becomes_get_and_drops_cookie_and_body_headers() {
         Some(b"secret=body".to_vec()),
     );
 
-    let response = HttpLoader::default().fetch(&request).expect("redirect succeeds");
+    let response = HttpLoader::default()
+        .fetch(&request)
+        .expect("redirect succeeds");
     assert!(response.redirected);
     assert_eq!(response.url.path(), "/next");
 
@@ -147,7 +151,9 @@ fn cross_origin_307_preserves_method_and_body_but_strips_credentials() {
         Some(b"payload".to_vec()),
     );
 
-    let response = HttpLoader::default().fetch(&request).expect("redirect succeeds");
+    let response = HttpLoader::default()
+        .fetch(&request)
+        .expect("redirect succeeds");
     assert!(response.redirected);
 
     let source_request = source_server.join().expect("source joins");
@@ -160,7 +166,10 @@ fn cross_origin_307_preserves_method_and_body_but_strips_credentials() {
         "{target_request}"
     );
     assert!(!target_request.contains("cookie:"), "{target_request}");
-    assert!(!target_request.contains("authorization:"), "{target_request}");
+    assert!(
+        !target_request.contains("authorization:"),
+        "{target_request}"
+    );
     assert!(
         !target_request.contains("proxy-authorization:"),
         "{target_request}"
@@ -196,10 +205,7 @@ fn session_network_blocks_cross_origin_redirect_before_cookie_and_hsts_absorptio
 
     let completions = session.poll();
     assert_eq!(completions.len(), 1);
-    assert!(matches!(
-        completions[0].result,
-        Err(FetchError::Blocked(_))
-    ));
+    assert!(matches!(completions[0].result, Err(FetchError::Blocked(_))));
     assert_eq!(session.cookie_jar().borrow().len(), 0);
     assert!(!session.hsts_cache().borrow().is_known_host("other.test", 0));
 }

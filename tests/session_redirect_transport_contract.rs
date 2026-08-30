@@ -31,10 +31,7 @@ fn redirecting_session_rejects_a_transport_that_already_followed_redirects() {
         .append_raw("strict-transport-security", "max-age=3600");
     transport.respond("http://example.test/start", response);
 
-    network.start(
-        41,
-        FetchRequest::get(url("http://example.test/start")),
-    );
+    network.start(41, FetchRequest::get(url("http://example.test/start")));
     assert!(transport.complete(41));
 
     let completions = network.poll();
@@ -46,7 +43,10 @@ fn redirecting_session_rejects_a_transport_that_already_followed_redirects() {
 
     let origin = url("http://example.test/");
     assert_eq!(
-        network.cookie_jar().borrow().get_document_cookie(&origin, 0),
+        network
+            .cookie_jar()
+            .borrow()
+            .get_document_cookie(&origin, 0),
         "",
         "a policy-skipping pre-followed response must not mutate the cookie jar"
     );
@@ -68,10 +68,7 @@ fn redirecting_session_still_accepts_an_ordinary_single_hop_response() {
     let network = SessionNetwork::with_new_state_redirecting(transport.clone(), clock);
 
     transport.respond_text("http://example.test/data", "ok");
-    network.start(
-        42,
-        FetchRequest::get(url("http://example.test/data")),
-    );
+    network.start(42, FetchRequest::get(url("http://example.test/data")));
     assert!(transport.complete(42));
 
     let completions = network.poll();

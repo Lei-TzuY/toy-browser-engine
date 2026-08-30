@@ -119,8 +119,7 @@ impl Browser {
         url: &Url,
         clock: Rc<dyn Clock>,
     ) -> Result<Browser, LoadError> {
-        let pool: Rc<RefCell<HashMap<String, StorageRef>>> =
-            Rc::new(RefCell::new(HashMap::new()));
+        let pool: Rc<RefCell<HashMap<String, StorageRef>>> = Rc::new(RefCell::new(HashMap::new()));
         let origin = format!("{}://{}", url.scheme(), url.host());
         let storage = pool
             .borrow_mut()
@@ -182,7 +181,11 @@ impl Browser {
     pub fn navigate(&mut self, url: &Url) -> Result<(), LoadError> {
         if !url.same_document(self.url()) {
             let storage = self.storage_for_url(url);
-            self.replace_document(Document::load_with_storage(url, self.loader.as_ref(), Some(storage))?);
+            self.replace_document(Document::load_with_storage(
+                url,
+                self.loader.as_ref(),
+                Some(storage),
+            )?);
         }
         self.history.truncate(self.index + 1);
         self.history.push(url.clone());
@@ -203,7 +206,11 @@ impl Browser {
     pub fn reload(&mut self) -> Result<(), LoadError> {
         let url = self.url().clone();
         let storage = self.storage_for_url(&url);
-        self.replace_document(Document::load_with_storage(&url, self.loader.as_ref(), Some(storage))?);
+        self.replace_document(Document::load_with_storage(
+            &url,
+            self.loader.as_ref(),
+            Some(storage),
+        )?);
         Ok(())
     }
 
@@ -662,12 +669,7 @@ impl Browser {
             "content-type",
             "application/x-www-form-urlencoded; charset=UTF-8",
         );
-        let request = FetchRequest::new(
-            submission.url.clone(),
-            Method::Post,
-            headers,
-            Some(body),
-        );
+        let request = FetchRequest::new(submission.url.clone(), Method::Post, headers, Some(body));
 
         match self.loader.fetch(&request) {
             Ok(response) if response.ok() => {

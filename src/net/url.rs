@@ -248,11 +248,15 @@ impl Url {
     }
 
     pub fn set_query(&mut self, query: Option<String>) {
-        self.query = query.map(|q| q.trim_start_matches('?').to_string()).filter(|q| !q.is_empty());
+        self.query = query
+            .map(|q| q.trim_start_matches('?').to_string())
+            .filter(|q| !q.is_empty());
     }
 
     pub fn set_fragment(&mut self, fragment: Option<String>) {
-        self.fragment = fragment.map(|f| f.trim_start_matches('#').to_string()).filter(|f| !f.is_empty());
+        self.fragment = fragment
+            .map(|f| f.trim_start_matches('#').to_string())
+            .filter(|f| !f.is_empty());
     }
 
     /// Path plus query — what an HTTP request line carries.

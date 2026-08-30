@@ -6,12 +6,8 @@ fn url(input: &str) -> Url {
 }
 
 fn redirect(locations: &[&str]) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url("https://example.test/start"),
-        302,
-        None,
-        Vec::new(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url("https://example.test/start"), 302, None, Vec::new());
     for location in locations {
         response.headers.append_raw("location", location);
     }

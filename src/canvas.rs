@@ -82,7 +82,11 @@ impl CanvasContext2D {
     }
 
     pub fn to_raster_image(&self) -> Rc<RasterImage> {
-        Rc::new(RasterImage::new(self.width, self.height, self.pixels.clone()))
+        Rc::new(RasterImage::new(
+            self.width,
+            self.height,
+            self.pixels.clone(),
+        ))
     }
 
     pub fn set_filter(&mut self, filter_str: &str) {
@@ -382,8 +386,16 @@ impl CanvasContext2D {
         }
         let h = self.height as i32;
         let w = self.width as i32;
-        let min_y = pts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min).floor() as i32;
-        let max_y = pts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max).ceil() as i32;
+        let min_y = pts
+            .iter()
+            .map(|p| p.1)
+            .fold(f32::INFINITY, f32::min)
+            .floor() as i32;
+        let max_y = pts
+            .iter()
+            .map(|p| p.1)
+            .fold(f32::NEG_INFINITY, f32::max)
+            .ceil() as i32;
         let y_start = min_y.max(0);
         let y_end = max_y.min(h);
 
@@ -468,8 +480,14 @@ impl CanvasContext2D {
         for i in 1..=steps {
             let t = i as f32 / steps as f32;
             let u = 1.0 - t;
-            let px = u * u * u * x0 + 3.0 * u * u * t * tcp1_x + 3.0 * u * t * t * tcp2_x + t * t * t * tx;
-            let py = u * u * u * y0 + 3.0 * u * u * t * tcp1_y + 3.0 * u * t * t * tcp2_y + t * t * t * ty;
+            let px = u * u * u * x0
+                + 3.0 * u * u * t * tcp1_x
+                + 3.0 * u * t * t * tcp2_x
+                + t * t * t * tx;
+            let py = u * u * u * y0
+                + 3.0 * u * u * t * tcp1_y
+                + 3.0 * u * t * t * tcp2_y
+                + t * t * t * ty;
             self.current_point = (px, py);
             self.path.push(PathCommand::LineTo(px, py));
         }
@@ -685,9 +703,8 @@ impl CanvasContext2D {
                         let coverage = bitmap[row * metrics.width + col];
                         if coverage > 0 {
                             let mut px_color = color;
-                            px_color.a = ((color.a as f32 * (coverage as f32 / 255.0)).round()
-                                as u8)
-                                .max(1);
+                            px_color.a =
+                                ((color.a as f32 * (coverage as f32 / 255.0)).round() as u8).max(1);
                             self.blend_pixel(
                                 (gx + col as f32).round() as i32,
                                 (gy + row as f32).round() as i32,

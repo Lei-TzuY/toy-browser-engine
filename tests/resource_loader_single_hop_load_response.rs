@@ -97,7 +97,10 @@ fn http_loader_single_hop_load_exposes_redirect_and_forwards_request_headers() {
 
     assert_eq!(response.status, 302);
     assert_eq!(response.url, target);
-    assert_eq!(response.headers.get("location").as_deref(), Some("/final.html"));
+    assert_eq!(
+        response.headers.get("location").as_deref(),
+        Some("/final.html")
+    );
     assert_eq!(
         response.headers.get("set-cookie").as_deref(),
         Some("hop=one; Path=/")

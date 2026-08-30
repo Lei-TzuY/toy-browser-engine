@@ -143,8 +143,7 @@ impl Browser {
         url: &Url,
         clock: Rc<dyn Clock>,
     ) -> Result<Browser, LoadError> {
-        let pool: Rc<RefCell<HashMap<String, StorageRef>>> =
-            Rc::new(RefCell::new(HashMap::new()));
+        let pool: Rc<RefCell<HashMap<String, StorageRef>>> = Rc::new(RefCell::new(HashMap::new()));
 
         // Session policy must exist before the first HTTP response arrives so
         // Set-Cookie/HSTS are visible to bootstrap scripts on the first page.
@@ -354,7 +353,9 @@ impl Browser {
             let url = self.document.resolve(href)?;
             return Some(HyperlinkActivation {
                 url,
-                referrerpolicy: element.get_attr("referrerpolicy").map(|value| value.to_string()),
+                referrerpolicy: element
+                    .get_attr("referrerpolicy")
+                    .map(|value| value.to_string()),
                 rel: element.get_attr("rel").map(|value| value.to_string()),
             });
         }
@@ -862,12 +863,7 @@ impl Browser {
             "content-type",
             "application/x-www-form-urlencoded; charset=UTF-8",
         );
-        let request = FetchRequest::new(
-            submission.url.clone(),
-            Method::Post,
-            headers,
-            Some(body),
-        );
+        let request = FetchRequest::new(submission.url.clone(), Method::Post, headers, Some(body));
         let effective_target = self.navigation.effective_url(&submission.url);
         let context = top_level_context(&self.document.url, &effective_target, Method::Post);
 

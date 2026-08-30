@@ -30,10 +30,18 @@ pub fn interpolate(from: &Value, to: &Value, t: f32) -> Value {
 
     match (from, to) {
         (Value::Color(c1), Value::Color(c2)) => {
-            let r = (c1.r as f32 + (c2.r as f32 - c1.r as f32) * t).round().clamp(0.0, 255.0) as u8;
-            let g = (c1.g as f32 + (c2.g as f32 - c1.g as f32) * t).round().clamp(0.0, 255.0) as u8;
-            let b = (c1.b as f32 + (c2.b as f32 - c1.b as f32) * t).round().clamp(0.0, 255.0) as u8;
-            let a = (c1.a as f32 + (c2.a as f32 - c1.a as f32) * t).round().clamp(0.0, 255.0) as u8;
+            let r = (c1.r as f32 + (c2.r as f32 - c1.r as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            let g = (c1.g as f32 + (c2.g as f32 - c1.g as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            let b = (c1.b as f32 + (c2.b as f32 - c1.b as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            let a = (c1.a as f32 + (c2.a as f32 - c1.a as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8;
             Value::Color(Color::rgba(r, g, b, a))
         }
         (Value::Length(v1, u1), Value::Length(v2, u2)) if u1 == u2 => {
@@ -139,12 +147,7 @@ impl TransitionManager {
         }
     }
 
-    fn process_element(
-        &mut self,
-        elem_id: ElementId,
-        specified: &mut PropertyMap,
-        now_ms: f64,
-    ) {
+    fn process_element(&mut self, elem_id: ElementId, specified: &mut PropertyMap, now_ms: f64) {
         let mut specs = Vec::new();
         if let Some(Value::Transition(trans_specs)) = specified.get("transition") {
             specs.extend(trans_specs.clone());
@@ -187,8 +190,9 @@ impl TransitionManager {
                 }
                 if let Some(old_val) = prev.get(prop) {
                     if old_val != new_val {
-                        let matching_spec =
-                            specs.iter().find(|s| s.property == *prop || s.property == "all");
+                        let matching_spec = specs
+                            .iter()
+                            .find(|s| s.property == *prop || s.property == "all");
                         if let Some(spec) = matching_spec {
                             if spec.duration_ms > 0.0 {
                                 let element_active = self.active.entry(elem_id).or_default();

@@ -9,12 +9,8 @@ fn url(input: &str) -> Url {
 }
 
 fn response_with_cookie(url_text: &str, cookie: &str) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(url_text),
-        200,
-        Some("text/plain"),
-        b"ok".to_vec(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url(url_text), 200, Some("text/plain"), b"ok".to_vec());
     response.headers.append_raw("set-cookie", cookie);
     response
 }
@@ -26,16 +22,10 @@ fn browser_with_script(
 ) -> (Browser, Rc<ManualNetwork>) {
     let page = "http://example.test/index.html";
     let mut loader = MemoryLoader::new();
-    loader.insert(
-        page,
-        format!("<script>{script}</script>"),
-    );
+    loader.insert(page, format!("<script>{script}</script>"));
 
     let transport = Rc::new(ManualNetwork::new());
-    transport.respond(
-        endpoint,
-        response_with_cookie(endpoint, response_cookie),
-    );
+    transport.respond(endpoint, response_with_cookie(endpoint, response_cookie));
 
     let browser = Browser::open_with_network(
         Box::new(loader),
@@ -178,5 +168,8 @@ fn omit_policy_is_isolated_between_concurrent_fetch_ids() {
     assert!(sent[0].url.to_string().ends_with("/omit"));
     assert!(sent[0].headers.get("cookie").is_none());
     assert!(sent[1].url.to_string().ends_with("/include"));
-    assert_eq!(sent[1].headers.get("cookie").as_deref(), Some("session=old"));
+    assert_eq!(
+        sent[1].headers.get("cookie").as_deref(),
+        Some("session=old")
+    );
 }

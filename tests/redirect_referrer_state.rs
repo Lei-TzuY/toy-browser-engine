@@ -6,12 +6,8 @@ fn url(input: &str) -> Url {
 }
 
 fn redirect(url_value: &str, policy: &str) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url("https://redirect.test/hop"),
-        302,
-        None,
-        Vec::new(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url("https://redirect.test/hop"), 302, None, Vec::new());
     response.headers.append_raw("location", url_value);
     response.headers.append_raw("referrer-policy", policy);
     response
@@ -20,10 +16,8 @@ fn redirect(url_value: &str, policy: &str) -> FetchResponse {
 #[test]
 fn redirect_state_survives_origin_only_serialization_and_can_recompute_from_source() {
     let source = url("https://source.test/private/path?q=secret#fragment");
-    let mut state = RedirectReferrerState::new(
-        Some(source),
-        ReferrerPolicy::StrictOriginWhenCrossOrigin,
-    );
+    let mut state =
+        RedirectReferrerState::new(Some(source), ReferrerPolicy::StrictOriginWhenCrossOrigin);
     let mut planner = RedirectPlanner::default();
 
     let mut first = FetchRequest::get(url("https://redirect.test/start"));

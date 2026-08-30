@@ -22,8 +22,8 @@ mod readiness;
 pub mod fetch {
     pub use super::fetch_core::{
         reason_phrase, FetchCompletion, FetchError, FetchId, FetchRegistry, FetchRequest,
-        FetchResponse, HeaderError, HeaderMap, LocalNetwork, ManualNetwork, Method,
-        NetworkBackend, OfflineNetwork, Origin, MAX_IN_FLIGHT_FETCHES,
+        FetchResponse, HeaderError, HeaderMap, LocalNetwork, ManualNetwork, Method, NetworkBackend,
+        OfflineNetwork, Origin, MAX_IN_FLIGHT_FETCHES,
     };
     pub use super::readiness::{DefaultNetwork, ThreadedNetwork};
 }

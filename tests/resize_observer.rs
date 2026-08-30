@@ -13,7 +13,8 @@ fn run_js(js: &str) -> Document {
 
 #[test]
 fn test_resize_observer_lifecycle_and_records() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let target = document.getElementById("target");
         let ro = new ResizeObserver(function(entries) {});
 
@@ -32,7 +33,8 @@ fn test_resize_observer_lifecycle_and_records() {
         ro.observe(target);
         ro.disconnect();
         console.log("records_after_disconnect:" + ro.takeRecords().length);
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "records_len:1");

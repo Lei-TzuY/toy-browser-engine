@@ -54,10 +54,7 @@ fn one_completion(network: &DefaultNetwork) -> FetchCompletion {
 #[test]
 fn single_hop_default_routes_http_through_fetch_once() {
     let network = DefaultNetwork::new_single_hop(Arc::new(DistinctLoader));
-    network.start(
-        1,
-        FetchRequest::get(url("http://example.test/resource")),
-    );
+    network.start(1, FetchRequest::get(url("http://example.test/resource")));
 
     let completion = one_completion(&network);
     let response = completion.result.expect("response");
@@ -80,10 +77,7 @@ fn single_hop_default_keeps_non_http_on_the_local_fetch_path() {
 #[test]
 fn legacy_default_constructor_keeps_existing_http_fetch_semantics() {
     let network = DefaultNetwork::new(Arc::new(DistinctLoader));
-    network.start(
-        3,
-        FetchRequest::get(url("http://example.test/resource")),
-    );
+    network.start(3, FetchRequest::get(url("http://example.test/resource")));
 
     let completion = one_completion(&network);
     let response = completion.result.expect("response");

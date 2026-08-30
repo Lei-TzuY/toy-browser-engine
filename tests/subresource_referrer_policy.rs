@@ -72,12 +72,8 @@ fn redirect_response_can_tighten_element_selected_policy_for_next_hop() {
         Some("https://page.test/private/index.html?q=1")
     );
 
-    let mut redirect = FetchResponse::synthetic(
-        url("https://cdn.test/start.js"),
-        302,
-        None,
-        Vec::new(),
-    );
+    let mut redirect =
+        FetchResponse::synthetic(url("https://cdn.test/start.js"), 302, None, Vec::new());
     redirect
         .headers
         .append_raw("referrer-policy", "no-referrer");

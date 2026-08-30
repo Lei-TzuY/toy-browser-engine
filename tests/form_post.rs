@@ -83,7 +83,10 @@ fn post_form_sends_urlencoded_body_and_navigates_to_response() {
         request.headers.get("content-type").as_deref(),
         Some("application/x-www-form-urlencoded; charset=UTF-8")
     );
-    assert_eq!(request.body.as_deref(), Some(b"q=toy+browser&exact=1".as_slice()));
+    assert_eq!(
+        request.body.as_deref(),
+        Some(b"q=toy+browser&exact=1".as_slice())
+    );
 }
 
 #[derive(Clone, Default)]

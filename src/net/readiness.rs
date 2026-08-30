@@ -349,9 +349,9 @@ impl DefaultNetwork {
     /// redirect-following worker implementation.
     pub fn new(loader: Arc<dyn ResourceLoader>) -> Self {
         Self {
-            backend: DefaultBackend::Follow(CompletionAware::new(
-                fetch_core::DefaultNetwork::new(loader),
-            )),
+            backend: DefaultBackend::Follow(CompletionAware::new(fetch_core::DefaultNetwork::new(
+                loader,
+            ))),
         }
     }
 
@@ -362,9 +362,9 @@ impl DefaultNetwork {
     /// orchestration without moving fast local resources onto worker threads.
     pub fn new_single_hop(loader: Arc<dyn ResourceLoader>) -> Self {
         Self {
-            backend: DefaultBackend::SingleHop(CompletionAware::new(
-                SingleHopDefaultCore::new(loader),
-            )),
+            backend: DefaultBackend::SingleHop(CompletionAware::new(SingleHopDefaultCore::new(
+                loader,
+            ))),
         }
     }
 }

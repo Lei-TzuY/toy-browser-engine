@@ -39,12 +39,8 @@ impl ResourceLoader for RecordingCorsLoader {
         if matches!(self.mode, ReplyMode::RedirectToWildcardCdn)
             && request.url.host().eq_ignore_ascii_case("page.test")
         {
-            let mut response = FetchResponse::synthetic(
-                request.url.clone(),
-                302,
-                Some("text/plain"),
-                Vec::new(),
-            );
+            let mut response =
+                FetchResponse::synthetic(request.url.clone(), 302, Some("text/plain"), Vec::new());
             response
                 .headers
                 .insert_raw("location", "https://cdn.test/final.js");
@@ -60,7 +56,9 @@ impl ResourceLoader for RecordingCorsLoader {
 
         match self.mode {
             ReplyMode::Wildcard | ReplyMode::RedirectToWildcardCdn => {
-                response.headers.insert_raw("access-control-allow-origin", "*");
+                response
+                    .headers
+                    .insert_raw("access-control-allow-origin", "*");
             }
             ReplyMode::ExactWithCredentials => {
                 response
@@ -87,7 +85,9 @@ fn network(
 ) -> (NavigationNetwork, Arc<Mutex<Vec<FetchRequest>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let clock = Rc::new(ManualClock::new());
-    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(clock.clone())));
+    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(
+        clock.clone(),
+    )));
     let hsts = Rc::new(std::cell::RefCell::new(HstsCache::new()));
     let loader = RecordingCorsLoader {
         seen: seen.clone(),
@@ -129,7 +129,9 @@ fn anonymous_cross_origin_replaces_origin_and_omits_cookies() {
     );
 
     let mut request = FetchRequest::get(url("https://cdn.test/app.js"));
-    request.headers.insert_raw("origin", "https://attacker.test");
+    request
+        .headers
+        .insert_raw("origin", "https://attacker.test");
     request.headers.insert_raw("cookie", "forged=1");
 
     document()
@@ -144,7 +146,10 @@ fn anonymous_cross_origin_replaces_origin_and_omits_cookies() {
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].headers.get("origin").as_deref(), Some("https://page.test"));
+    assert_eq!(
+        seen[0].headers.get("origin").as_deref(),
+        Some("https://page.test")
+    );
     assert_eq!(seen[0].headers.get("cookie"), None);
 }
 
@@ -169,8 +174,14 @@ fn use_credentials_cross_origin_includes_eligible_cookie() {
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].headers.get("origin").as_deref(), Some("https://page.test"));
-    assert_eq!(seen[0].headers.get("cookie").as_deref(), Some("cdn_session=secret"));
+    assert_eq!(
+        seen[0].headers.get("origin").as_deref(),
+        Some("https://page.test")
+    );
+    assert_eq!(
+        seen[0].headers.get("cookie").as_deref(),
+        Some("cdn_session=secret")
+    );
 }
 
 #[test]
@@ -193,7 +204,10 @@ fn anonymous_same_origin_keeps_same_origin_credentials() {
         .expect("same-origin anonymous CORS should retain same-origin credentials");
 
     let seen = seen.lock().unwrap();
-    assert_eq!(seen[0].headers.get("cookie").as_deref(), Some("page_session=secret"));
+    assert_eq!(
+        seen[0].headers.get("cookie").as_deref(),
+        Some("page_session=secret")
+    );
 }
 
 #[test]
@@ -278,7 +292,13 @@ fn anonymous_redirect_recomputes_cookie_eligibility_per_hop() {
     assert!(response.redirected);
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
-    assert_eq!(seen[0].headers.get("cookie").as_deref(), Some("page_session=first"));
+    assert_eq!(
+        seen[0].headers.get("cookie").as_deref(),
+        Some("page_session=first")
+    );
     assert_eq!(seen[1].headers.get("cookie"), None);
-    assert_eq!(seen[1].headers.get("origin").as_deref(), Some("https://page.test"));
+    assert_eq!(
+        seen[1].headers.get("origin").as_deref(),
+        Some("https://page.test")
+    );
 }

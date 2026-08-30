@@ -6,12 +6,8 @@ fn url(input: &str) -> Url {
 }
 
 fn redirect_response(fields: &[&str]) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url("https://redirect.test/hop"),
-        302,
-        None,
-        Vec::new(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url("https://redirect.test/hop"), 302, None, Vec::new());
     response
         .headers
         .append_raw("location", "https://target.test/next");

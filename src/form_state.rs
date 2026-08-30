@@ -104,7 +104,10 @@ mod tests {
         assert!(reset_form_state(&mut dom, &form));
 
         let text_element = dom_api::node_at(&dom, &text).unwrap().as_element().unwrap();
-        let box_element = dom_api::node_at(&dom, &box_path).unwrap().as_element().unwrap();
+        let box_element = dom_api::node_at(&dom, &box_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
         let r1_element = dom_api::node_at(&dom, &r1).unwrap().as_element().unwrap();
         let r2_element = dom_api::node_at(&dom, &r2).unwrap().as_element().unwrap();
         assert_eq!(text_element.control_value(), "default");

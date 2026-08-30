@@ -3,12 +3,8 @@ use browser_engine::net::FetchResponse;
 use browser_engine::{DocumentReferrerContext, ReferrerPolicy, Url};
 
 fn response(url: &str, policy: Option<&str>) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        Url::parse(url).unwrap(),
-        200,
-        Some("text/html"),
-        Vec::new(),
-    );
+    let mut response =
+        FetchResponse::synthetic(Url::parse(url).unwrap(), 200, Some("text/html"), Vec::new());
     if let Some(policy) = policy {
         response.headers.append_raw("referrer-policy", policy);
     }
@@ -18,18 +14,15 @@ fn response(url: &str, policy: Option<&str>) -> FetchResponse {
 #[test]
 fn meta_referrer_policy_overrides_the_http_header_after_parse() {
     let response = response("https://source.test/private/page?q=1", Some("origin"));
-    let dom = parse_html(
-        r#"<html><head><meta name="referrer" content="no-referrer"></head></html>"#,
-    );
+    let dom =
+        parse_html(r#"<html><head><meta name="referrer" content="no-referrer"></head></html>"#);
 
     let context = DocumentReferrerContext::from_response_and_document(&response, &dom);
     assert_eq!(context.policy(), ReferrerPolicy::NoReferrer);
 
     let target = Url::parse("https://other.test/next").unwrap();
     assert_eq!(
-        context
-            .policy()
-            .compute(context.source().unwrap(), &target),
+        context.policy().compute(context.source().unwrap(), &target),
         None
     );
 }
@@ -55,9 +48,7 @@ fn legacy_always_enables_full_referrer_and_still_strips_fragment() {
         "https://source.test/private/page?q=1#secret",
         Some("no-referrer"),
     );
-    let dom = parse_html(
-        r#"<meta NAME="REFERRER" content="ALWAYS">"#,
-    );
+    let dom = parse_html(r#"<meta NAME="REFERRER" content="ALWAYS">"#);
 
     let context = DocumentReferrerContext::from_response_and_document(&response, &dom);
     let target = Url::parse("http://other.test/next").unwrap();

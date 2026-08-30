@@ -84,10 +84,7 @@ mod tests {
     #[test]
     fn attribute_does_not_reuse_header_or_meta_tokenization_rules() {
         assert_eq!(parse_referrer_policy_attribute(" origin "), None);
-        assert_eq!(
-            parse_referrer_policy_attribute("origin, no-referrer"),
-            None
-        );
+        assert_eq!(parse_referrer_policy_attribute("origin, no-referrer"), None);
         assert_eq!(parse_referrer_policy_attribute("always"), None);
     }
 

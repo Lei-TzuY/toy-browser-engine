@@ -245,12 +245,8 @@ mod tests {
     }
 
     fn response(url: &str, status: u16, location: Option<&str>) -> FetchResponse {
-        let mut response = FetchResponse::synthetic(
-            Url::parse(url).unwrap(),
-            status,
-            None,
-            Vec::new(),
-        );
+        let mut response =
+            FetchResponse::synthetic(Url::parse(url).unwrap(), status, None, Vec::new());
         if let Some(location) = location {
             response.headers.insert_raw("location", location);
         }
@@ -360,16 +356,9 @@ mod tests {
     #[test]
     fn comma_inside_one_location_field_is_not_split_as_multiple_values() {
         let original = FetchRequest::get(Url::parse("https://example.test/a").unwrap());
-        let redirect = response(
-            "https://example.test/a",
-            302,
-            Some("/next?tags=alpha,beta"),
-        );
+        let redirect = response("https://example.test/a", 302, Some("/next?tags=alpha,beta"));
         let mut planner = RedirectPlanner::new(1);
-        let next = planner
-            .next_request(&original, &redirect)
-            .unwrap()
-            .unwrap();
+        let next = planner.next_request(&original, &redirect).unwrap().unwrap();
 
         assert_eq!(
             next.url.to_string(),
@@ -382,7 +371,10 @@ mod tests {
         let original = FetchRequest::get(Url::parse("http://example.test/a").unwrap());
         let mut planner = RedirectPlanner::new(0);
         assert_eq!(
-            planner.next_request(&original, &response("http://example.test/a", 304, Some("/b"))),
+            planner.next_request(
+                &original,
+                &response("http://example.test/a", 304, Some("/b"))
+            ),
             Ok(None)
         );
         assert_eq!(
@@ -408,9 +400,8 @@ mod tests {
 
     #[test]
     fn location_without_fragment_inherits_current_request_fragment() {
-        let original = FetchRequest::get(
-            Url::parse("https://example.test/start#section-2").unwrap(),
-        );
+        let original =
+            FetchRequest::get(Url::parse("https://example.test/start#section-2").unwrap());
         let mut planner = RedirectPlanner::new(1);
         let next = planner
             .next_request(
@@ -428,9 +419,7 @@ mod tests {
 
     #[test]
     fn explicit_location_fragment_overrides_inherited_fragment() {
-        let original = FetchRequest::get(
-            Url::parse("https://example.test/start#old").unwrap(),
-        );
+        let original = FetchRequest::get(Url::parse("https://example.test/start#old").unwrap());
         let mut planner = RedirectPlanner::new(1);
         let next = planner
             .next_request(

@@ -11,9 +11,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::cookie_network::{
-    CookieCredentials, CookiePolicyRegistry, CookieRequestPolicy,
-};
+use crate::cookie_network::{CookieCredentials, CookiePolicyRegistry, CookieRequestPolicy};
 use crate::cookie_same_site::SameSiteRequestContext;
 use crate::eventloop::Clock;
 use crate::hsts_network::HstsCacheRef;
@@ -78,7 +76,10 @@ impl SessionRedirectNetwork {
             .unwrap_or_else(|| CookieRequestPolicy::same_site(request.method))
     }
 
-    fn redirect_policy(credentials: CookieCredentials, request: &FetchRequest) -> CookieRequestPolicy {
+    fn redirect_policy(
+        credentials: CookieCredentials,
+        request: &FetchRequest,
+    ) -> CookieRequestPolicy {
         CookieRequestPolicy::new(
             credentials,
             SameSiteRequestContext::same_site(request.method),
@@ -175,10 +176,8 @@ impl NetworkBackend for SessionRedirectNetwork {
                     // completes. Re-arm the same credentials mode before the
                     // next hop, with a same-origin subresource context updated
                     // for any redirect method rewrite.
-                    self.cookie_policies.set(
-                        id,
-                        Self::redirect_policy(chain.credentials, &next_request),
-                    );
+                    self.cookie_policies
+                        .set(id, Self::redirect_policy(chain.credentials, &next_request));
 
                     chain.current_request = next_request.clone();
                     chain.current_request.url = effective_next;

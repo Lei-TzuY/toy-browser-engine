@@ -152,17 +152,12 @@ fn fetch_set_cookie_updates_document_cookie_and_the_next_request() {
         requests[1].headers.get("cookie"),
         Some("auth=token123".to_string())
     );
-    assert!(
-        browser
-            .cookie_jar()
-            .borrow()
-            .get_http_cookie_header(
-                &Url::parse("http://example.test/anything").unwrap(),
-                0,
-            )
-            .unwrap()
-            .contains("auth=token123")
-    );
+    assert!(browser
+        .cookie_jar()
+        .borrow()
+        .get_http_cookie_header(&Url::parse("http://example.test/anything").unwrap(), 0,)
+        .unwrap()
+        .contains("auth=token123"));
 }
 
 #[test]
@@ -185,11 +180,7 @@ fn non_httponly_fetch_cookie_is_immediately_visible_to_script() {
     manual.set_auto_complete(true);
     manual.respond(
         "http://example.test/prefs",
-        response_with_cookie(
-            "http://example.test/prefs",
-            "theme=dark; Path=/",
-            "ok",
-        ),
+        response_with_cookie("http://example.test/prefs", "theme=dark; Path=/", "ok"),
     );
 
     let mut browser = Browser::open_with_network(

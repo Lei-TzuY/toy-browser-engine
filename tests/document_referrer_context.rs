@@ -43,9 +43,7 @@ impl ResourceLoader for RecordingLoader {
                 response
                     .headers
                     .append_raw("location", "https://source.test/landing");
-                response
-                    .headers
-                    .append_raw("referrer-policy", "unsafe-url");
+                response.headers.append_raw("referrer-policy", "unsafe-url");
                 Ok(response)
             }
             ("source.test", "/landing") => {
@@ -78,7 +76,9 @@ impl ResourceLoader for RecordingLoader {
 
 fn navigation(loader: Arc<RecordingLoader>) -> NavigationNetwork {
     let clock = Rc::new(ManualClock::new());
-    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(clock.clone())));
+    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(
+        clock.clone(),
+    )));
     let hsts = Rc::new(std::cell::RefCell::new(HstsCache::new()));
     NavigationNetwork::new(loader, jar, hsts, clock)
 }
@@ -152,7 +152,13 @@ fn independent_navigation_states_do_not_mutate_the_outgoing_document() {
         )
         .expect("navigation succeeds");
 
-    assert_eq!(current.source().unwrap().to_string(), "https://source.test/page");
+    assert_eq!(
+        current.source().unwrap().to_string(),
+        "https://source.test/page"
+    );
     assert_eq!(current.policy(), ReferrerPolicy::default());
-    assert_eq!(committed.source().unwrap().to_string(), "https://source.test/next");
+    assert_eq!(
+        committed.source().unwrap().to_string(),
+        "https://source.test/next"
+    );
 }

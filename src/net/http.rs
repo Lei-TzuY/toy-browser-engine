@@ -131,10 +131,7 @@ pub fn send(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse
 /// process. This is the transport primitive needed to move redirect
 /// orchestration above HSTS/cookie policy without changing today's public
 /// redirect-following API yet.
-pub fn send_once(
-    request: &FetchRequest,
-    config: &HttpConfig,
-) -> Result<FetchResponse, FetchError> {
+pub fn send_once(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse, FetchError> {
     let raw = exchange(
         &request.url,
         request.method,

@@ -13,7 +13,8 @@ fn run_js(js: &str) -> Document {
 
 #[test]
 fn test_structured_clone_deep_copy() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let original = {
             num: 42,
             str: "hello",
@@ -33,7 +34,8 @@ fn test_structured_clone_deep_copy() {
         console.log("copy_arr_0:" + copy.arr[0]);
         console.log("copy_nested:" + copy.arr[2].nested);
         console.log("copy_inner:" + copy.obj.inner);
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "copy_num:42");
@@ -44,14 +46,16 @@ fn test_structured_clone_deep_copy() {
 
 #[test]
 fn test_btoa_and_atob_base64() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let original = "Hello, World!";
         let encoded = btoa(original);
         let decoded = atob(encoded);
 
         console.log("encoded:" + encoded);
         console.log("decoded:" + decoded);
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "encoded:SGVsbG8sIFdvcmxkIQ==");
@@ -60,7 +64,8 @@ fn test_btoa_and_atob_base64() {
 
 #[test]
 fn test_request_and_cancel_idle_callback() {
-    let doc = run_js(r#"
+    let doc = run_js(
+        r#"
         let id1 = requestIdleCallback(() => {
             console.log("idle1_ran");
         });
@@ -71,7 +76,8 @@ fn test_request_and_cancel_idle_callback() {
 
         cancelIdleCallback(id2);
         console.log("registered:" + (id1 > 0 && id2 > 0));
-    "#);
+    "#,
+    );
 
     let logs = doc.runtime.console;
     assert_eq!(logs[0], "registered:true");

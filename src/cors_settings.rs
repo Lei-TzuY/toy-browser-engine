@@ -110,7 +110,12 @@ mod tests {
 
     #[test]
     fn invalid_values_use_anonymous_default() {
-        for value in ["credentialed", " anonymous ", " use-credentials ", "future-mode"] {
+        for value in [
+            "credentialed",
+            " anonymous ",
+            " use-credentials ",
+            "future-mode",
+        ] {
             assert_eq!(
                 parse_cors_settings_attribute(Some(value)),
                 Some(CorsSettingsAttribute::Anonymous),

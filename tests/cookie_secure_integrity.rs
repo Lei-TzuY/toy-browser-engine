@@ -26,11 +26,7 @@ fn insecure_http_cannot_replace_or_delete_overlapping_secure_cookie() {
     let insecure = url("http://example.test/login");
 
     assert!(!jar.store_set_cookie("sid=evil; Path=/login", &insecure, 0));
-    assert!(!jar.store_set_cookie(
-        "sid=; Path=/login; Max-Age=0",
-        &insecure,
-        0,
-    ));
+    assert!(!jar.store_set_cookie("sid=; Path=/login; Max-Age=0", &insecure, 0,));
 
     assert_eq!(
         jar.get_http_cookie_header(&url("https://example.test/login"), 0)
@@ -50,11 +46,7 @@ fn secure_integrity_path_comparison_is_deliberately_non_symmetric() {
         0,
     ));
 
-    assert!(jar.store_set_cookie(
-        "sid=broad; Path=/",
-        &url("http://example.test/"),
-        0,
-    ));
+    assert!(jar.store_set_cookie("sid=broad; Path=/", &url("http://example.test/"), 0,));
 
     assert_eq!(
         jar.get_http_cookie_header(&url("https://example.test/login/en"), 0)
@@ -77,11 +69,7 @@ fn secure_integrity_checks_overlapping_parent_and_subdomains() {
         0,
     ));
 
-    assert!(!jar.store_set_cookie(
-        "sid=sub; Path=/",
-        &url("http://sub.example.test/"),
-        0,
-    ));
+    assert!(!jar.store_set_cookie("sid=sub; Path=/", &url("http://sub.example.test/"), 0,));
 
     assert_eq!(
         jar.get_http_cookie_header(&url("https://sub.example.test/"), 0)
@@ -95,16 +83,8 @@ fn unrelated_domain_and_different_cookie_name_do_not_trigger_integrity_block() {
     let mut jar = CookieJar::new();
     seed_secure(&mut jar, "/");
 
-    assert!(jar.store_set_cookie(
-        "other=1; Path=/",
-        &url("http://example.test/"),
-        0,
-    ));
-    assert!(jar.store_set_cookie(
-        "sid=elsewhere; Path=/",
-        &url("http://other.test/"),
-        0,
-    ));
+    assert!(jar.store_set_cookie("other=1; Path=/", &url("http://example.test/"), 0,));
+    assert!(jar.store_set_cookie("sid=elsewhere; Path=/", &url("http://other.test/"), 0,));
 
     assert_eq!(
         jar.get_http_cookie_header(&url("http://example.test/"), 0)
@@ -122,17 +102,9 @@ fn unrelated_domain_and_different_cookie_name_do_not_trigger_integrity_block() {
 fn insecure_document_cookie_cannot_overlay_secure_state_but_https_can() {
     let mut jar = CookieJar::new();
     let secure_source = url("https://example.test/");
-    assert!(jar.store_set_cookie(
-        "sid=good; Path=/; Secure",
-        &secure_source,
-        0,
-    ));
+    assert!(jar.store_set_cookie("sid=good; Path=/; Secure", &secure_source, 0,));
 
-    jar.set_document_cookie(
-        "sid=script-http; Path=/",
-        &url("http://example.test/"),
-        0,
-    );
+    jar.set_document_cookie("sid=script-http; Path=/", &url("http://example.test/"), 0);
     assert_eq!(
         jar.get_http_cookie_header(&secure_source, 0).as_deref(),
         Some("sid=good")
@@ -141,11 +113,7 @@ fn insecure_document_cookie_cannot_overlay_secure_state_but_https_can() {
     // HttpOnly is intentionally absent here. This test isolates the Secure
     // overlay rule; #111 separately proves that script can never overwrite an
     // HttpOnly cookie, even from HTTPS.
-    jar.set_document_cookie(
-        "sid=script-https; Path=/",
-        &secure_source,
-        0,
-    );
+    jar.set_document_cookie("sid=script-https; Path=/", &secure_source, 0);
     assert_eq!(
         jar.get_http_cookie_header(&url("http://example.test/"), 0)
             .as_deref(),
@@ -174,11 +142,7 @@ fn cookie_network_rejects_insecure_set_cookie_before_it_reaches_shared_jar() {
     let mut seeded = CookieJar::new();
     seed_secure(&mut seeded, "/login");
     let jar = Rc::new(RefCell::new(seeded));
-    let network = CookieNetwork::new(
-        inner.clone(),
-        jar.clone(),
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), jar.clone(), Rc::new(ManualClock::new()));
 
     network.start(7, FetchRequest::get(response_url));
     let completions = network.poll();

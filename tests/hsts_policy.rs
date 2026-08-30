@@ -81,16 +81,8 @@ fn zero_age_child_does_not_cancel_parent_include_subdomains_policy() {
         "max-age=100; includeSubDomains",
         0,
     );
-    cache.observe_response(
-        &url("https://api.example.test/"),
-        "max-age=100",
-        0,
-    );
-    cache.observe_response(
-        &url("https://api.example.test/"),
-        "max-age=0",
-        1,
-    );
+    cache.observe_response(&url("https://api.example.test/"), "max-age=100", 0);
+    cache.observe_response(&url("https://api.example.test/"), "max-age=0", 1);
 
     assert!(cache.is_known_host("api.example.test", 2));
     assert_eq!(
@@ -109,11 +101,7 @@ fn insecure_or_ip_literal_learning_is_rejected() {
         "max-age=100; includeSubDomains",
         0,
     ));
-    assert!(!cache.observe_response(
-        &url("https://192.0.2.1/"),
-        "max-age=100",
-        0,
-    ));
+    assert!(!cache.observe_response(&url("https://192.0.2.1/"), "max-age=100", 0,));
     assert!(!cache.is_known_host("192.0.2.1", 1));
     assert!(cache.is_empty());
 }

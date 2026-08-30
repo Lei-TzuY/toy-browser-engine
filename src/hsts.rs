@@ -131,8 +131,7 @@ impl HstsCache {
 
     /// Remove expired learned state.
     pub fn purge_expired(&mut self, now_ms: u64) {
-        self.entries
-            .retain(|_, entry| entry.expires_at_ms > now_ms);
+        self.entries.retain(|_, entry| entry.expires_at_ms > now_ms);
     }
 
     /// Whether `host` is a Known HSTS Host at `now_ms`.
@@ -155,9 +154,11 @@ impl HstsCache {
         let mut remainder = host.as_str();
         while let Some(dot) = remainder.find('.') {
             remainder = &remainder[dot + 1..];
-            if self.entries.get(remainder).is_some_and(|entry| {
-                entry.expires_at_ms > now_ms && entry.include_subdomains
-            }) {
+            if self
+                .entries
+                .get(remainder)
+                .is_some_and(|entry| entry.expires_at_ms > now_ms && entry.include_subdomains)
+            {
                 return true;
             }
         }
@@ -291,8 +292,14 @@ mod tests {
 
     #[test]
     fn canonicalizes_dns_case_and_one_terminal_root_dot() {
-        assert_eq!(canonical_dns_host("Example.TEST."), Some("example.test".into()));
-        assert_eq!(canonical_dns_host("XN--BCHER-KVA.Example"), Some("xn--bcher-kva.example".into()));
+        assert_eq!(
+            canonical_dns_host("Example.TEST."),
+            Some("example.test".into())
+        );
+        assert_eq!(
+            canonical_dns_host("XN--BCHER-KVA.Example"),
+            Some("xn--bcher-kva.example".into())
+        );
         assert_eq!(canonical_dns_host("example.test.."), None);
     }
 
@@ -303,8 +310,14 @@ mod tests {
         assert_eq!(canonical_dns_host("bad-.example"), None);
         assert_eq!(canonical_dns_host("bad_name.example"), None);
         assert_eq!(canonical_dns_host("bücher.example"), None);
-        assert_eq!(canonical_dns_host(&format!("{}.example", "a".repeat(64))), None);
-        assert_eq!(canonical_dns_host(&format!("{}.test", "a".repeat(249))), None);
+        assert_eq!(
+            canonical_dns_host(&format!("{}.example", "a".repeat(64))),
+            None
+        );
+        assert_eq!(
+            canonical_dns_host(&format!("{}.test", "a".repeat(249))),
+            None
+        );
     }
 
     #[test]

@@ -15,10 +15,12 @@ fn run_js(html: &str, js: &str) -> Document {
 
 #[test]
 fn test_css_filter_parsing_and_computed_style() {
-    let sheet = parse_css(r#"
+    let sheet = parse_css(
+        r#"
         .hero { filter: blur(4px) grayscale(80%) brightness(1.5) contrast(2) invert(100%) opacity(0.5); }
         .reset { filter: none; }
-    "#);
+    "#,
+    );
 
     assert_eq!(sheet.rules.len(), 2);
     let decl = &sheet.rules[0].declarations[0];

@@ -373,7 +373,9 @@ pub fn element_matches(root: &Node, path: &[usize], selector: &str) -> bool {
     if selectors.is_empty() {
         return false;
     }
-    selectors.iter().any(|s| selector_matches_path(root, path, s))
+    selectors
+        .iter()
+        .any(|s| selector_matches_path(root, path, s))
 }
 
 /// Finds the closest ancestor element (starting with `path`) matching `selector`.
@@ -384,8 +386,14 @@ pub fn element_closest(root: &Node, path: &[usize], selector: &str) -> Option<No
     }
     for n in (0..=path.len()).rev() {
         let candidate = &path[..n];
-        if node_at(root, candidate).and_then(|node| node.as_element()).is_some() {
-            if selectors.iter().any(|s| selector_matches_path(root, candidate, s)) {
+        if node_at(root, candidate)
+            .and_then(|node| node.as_element())
+            .is_some()
+        {
+            if selectors
+                .iter()
+                .any(|s| selector_matches_path(root, candidate, s))
+            {
                 return Some(candidate.to_vec());
             }
         }

@@ -3,9 +3,7 @@ use std::rc::Rc;
 
 use browser_engine::cookie::CookieJar;
 use browser_engine::eventloop::ManualClock;
-use browser_engine::net::{
-    FetchRequest, FetchResponse, ManualNetwork, NetworkBackend, Url,
-};
+use browser_engine::net::{FetchRequest, FetchResponse, ManualNetwork, NetworkBackend, Url};
 use browser_engine::CookieNetwork;
 
 fn url(input: &str) -> Url {
@@ -42,12 +40,9 @@ fn host_only_and_domain_cookies_have_distinct_scope() {
         .get_http_cookie_header(&url("https://api.example.test/next"), 1_000)
         .is_none());
 
-    let domain = CookieJar::parse_set_cookie(
-        "shared=1; Domain=example.test; Path=/",
-        &origin,
-        1_000,
-    )
-    .unwrap();
+    let domain =
+        CookieJar::parse_set_cookie("shared=1; Domain=example.test; Path=/", &origin, 1_000)
+            .unwrap();
     assert!(!domain.host_only);
     jar.store(domain, 1_000);
 
@@ -60,31 +55,17 @@ fn host_only_and_domain_cookies_have_distinct_scope() {
 #[test]
 fn unrelated_domain_and_non_http_cookie_sources_are_rejected() {
     let origin = url("https://shop.example.test/cart");
-    assert!(CookieJar::parse_set_cookie(
-        "poison=1; Domain=attacker.test; Path=/",
-        &origin,
-        0
-    )
-    .is_none());
-    assert!(CookieJar::parse_set_cookie(
-        "poison=1; Domain=ample.test; Path=/",
-        &origin,
-        0
-    )
-    .is_none());
+    assert!(
+        CookieJar::parse_set_cookie("poison=1; Domain=attacker.test; Path=/", &origin, 0).is_none()
+    );
+    assert!(
+        CookieJar::parse_set_cookie("poison=1; Domain=ample.test; Path=/", &origin, 0).is_none()
+    );
 
-    assert!(CookieJar::parse_set_cookie(
-        "local=1; Path=/",
-        &url("file:///tmp/index.html"),
-        0
-    )
-    .is_none());
-    assert!(CookieJar::parse_set_cookie(
-        "demo=1; Path=/",
-        &url("demo:///index.html"),
-        0
-    )
-    .is_none());
+    assert!(
+        CookieJar::parse_set_cookie("local=1; Path=/", &url("file:///tmp/index.html"), 0).is_none()
+    );
+    assert!(CookieJar::parse_set_cookie("demo=1; Path=/", &url("demo:///index.html"), 0).is_none());
 }
 
 #[test]
@@ -131,18 +112,17 @@ fn browser_owned_cookie_header_replaces_page_supplied_value() {
     let cookie = CookieJar::parse_set_cookie("trusted=yes; Path=/", &origin, 0).unwrap();
     jar.borrow_mut().store(cookie, 0);
 
-    let network = CookieNetwork::new(
-        inner.clone(),
-        jar,
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), jar, Rc::new(ManualClock::new()));
     let mut request = FetchRequest::get(url("http://example.test/api"));
     request.headers.insert_raw("cookie", "forged=evil");
     network.start(9, request);
 
     let sent = inner.requests();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].headers.get("cookie"), Some("trusted=yes".to_string()));
+    assert_eq!(
+        sent[0].headers.get("cookie"),
+        Some("trusted=yes".to_string())
+    );
 }
 
 #[test]
@@ -191,23 +171,17 @@ fn multiple_set_cookie_lines_are_processed_independently() {
         ),
     );
     let jar = Rc::new(RefCell::new(CookieJar::new()));
-    let network = CookieNetwork::new(
-        inner.clone(),
-        jar.clone(),
-        Rc::new(ManualClock::new()),
-    );
+    let network = CookieNetwork::new(inner.clone(), jar.clone(), Rc::new(ManualClock::new()));
 
-    network.start(
-        1,
-        FetchRequest::get(url("https://www.example.test/login")),
-    );
+    network.start(1, FetchRequest::get(url("https://www.example.test/login")));
     network.poll();
-    assert_eq!(jar.borrow().len(), 2, "the unrelated Domain cookie is rejected");
-
-    network.start(
+    assert_eq!(
+        jar.borrow().len(),
         2,
-        FetchRequest::get(url("https://api.example.test/data")),
+        "the unrelated Domain cookie is rejected"
     );
+
+    network.start(2, FetchRequest::get(url("https://api.example.test/data")));
     let sent = inner.requests();
     assert_eq!(
         sent[1].headers.get("cookie"),

@@ -89,9 +89,7 @@ impl ResourceLoader for ScriptedLoader {
                 );
                 Ok(response)
             }
-            ("example.test", "/hsts-next") => {
-                Ok(Self::response(request, 200, b"hsts-final", None))
-            }
+            ("example.test", "/hsts-next") => Ok(Self::response(request, 200, b"hsts-final", None)),
             ("example.test", "/cross-start") => Ok(Self::response(
                 request,
                 302,
@@ -107,9 +105,7 @@ impl ResourceLoader for ScriptedLoader {
                 b"redirect",
                 Some("http://other.test/post-final"),
             )),
-            ("other.test", "/post-final") => {
-                Ok(Self::response(request, 200, b"post-final", None))
-            }
+            ("other.test", "/post-final") => Ok(Self::response(request, 200, b"post-final", None)),
             _ => Ok(Self::response(request, 404, b"not found", None)),
         }
     }
@@ -122,7 +118,9 @@ fn navigation(
     browser_engine::cookie_network::CookieJarRef,
 ) {
     let clock = Rc::new(ManualClock::new());
-    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(clock.clone())));
+    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(
+        clock.clone(),
+    )));
     let hsts = Rc::new(std::cell::RefCell::new(HstsCache::new()));
     (
         NavigationNetwork::new(loader, jar.clone(), hsts, clock),

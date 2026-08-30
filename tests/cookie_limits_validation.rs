@@ -1,6 +1,6 @@
 use browser_engine::cookie::{
-    CookieJar, MAX_COOKIE_ATTRIBUTE_VALUE_BYTES, MAX_COOKIE_NAME_VALUE_BYTES,
-    MAX_COOKIES_PER_DOMAIN, MAX_COOKIES_TOTAL,
+    CookieJar, MAX_COOKIES_PER_DOMAIN, MAX_COOKIES_TOTAL, MAX_COOKIE_ATTRIBUTE_VALUE_BYTES,
+    MAX_COOKIE_NAME_VALUE_BYTES,
 };
 use browser_engine::Url;
 
@@ -56,7 +56,10 @@ fn size_limit_applies_to_name_plus_value_not_the_whole_set_cookie_field() {
 
     let exact = format!("a={}", "x".repeat(MAX_COOKIE_NAME_VALUE_BYTES - 1));
     let parsed = CookieJar::parse_set_cookie(&exact, &source, 0).expect("4096 name+value bytes");
-    assert_eq!(parsed.name.len() + parsed.value.len(), MAX_COOKIE_NAME_VALUE_BYTES);
+    assert_eq!(
+        parsed.name.len() + parsed.value.len(),
+        MAX_COOKIE_NAME_VALUE_BYTES
+    );
 
     let too_large = format!("a={}", "x".repeat(MAX_COOKIE_NAME_VALUE_BYTES));
     assert!(CookieJar::parse_set_cookie(&too_large, &source, 0).is_none());
@@ -69,14 +72,20 @@ fn size_limit_applies_to_name_plus_value_not_the_whole_set_cookie_field() {
     );
     let parsed = CookieJar::parse_set_cookie(&huge_attribute, &source, 0)
         .expect("oversize unknown attribute is ignored");
-    assert_eq!((parsed.name.as_str(), parsed.value.as_str()), ("small", "1"));
+    assert_eq!(
+        (parsed.name.as_str(), parsed.value.as_str()),
+        ("small", "1")
+    );
     assert_eq!(parsed.path, "/");
 }
 
 #[test]
 fn oversize_known_attribute_is_ignored_and_bad_path_falls_back_to_default() {
     let source = url("example.test");
-    let huge_path = format!("sid=1; Path=/{}", "x".repeat(MAX_COOKIE_ATTRIBUTE_VALUE_BYTES));
+    let huge_path = format!(
+        "sid=1; Path=/{}",
+        "x".repeat(MAX_COOKIE_ATTRIBUTE_VALUE_BYTES)
+    );
     let parsed = CookieJar::parse_set_cookie(&huge_path, &source, 0)
         .expect("cookie remains valid when one attribute is ignored");
     assert_eq!(parsed.path, "/app", "1025-byte Path value is ignored");

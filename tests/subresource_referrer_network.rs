@@ -60,7 +60,9 @@ impl ResourceLoader for RecordingLoader {
 
 fn network(loader: Arc<RecordingLoader>) -> NavigationNetwork {
     let clock = Rc::new(ManualClock::new());
-    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(clock.clone())));
+    let jar = Rc::new(std::cell::RefCell::new(CookieJar::with_clock(
+        clock.clone(),
+    )));
     let hsts = Rc::new(std::cell::RefCell::new(HstsCache::new()));
     NavigationNetwork::new(loader, jar, hsts, clock)
 }

@@ -1,8 +1,6 @@
 use std::rc::Rc;
 
-use browser_engine::cookie_network::{
-    CookieCredentials, CookieRequestPolicy,
-};
+use browser_engine::cookie_network::{CookieCredentials, CookieRequestPolicy};
 use browser_engine::cookie_same_site::SameSiteRequestContext;
 use browser_engine::eventloop::ManualClock;
 use browser_engine::net::{
@@ -15,12 +13,7 @@ fn url(input: &str) -> Url {
 }
 
 fn redirect_response(source: &str, location: &str) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(source),
-        302,
-        Some("text/plain"),
-        Vec::new(),
-    );
+    let mut response = FetchResponse::synthetic(url(source), 302, Some("text/plain"), Vec::new());
     response.headers.insert_raw("location", location);
     response
 }
@@ -32,16 +25,11 @@ fn intermediate_cookie_is_absorbed_before_the_next_hop() {
     let network = SessionNetwork::with_new_state_redirecting(transport.clone(), clock);
 
     let mut first = redirect_response("http://example.test/start", "/next");
-    first
-        .headers
-        .append_raw("set-cookie", "hop=one; Path=/");
+    first.headers.append_raw("set-cookie", "hop=one; Path=/");
     transport.respond("http://example.test/start", first);
     transport.respond_text("http://example.test/next", "done");
 
-    network.start(
-        1,
-        FetchRequest::get(url("http://example.test/start")),
-    );
+    network.start(1, FetchRequest::get(url("http://example.test/start")));
     assert_eq!(transport.requests().len(), 1);
     assert!(transport.requests()[0].headers.get("cookie").is_none());
 
@@ -52,7 +40,11 @@ fn intermediate_cookie_is_absorbed_before_the_next_hop() {
     );
 
     let requests = transport.requests();
-    assert_eq!(requests.len(), 2, "the next hop should be dispatched immediately");
+    assert_eq!(
+        requests.len(),
+        2,
+        "the next hop should be dispatched immediately"
+    );
     assert_eq!(requests[1].url.to_string(), "http://example.test/next");
     assert_eq!(
         requests[1].headers.get("cookie").as_deref(),
@@ -74,10 +66,7 @@ fn intermediate_hsts_upgrade_precedes_secure_cookie_selection() {
     let transport = Rc::new(ManualNetwork::new());
     let network = SessionNetwork::with_new_state_redirecting(transport.clone(), clock);
 
-    let mut first = redirect_response(
-        "https://example.test/start",
-        "http://example.test/next",
-    );
+    let mut first = redirect_response("https://example.test/start", "http://example.test/next");
     first
         .headers
         .append_raw("strict-transport-security", "max-age=3600");
@@ -87,10 +76,7 @@ fn intermediate_hsts_upgrade_precedes_secure_cookie_selection() {
     transport.respond("https://example.test/start", first);
     transport.respond_text("https://example.test/next", "secure done");
 
-    network.start(
-        2,
-        FetchRequest::get(url("https://example.test/start")),
-    );
+    network.start(2, FetchRequest::get(url("https://example.test/start")));
     assert!(transport.complete(2));
     assert!(network.poll().is_empty());
 
@@ -124,10 +110,7 @@ fn cross_origin_redirect_is_blocked_before_second_transport_dispatch() {
         redirect_response("http://example.test/start", "http://other.test/next"),
     );
 
-    network.start(
-        3,
-        FetchRequest::get(url("http://example.test/start")),
-    );
+    network.start(3, FetchRequest::get(url("http://example.test/start")));
     assert!(transport.complete(3));
     let completions = network.poll();
 
@@ -148,11 +131,10 @@ fn credentials_omit_is_rearmed_for_every_redirect_hop() {
     let network = SessionNetwork::with_new_state_redirecting(transport.clone(), clock);
     let origin = url("http://example.test/");
 
-    assert!(network.cookie_jar().borrow_mut().store_set_cookie(
-        "existing=one; Path=/",
-        &origin,
-        0,
-    ));
+    assert!(network
+        .cookie_jar()
+        .borrow_mut()
+        .store_set_cookie("existing=one; Path=/", &origin, 0,));
     network.cookie_policy_registry().set(
         4,
         CookieRequestPolicy::new(
@@ -168,10 +150,7 @@ fn credentials_omit_is_rearmed_for_every_redirect_hop() {
     transport.respond("http://example.test/start", first);
     transport.respond_text("http://example.test/next", "done");
 
-    network.start(
-        4,
-        FetchRequest::get(url("http://example.test/start")),
-    );
+    network.start(4, FetchRequest::get(url("http://example.test/start")));
     assert!(transport.requests()[0].headers.get("cookie").is_none());
 
     assert!(transport.complete(4));
@@ -183,7 +162,10 @@ fn credentials_omit_is_rearmed_for_every_redirect_hop() {
         "credentials=omit must survive CookieNetwork consuming the first-hop policy"
     );
     assert_eq!(
-        network.cookie_jar().borrow().get_document_cookie(&origin, 0),
+        network
+            .cookie_jar()
+            .borrow()
+            .get_document_cookie(&origin, 0),
         "existing=one",
         "Set-Cookie from an omitted intermediate response must not enter the jar"
     );
