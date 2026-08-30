@@ -42,7 +42,7 @@ fn parse_named_coep_header(headers: &HeaderMap, name: &str) -> ParsedCrossOrigin
     let mut values = headers
         .iter()
         .filter(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.as_str());
+        .map(|(_, value)| value);
 
     let Some(value) = values.next() else {
         return ParsedCrossOriginEmbedderPolicy::default();
