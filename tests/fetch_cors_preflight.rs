@@ -26,23 +26,27 @@ fn response(
         .append_raw("access-control-allow-origin", allow_origin);
     if let Some(value) = allow_methods {
         response
-  .headers
-  .append_raw("access-control-allow-methods", value);
+            .headers
+            .append_raw("access-control-allow-methods", value);
     }
     if let Some(value) = allow_headers {
         response
-  .headers
-  .append_raw("access-control-allow-headers", value);
+            .headers
+            .append_raw("access-control-allow-headers", value);
     }
     if allow_credentials {
         response
-  .headers
-  .append_raw("access-control-allow-credentials", "true");
+            .headers
+            .append_raw("access-control-allow-credentials", "true");
     }
     response
 }
 
-fn browser_for(script: &str, endpoint: &str, response: FetchResponse) -> (Browser, Rc<ManualNetwork>) {
+fn browser_for(
+    script: &str,
+    endpoint: &str,
+    response: FetchResponse,
+) -> (Browser, Rc<ManualNetwork>) {
     let page = "http://page.test/index.html";
     let mut loader = MemoryLoader::new();
     loader.insert(page, format!("<script>{script}</script>"));
@@ -58,13 +62,18 @@ fn browser_for(script: &str, endpoint: &str, response: FetchResponse) -> (Browse
     (browser, transport)
 }
 
-fn complete_preflight_and_send_actual(browser: &mut Browser, transport: &Rc<ManualNetwork>) {
+fn complete_preflight_and_send_actual(
+    browser: &mut Browser,
+    transport: &Rc<ManualNetwork>,
+) {
     assert_eq!(transport.complete_all(), 1, "preflight should complete");
     let completion = browser.tick();
     assert_eq!(completion.network_completions, 1);
-    assert_eq!(transport.requests().len(), 1, "actual request waits for a later send phase");
-    let send = browser.tick();
-    assert_eq!(send.requests_sent, 1);
+    assert_eq!(
+        transport.requests().len(),
+        2,
+        "a permitted actual request is dispatched in the preflight completion turn"
+    );
 }
 
 #[test]
@@ -72,11 +81,11 @@ fn put_with_custom_header_preflights_then_sends_actual_request() {
     let endpoint = "http://api.test/data";
     let (mut browser, transport) = browser_for(
         r#"fetch("http://api.test/data", {
-     method: "PUT",
-     headers: { "X-Token": "secret" },
-     body: "payload"
-   }).then(function () { console.log("ok"); })
-     .catch(function () { console.log("blocked"); });"#,
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).then(function () { console.log("ok"); })
+               .catch(function () { console.log("blocked"); });"#,
         endpoint,
         response(endpoint, "*", Some("PUT"), Some("x-token"), false),
     );
@@ -86,25 +95,45 @@ fn put_with_custom_header_preflights_then_sends_actual_request() {
     let requests = transport.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method.as_str(), "OPTIONS");
-    assert_eq!(requests[0].headers.get("origin").as_deref(), Some("http://page.test"));
     assert_eq!(
-        requests[0].headers.get("access-control-request-method").as_deref(),
+        requests[0].headers.get("origin").as_deref(),
+        Some("http://page.test")
+    );
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("access-control-request-method")
+            .as_deref(),
         Some("PUT")
     );
     assert_eq!(
-        requests[0].headers.get("access-control-request-headers").as_deref(),
+        requests[0]
+            .headers
+            .get("access-control-request-headers")
+            .as_deref(),
         Some("x-token")
     );
     assert!(requests[0].headers.get("cookie").is_none());
 
     complete_preflight_and_send_actual(&mut browser, &transport);
     let requests = transport.requests();
-    assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].method.as_str(), "PUT");
-    assert_eq!(requests[1].headers.get("x-token").as_deref(), Some("secret"));
-    assert_eq!(requests[1].headers.get("origin").as_deref(), Some("http://page.test"));
-    assert!(requests[1].headers.get("access-control-request-method").is_none());
-    assert!(requests[1].headers.get("access-control-request-headers").is_none());
+    assert_eq!(
+        requests[1].headers.get("x-token").as_deref(),
+        Some("secret")
+    );
+    assert_eq!(
+        requests[1].headers.get("origin").as_deref(),
+        Some("http://page.test")
+    );
+    assert!(requests[1]
+        .headers
+        .get("access-control-request-method")
+        .is_none());
+    assert!(requests[1]
+        .headers
+        .get("access-control-request-headers")
+        .is_none());
 
     assert_eq!(transport.complete_all(), 1);
     browser.tick();
@@ -116,10 +145,10 @@ fn denied_preflight_never_sends_the_actual_request() {
     let endpoint = "http://api.test/data";
     let (mut browser, transport) = browser_for(
         r#"fetch("http://api.test/data", {
-     method: "PUT",
-     headers: { "X-Token": "secret" },
-     body: "payload"
-   }).catch(function () { console.log("blocked"); });"#,
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).catch(function () { console.log("blocked"); });"#,
         endpoint,
         response(endpoint, "*", Some("GET"), Some("x-token"), false),
     );
@@ -149,11 +178,11 @@ fn credentialed_preflight_omits_cookie_then_actual_request_includes_it() {
         .append_raw("set-cookie", "server=new; Path=/");
     let (mut browser, transport) = browser_for(
         r#"fetch("http://page.test:8080/data", {
-     method: "PUT",
-     headers: { "X-Token": "secret" },
-     body: "payload",
-     credentials: "include"
-   }).then(function () { console.log("ok"); });"#,
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload",
+               credentials: "include"
+             }).then(function () { console.log("ok"); });"#,
         endpoint,
         allowed,
     );
@@ -174,16 +203,18 @@ fn credentialed_preflight_omits_cookie_then_actual_request_includes_it() {
     browser.tick();
     assert_eq!(
         jar.borrow()
-  .get_http_cookie_header(&url(endpoint), 0)
-  .as_deref(),
+            .get_http_cookie_header(&url(endpoint), 0)
+            .as_deref(),
         Some("sid=abc"),
         "preflight credentials are omitted, including response Set-Cookie"
     );
 
-    browser.tick();
     let requests = transport.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1].headers.get("cookie").as_deref(), Some("sid=abc"));
+    assert_eq!(
+        requests[1].headers.get("cookie").as_deref(),
+        Some("sid=abc")
+    );
 
     assert_eq!(transport.complete_all(), 1);
     browser.tick();
@@ -201,10 +232,10 @@ fn noncredentialed_preflight_accepts_wildcard_method_and_headers() {
     let endpoint = "http://api.test/data";
     let (mut browser, transport) = browser_for(
         r#"fetch("http://api.test/data", {
-     method: "PATCH",
-     headers: { "X-Token": "secret" },
-     body: "payload"
-   }).then(function () { console.log("ok"); });"#,
+               method: "PATCH",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).then(function () { console.log("ok"); });"#,
         endpoint,
         response(endpoint, "*", Some("*"), Some("*"), false),
     );
@@ -222,13 +253,19 @@ fn credentialed_preflight_does_not_treat_method_or_header_wildcards_as_permissio
     let endpoint = "http://page.test:8080/data";
     let (mut browser, transport) = browser_for(
         r#"fetch("http://page.test:8080/data", {
-     method: "PUT",
-     headers: { "X-Token": "secret" },
-     body: "payload",
-     credentials: "include"
-   }).catch(function () { console.log("blocked"); });"#,
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload",
+               credentials: "include"
+             }).catch(function () { console.log("blocked"); });"#,
         endpoint,
-        response(endpoint, "http://page.test", Some("*"), Some("*"), true),
+        response(
+            endpoint,
+            "http://page.test",
+            Some("*"),
+            Some("*"),
+            true,
+        ),
     );
 
     browser.tick();
