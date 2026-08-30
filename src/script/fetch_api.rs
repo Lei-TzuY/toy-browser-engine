@@ -161,7 +161,15 @@ impl JsRuntime {
             return Err(FetchError::UnsupportedScheme(scheme.to_string()));
         }
 
-        let source_origin = Origin::of(&self.url);
+        if request.credentials == RequestCredentials::Include
+    && !matches!(scheme, "http" | "https")
+{
+    return Err(FetchError::BadRequest(
+        "credentials mode \"include\" is only supported for HTTP(S) requests".into(),
+    ));
+}
+
+let source_origin = Origin::of(&self.url);
         let same_origin = source_origin.can_fetch(&request.url);
         let cross_origin_web = matches!(self.url.scheme(), "http" | "https")
             && matches!(request.url.scheme(), "http" | "https")
