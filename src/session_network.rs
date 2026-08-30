@@ -10,6 +10,9 @@ use std::time::Duration;
 use crate::cookie::CookieJar;
 use crate::cookie_network::{CookieJarRef, CookieNetwork, CookiePolicyRegistry};
 use crate::eventloop::Clock;
+use crate::fetch_cors_redirect::{
+    FetchCorsRedirectPolicyPublication, FetchCorsRedirectPolicyRegistry,
+};
 use crate::fetch_redirect_policy::{FetchRedirectPolicyPublication, FetchRedirectPolicyRegistry};
 use crate::hsts::HstsCache;
 use crate::hsts_network::{HstsCacheRef, HstsNetwork};
@@ -139,6 +142,7 @@ pub struct SessionNetwork {
     hsts_cache: HstsCacheRef,
     cookie_policies: CookiePolicyRegistry,
     _redirect_policy_publication: Option<FetchRedirectPolicyPublication>,
+    _cors_redirect_policy_publication: Option<FetchCorsRedirectPolicyPublication>,
 }
 
 impl SessionNetwork {
@@ -167,6 +171,7 @@ impl SessionNetwork {
             hsts_cache,
             cookie_policies,
             _redirect_policy_publication: None,
+            _cors_redirect_policy_publication: None,
         }
     }
 
@@ -189,6 +194,11 @@ impl SessionNetwork {
         let redirect_policies = FetchRedirectPolicyRegistry::new();
         let redirect_publication =
             FetchRedirectPolicyPublication::new(cookie_jar.clone(), redirect_policies.clone());
+        let cors_redirect_policies = FetchCorsRedirectPolicyRegistry::new();
+        let cors_redirect_publication = FetchCorsRedirectPolicyPublication::new(
+            cookie_jar.clone(),
+            cors_redirect_policies.clone(),
+        );
         let guarded_transport: Rc<dyn NetworkBackend> =
             Rc::new(SingleHopTransportGuard::new(transport));
         let cookie: Rc<dyn NetworkBackend> = Rc::new(CookieNetwork::with_policy_registry(
@@ -205,6 +215,7 @@ impl SessionNetwork {
             hsts_cache.clone(),
             clock,
             redirect_policies,
+            cors_redirect_policies,
         ));
         SessionNetwork {
             network,
@@ -212,6 +223,7 @@ impl SessionNetwork {
             hsts_cache,
             cookie_policies,
             _redirect_policy_publication: Some(redirect_publication),
+            _cors_redirect_policy_publication: Some(cors_redirect_publication),
         }
     }
 

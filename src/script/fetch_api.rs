@@ -19,6 +19,11 @@ use std::rc::{Rc, Weak};
 
 use crate::cookie_network::{policy_registry_for_jar, CookieCredentials, CookieRequestPolicy};
 use crate::cookie_same_site::SameSiteRequestContext;
+use crate::fetch_cors::{validate_cors_response_origin, CORS_REDIRECT_ORIGIN_HEADER};
+use crate::fetch_cors_redirect::{
+    cors_redirect_policy_registry_for_jar, FetchCorsRedirectPolicy, FetchCredentialsMode,
+    FetchRequestMode,
+};
 use crate::fetch_redirect_policy::{redirect_policy_registry_for_jar, FetchRedirectMode};
 use crate::net::fetch::{FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin};
 use crate::net::Url;
@@ -98,6 +103,7 @@ struct CorsFetchState {
     requested_method: Method,
     requested_headers: Vec<String>,
     needs_preflight: bool,
+    initially_cross_origin: bool,
 }
 
 /// Which network stage currently owns a script-visible Fetch promise.
@@ -122,6 +128,8 @@ pub struct PendingFetch {
     pub signal: Option<Rc<AbortState>>,
     /// Browser-owned redirect behavior for every network stage of this Fetch.
     redirect: FetchRedirectMode,
+    /// Request mode/source/credential policy used by the per-hop redirect layer.
+    redirect_context: FetchCorsRedirectPolicy,
     stage: PendingFetchStage,
 }
 
@@ -146,6 +154,7 @@ impl JsRuntime {
             Ok((request, cookie_policy, cors, opaque)) => {
                 let signal = request.signal.clone();
                 let redirect = request.redirect;
+                let redirect_context = fetch_redirect_context(&request, self.url.clone());
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
                 } else {
@@ -162,6 +171,7 @@ impl JsRuntime {
                             promise: promise.clone(),
                             signal,
                             redirect,
+                            redirect_context: redirect_context.clone(),
                             stage: PendingFetchStage::Preflight {
                                 request,
                                 cookie_policy,
@@ -175,6 +185,7 @@ impl JsRuntime {
                             promise: promise.clone(),
                             signal,
                             redirect,
+                            redirect_context,
                             stage: PendingFetchStage::Actual { cors, opaque },
                         };
                         self.queue_fetch(wire, pending, cookie_policy)
@@ -200,6 +211,7 @@ impl JsRuntime {
             promise,
             signal,
             redirect,
+            redirect_context,
             stage,
         } = pending;
 
@@ -221,16 +233,36 @@ impl JsRuntime {
                         self.settle_resolve(&promise, value);
                         return;
                     }
+                    let redirecting_session =
+                        redirect_policy_registry_for_jar(&self.cookie_jar).is_some();
+                    let trusted_redirect_origin = if redirecting_session {
+                        response.headers.get(CORS_REDIRECT_ORIGIN_HEADER)
+                    } else {
+                        None
+                    };
+                    response.headers.delete(CORS_REDIRECT_ORIGIN_HEADER);
+                    let mut cors_visible = false;
                     if let Some(cors) = &cors {
-                        if let Err(error) = validate_cors_response(
-                            &cors.source_origin,
-                            cors.credentialed,
-                            &response,
-                        ) {
-                            self.reject_with(&promise, &error);
-                            return;
+                        cors_visible = if redirecting_session {
+                            trusted_redirect_origin.is_some()
+                        } else {
+                            cors.initially_cross_origin
+                        };
+                        if cors_visible {
+                            let fallback_origin = cors.source_origin.header_value();
+                            let serialized_origin = trusted_redirect_origin
+                                .as_deref()
+                                .unwrap_or(fallback_origin.as_str());
+                            if let Err(error) = validate_cors_response_origin(
+                                serialized_origin,
+                                cors.credentialed,
+                                &response,
+                            ) {
+                                self.reject_with(&promise, &error);
+                                return;
+                            }
+                            filter_cors_response_headers(&mut response, cors.credentialed);
                         }
-                        filter_cors_response_headers(&mut response, cors.credentialed);
                     }
                     let mut response_data = if opaque {
                         debug_assert!(
@@ -241,7 +273,7 @@ impl JsRuntime {
                     } else {
                         ResponseData::from_wire(response)
                     };
-                    if cors.is_some() {
+                    if cors_visible {
                         response_data.response_type = ResponseType::Cors;
                     }
                     let value = host_value(HostObject::Response(response_data));
@@ -272,6 +304,7 @@ impl JsRuntime {
                     promise: promise.clone(),
                     signal,
                     redirect,
+                    redirect_context,
                     stage: PendingFetchStage::Actual {
                         cors: Some(cors),
                         opaque: false,
@@ -369,12 +402,16 @@ impl JsRuntime {
         cookie_policy: CookieRequestPolicy,
     ) -> Result<(), FetchError> {
         let redirect = pending.redirect;
+        let redirect_context = pending.redirect_context.clone();
         let id = self.fetches.start(request, pending)?;
         if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
             registry.set(id, cookie_policy);
         }
         if let Some(registry) = redirect_policy_registry_for_jar(&self.cookie_jar) {
             registry.set(id, redirect);
+        }
+        if let Some(registry) = cors_redirect_policy_registry_for_jar(&self.cookie_jar) {
+            registry.set(id, redirect_context);
         }
         Ok(())
     }
@@ -480,10 +517,13 @@ impl JsRuntime {
                     request.url
                 )))
             }
-            RequestMode::Cors if cross_origin_web => {
-                // Origin and the preflight-control fields are browser-owned.
-                // Strip authored copies before classification so they cannot
-                // influence either the preflight or the eventual actual request.
+            RequestMode::Cors
+                if matches!(self.url.scheme(), "http" | "https")
+                    && matches!(request.url.scheme(), "http" | "https") =>
+            {
+                // Keep CORS state even for an initially same-origin request: a
+                // later redirect may cross origin and turn the final response
+                // into a CORS-filtered response.
                 {
                     let mut headers = request.headers.borrow_mut();
                     headers.delete("origin");
@@ -492,28 +532,30 @@ impl JsRuntime {
                 }
 
                 let requested_headers = cors_unsafe_request_header_names(&request);
-                let needs_preflight =
-                    !is_cors_safelisted_method(request.method) || !requested_headers.is_empty();
-                request
-                    .headers
-                    .borrow_mut()
-                    .insert_raw("origin", &source_origin.header_value());
+                let needs_preflight = cross_origin_web
+                    && (!is_cors_safelisted_method(request.method)
+                        || !requested_headers.is_empty());
+                if cross_origin_web {
+                    request
+                        .headers
+                        .borrow_mut()
+                        .insert_raw("origin", &source_origin.header_value());
+                }
                 Some(CorsFetchState {
                     source_origin: source_origin.clone(),
                     credentialed: request.credentials == RequestCredentials::Include,
                     requested_method: request.method,
                     requested_headers,
                     needs_preflight,
+                    initially_cross_origin: cross_origin_web,
                 })
             }
             RequestMode::Cors if !same_origin => {
-                // CORS is only meaningful for network tuple origins here. Keep
-                // the existing local-file containment boundary intact.
                 return Err(FetchError::Blocked(format!(
                     "{} may not fetch {}",
                     source_origin.header_value(),
                     request.url
-                )));
+                )))
             }
             RequestMode::NoCors if cross_origin_web => {
                 // no-cors sends the constrained request without a CORS
@@ -1837,6 +1879,22 @@ fn host_value(object: HostObject) -> JsValue {
     JsValue::Host(Rc::new(object))
 }
 
+fn fetch_redirect_context(request: &RequestData, source_url: Url) -> FetchCorsRedirectPolicy {
+    FetchCorsRedirectPolicy {
+        mode: match request.mode {
+            RequestMode::Cors => FetchRequestMode::Cors,
+            RequestMode::SameOrigin => FetchRequestMode::SameOrigin,
+            RequestMode::NoCors => FetchRequestMode::NoCors,
+        },
+        source_url,
+        credentials: match request.credentials {
+            RequestCredentials::Omit => FetchCredentialsMode::Omit,
+            RequestCredentials::SameOrigin => FetchCredentialsMode::SameOrigin,
+            RequestCredentials::Include => FetchCredentialsMode::Include,
+        },
+    }
+}
+
 fn check_mode(mode: &str) -> Result<RequestMode, FetchError> {
     match mode {
         "cors" | "" => Ok(RequestMode::Cors),
@@ -1989,39 +2047,7 @@ fn validate_cors_response(
     credentialed: bool,
     response: &FetchResponse,
 ) -> Result<(), FetchError> {
-    let allow_origin = response.headers.get("access-control-allow-origin");
-    let serialized = source_origin.header_value();
-
-    if credentialed {
-        if allow_origin.as_deref() != Some(serialized.as_str()) {
-            return Err(FetchError::Blocked(
-                "CORS: credentialed response requires an exact Access-Control-Allow-Origin value"
-                    .into(),
-            ));
-        }
-        if response
-            .headers
-            .get("access-control-allow-credentials")
-            .as_deref()
-            != Some("true")
-        {
-            return Err(FetchError::Blocked(
-                "CORS: credentialed response requires Access-Control-Allow-Credentials: true"
-                    .into(),
-            ));
-        }
-        return Ok(());
-    }
-
-    if matches!(allow_origin.as_deref(), Some("*"))
-        || allow_origin.as_deref() == Some(serialized.as_str())
-    {
-        Ok(())
-    } else {
-        Err(FetchError::Blocked(
-            "CORS: cross-origin response did not allow the document origin".into(),
-        ))
-    }
+    validate_cors_response_origin(&source_origin.header_value(), credentialed, response)
 }
 
 fn cors_preflight_max_age_seconds(response: &FetchResponse) -> u64 {

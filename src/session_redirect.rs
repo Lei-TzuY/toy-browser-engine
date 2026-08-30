@@ -1,10 +1,6 @@
 // ============================================================
 //  session_redirect.rs — per-hop async Fetch redirect orchestration
 // ============================================================
-//
-// This layer sits *outside* the per-hop HSTS/Cookie decorators. Every accepted
-// Location therefore becomes a fresh request through those policies instead of
-// being followed inside the raw HTTP transport.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,36 +10,37 @@ use std::time::Duration;
 use crate::cookie_network::{CookieCredentials, CookiePolicyRegistry, CookieRequestPolicy};
 use crate::cookie_same_site::SameSiteRequestContext;
 use crate::eventloop::Clock;
+use crate::fetch_cors::{
+    cors_unsafe_request_header_names, is_cors_safelisted_method, validate_cors_response_origin,
+    CORS_REDIRECT_ORIGIN_HEADER,
+};
+use crate::fetch_cors_redirect::{
+    FetchCorsRedirectPolicy, FetchCorsRedirectPolicyRegistry, FetchCredentialsMode,
+    FetchRequestMode,
+};
 use crate::fetch_redirect_policy::{FetchRedirectMode, FetchRedirectPolicyRegistry};
 use crate::hsts_network::HstsCacheRef;
-use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin};
+use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin, Url};
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
 
 struct RedirectChain {
-    /// Browser-policy-free request shape for the current hop. Its URL is kept
-    /// HSTS-effective so Location resolution and same-origin checks use the URL
-    /// that actually reached transport.
     current_request: FetchRequest,
     initial_origin: Origin,
-    credentials: CookieCredentials,
+    fallback_credentials: CookieCredentials,
     redirect_mode: FetchRedirectMode,
+    request_policy: Option<FetchCorsRedirectPolicy>,
+    cors_tainted: bool,
+    cors_origin: String,
     planner: RedirectPlanner,
 }
 
-/// Redirect orchestration for same-origin asynchronous Fetch.
-///
-/// `inner` must represent exactly one transport hop wrapped in the session's
-/// HSTS and Cookie policy. Intermediate responses are therefore absorbed by
-/// those decorators before this state machine sees them. When a redirect is
-/// accepted, this layer re-arms the original credentials mode for the same
-/// FetchId and sends the planner's next request back through the same per-hop
-/// policy stack.
 pub(crate) struct SessionRedirectNetwork {
     inner: Rc<dyn NetworkBackend>,
     cookie_policies: CookiePolicyRegistry,
     hsts_cache: HstsCacheRef,
     clock: Rc<dyn Clock>,
     redirect_policies: FetchRedirectPolicyRegistry,
+    cors_redirect_policies: FetchCorsRedirectPolicyRegistry,
     chains: RefCell<HashMap<FetchId, RedirectChain>>,
 }
 
@@ -54,6 +51,7 @@ impl SessionRedirectNetwork {
         hsts_cache: HstsCacheRef,
         clock: Rc<dyn Clock>,
         redirect_policies: FetchRedirectPolicyRegistry,
+        cors_redirect_policies: FetchCorsRedirectPolicyRegistry,
     ) -> SessionRedirectNetwork {
         SessionRedirectNetwork {
             inner,
@@ -61,6 +59,7 @@ impl SessionRedirectNetwork {
             hsts_cache,
             clock,
             redirect_policies,
+            cors_redirect_policies,
             chains: RefCell::new(HashMap::new()),
         }
     }
@@ -69,7 +68,7 @@ impl SessionRedirectNetwork {
         self.clock.now_ms().max(0.0) as u64
     }
 
-    fn effective_url(&self, request: &FetchRequest) -> crate::net::Url {
+    fn effective_url(&self, request: &FetchRequest) -> Url {
         self.hsts_cache
             .borrow()
             .upgrade_url(&request.url, self.now_ms())
@@ -81,17 +80,48 @@ impl SessionRedirectNetwork {
             .unwrap_or_else(|| CookieRequestPolicy::same_site(request.method))
     }
 
-    fn redirect_policy(
-        credentials: CookieCredentials,
-        request: &FetchRequest,
-    ) -> CookieRequestPolicy {
-        CookieRequestPolicy::new(
-            credentials,
-            SameSiteRequestContext::same_site(request.method),
-        )
+    fn conservative_same_site(source: &Url, target: &Url) -> bool {
+        source.scheme() == target.scheme() && source.host().eq_ignore_ascii_case(target.host())
     }
 
-    fn redirect_error(error: RedirectError, response_url: &crate::net::Url) -> FetchError {
+    fn credentials_for_target(
+        policy: &FetchCorsRedirectPolicy,
+        target: &Url,
+    ) -> CookieCredentials {
+        match policy.credentials {
+            FetchCredentialsMode::Omit => CookieCredentials::Omit,
+            FetchCredentialsMode::Include => CookieCredentials::Include,
+            FetchCredentialsMode::SameOrigin
+                if Origin::of(&policy.source_url).can_fetch(target) =>
+            {
+                CookieCredentials::Include
+            }
+            FetchCredentialsMode::SameOrigin => CookieCredentials::Omit,
+        }
+    }
+
+    fn redirect_cookie_policy(
+        chain: &RedirectChain,
+        target: &Url,
+        method: crate::net::Method,
+    ) -> CookieRequestPolicy {
+        if let Some(policy) = &chain.request_policy {
+            let credentials = Self::credentials_for_target(policy, target);
+            let same_site = if Self::conservative_same_site(&policy.source_url, target) {
+                SameSiteRequestContext::same_site(method)
+            } else {
+                SameSiteRequestContext::cross_site_subresource(method)
+            };
+            CookieRequestPolicy::new(credentials, same_site)
+        } else {
+            CookieRequestPolicy::new(
+                chain.fallback_credentials,
+                SameSiteRequestContext::same_site(method),
+            )
+        }
+    }
+
+    fn redirect_error(error: RedirectError, response_url: &Url) -> FetchError {
         match error {
             RedirectError::InvalidLocation(_) => {
                 FetchError::MalformedResponse(response_url.to_string())
@@ -100,23 +130,50 @@ impl SessionRedirectNetwork {
             RedirectError::TooManyRedirects(url) => FetchError::TooManyRedirects(url),
         }
     }
+
+    fn current_cors_response_must_pass(chain: &RedirectChain) -> bool {
+        let Some(policy) = &chain.request_policy else {
+            return false;
+        };
+        policy.mode == FetchRequestMode::Cors
+            && !Origin::of(&policy.source_url).can_fetch(&chain.current_request.url)
+    }
+
+    fn is_preflight(request: &FetchRequest) -> bool {
+        request.method == crate::net::Method::Options
+            && request.headers.has("access-control-request-method")
+    }
 }
 
 impl NetworkBackend for SessionRedirectNetwork {
     fn start(&self, id: FetchId, request: FetchRequest) {
-        let policy = self.request_policy(id, &request);
+        let cookie_policy = self.request_policy(id, &request);
         let redirect_mode = self.redirect_policies.remove(id).unwrap_or_default();
+        let request_policy = self.cors_redirect_policies.remove(id);
         let mut effective_request = request.clone();
         effective_request.url = self.effective_url(&request);
         let initial_origin = Origin::of(&effective_request.url);
+        let (cors_tainted, cors_origin) = match &request_policy {
+            Some(policy) if policy.mode == FetchRequestMode::Cors => {
+                let source_origin = Origin::of(&policy.source_url);
+                (
+                    !source_origin.can_fetch(&effective_request.url),
+                    source_origin.header_value(),
+                )
+            }
+            _ => (false, String::new()),
+        };
 
         self.chains.borrow_mut().insert(
             id,
             RedirectChain {
                 current_request: effective_request,
                 initial_origin,
-                credentials: policy.credentials,
+                fallback_credentials: cookie_policy.credentials,
                 redirect_mode,
+                request_policy,
+                cors_tainted,
+                cors_origin,
                 planner: RedirectPlanner::default(),
             },
         );
@@ -141,10 +198,6 @@ impl NetworkBackend for SessionRedirectNetwork {
                     continue;
                 }
             };
-
-            // HSTS may have rewritten the request before transport. The single
-            // hop response records that effective URL, which is the correct base
-            // for Location resolution and the current-hop origin.
             chain.current_request.url = response_url.clone();
 
             let next = {
@@ -155,6 +208,18 @@ impl NetworkBackend for SessionRedirectNetwork {
             match next {
                 Ok(None) => {
                     if let Ok(response) = &mut completion.result {
+                        // Never trust an on-the-wire copy of the internal marker.
+                        response.headers.delete(CORS_REDIRECT_ORIGIN_HEADER);
+                        if chain.cors_tainted
+                            && chain
+                                .request_policy
+                                .as_ref()
+                                .is_some_and(|policy| policy.mode == FetchRequestMode::Cors)
+                        {
+                            response
+                                .headers
+                                .insert_raw(CORS_REDIRECT_ORIGIN_HEADER, &chain.cors_origin);
+                        }
                         response.redirected = chain.planner.followed() > 0;
                     }
                     visible.push(completion);
@@ -163,7 +228,34 @@ impl NetworkBackend for SessionRedirectNetwork {
                     completion.result = Err(Self::redirect_error(error, &response_url));
                     visible.push(completion);
                 }
-                Ok(Some(next_request)) => {
+                Ok(Some(mut next_request)) => {
+                    if Self::is_preflight(&chain.current_request) {
+                        completion.result = Err(FetchError::Blocked(
+                            "CORS: redirected preflight responses are not supported".into(),
+                        ));
+                        visible.push(completion);
+                        continue;
+                    }
+
+                    if chain.redirect_mode == FetchRedirectMode::Follow
+                        && Self::current_cors_response_must_pass(&chain)
+                    {
+                        let credentialed = chain
+                            .request_policy
+                            .as_ref()
+                            .is_some_and(|policy| policy.credentials == FetchCredentialsMode::Include);
+                        let response = completion.result.as_ref().expect("checked above");
+                        if let Err(error) = validate_cors_response_origin(
+                            &chain.cors_origin,
+                            credentialed,
+                            response,
+                        ) {
+                            completion.result = Err(error);
+                            visible.push(completion);
+                            continue;
+                        }
+                    }
+
                     match chain.redirect_mode {
                         FetchRedirectMode::Error => {
                             completion.result = Err(FetchError::Blocked(format!(
@@ -174,8 +266,6 @@ impl NetworkBackend for SessionRedirectNetwork {
                             continue;
                         }
                         FetchRedirectMode::Manual => {
-                            // Browser-only marker consumed by the Fetch runtime.
-                            // The eventual opaqueredirect wrapper clears it.
                             if let Ok(response) = &mut completion.result {
                                 response.redirected = true;
                             }
@@ -185,27 +275,87 @@ impl NetworkBackend for SessionRedirectNetwork {
                         FetchRedirectMode::Follow => {}
                     }
 
-                    // Fetch follow mode is still same-origin-only today. Classify the redirect
-                    // target *after* learned HSTS is applied, matching Browser's
-                    // top-level HSTS-before-SameSite/origin ordering.
                     let effective_next = self.effective_url(&next_request);
                     let next_origin = Origin::of(&effective_next);
-                    if next_origin != chain.initial_origin {
-                        completion.result = Err(FetchError::Blocked(format!(
-                            "redirect from {} to {} crossed origin",
-                            chain.initial_origin.header_value(),
-                            effective_next
-                        )));
-                        visible.push(completion);
-                        continue;
+
+                    match &chain.request_policy {
+                        Some(policy) => {
+                            let source_origin = Origin::of(&policy.source_url);
+                            match policy.mode {
+                                FetchRequestMode::SameOrigin => {
+                                    if !source_origin.can_fetch(&effective_next) {
+                                        completion.result = Err(FetchError::Blocked(format!(
+                                            "{} may not follow redirect to {} in same-origin mode",
+                                            source_origin.header_value(),
+                                            effective_next
+                                        )));
+                                        visible.push(completion);
+                                        continue;
+                                    }
+                                }
+                                FetchRequestMode::NoCors => {
+                                    // Preserve #188's conservative no-CORS redirect boundary.
+                                    if next_origin != chain.initial_origin {
+                                        completion.result = Err(FetchError::Blocked(format!(
+                                            "no-cors redirect from {} to {} crossed origin",
+                                            chain.initial_origin.header_value(),
+                                            effective_next
+                                        )));
+                                        visible.push(completion);
+                                        continue;
+                                    }
+                                }
+                                FetchRequestMode::Cors => {
+                                    let next_is_cross_origin = !source_origin.can_fetch(&effective_next);
+                                    if next_is_cross_origin || chain.cors_tainted {
+                                        let unsafe_headers =
+                                            cors_unsafe_request_header_names(&next_request.headers);
+                                        if !is_cors_safelisted_method(next_request.method)
+                                            || !unsafe_headers.is_empty()
+                                        {
+                                            completion.result = Err(FetchError::Blocked(
+                                                "CORS: redirect target requires a new preflight; redirected preflight is not implemented"
+                                                    .into(),
+                                            ));
+                                            visible.push(completion);
+                                            continue;
+                                        }
+
+                                        let current_origin = Origin::of(&chain.current_request.url);
+                                        if chain.cors_tainted && current_origin != next_origin {
+                                            chain.cors_origin = "null".to_string();
+                                        } else if !chain.cors_tainted {
+                                            chain.cors_origin = source_origin.header_value();
+                                        }
+                                        chain.cors_tainted = true;
+                                        next_request
+                                            .headers
+                                            .insert_raw("origin", &chain.cors_origin);
+                                    } else {
+                                        next_request.headers.delete("origin");
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            // Backward-compatible fallback for non-script callers that do not
+                            // publish request mode: retain the old same-origin redirect guard.
+                            if next_origin != chain.initial_origin {
+                                completion.result = Err(FetchError::Blocked(format!(
+                                    "redirect from {} to {} crossed origin",
+                                    chain.initial_origin.header_value(),
+                                    effective_next
+                                )));
+                                visible.push(completion);
+                                continue;
+                            }
+                        }
                     }
 
-                    // CookieNetwork consumes per-FetchId policy when one hop
-                    // completes. Re-arm the same credentials mode before the
-                    // next hop, with a same-origin subresource context updated
-                    // for any redirect method rewrite.
-                    self.cookie_policies
-                        .set(id, Self::redirect_policy(chain.credentials, &next_request));
+                    self.cookie_policies.set(
+                        id,
+                        Self::redirect_cookie_policy(&chain, &effective_next, next_request.method),
+                    );
 
                     chain.current_request = next_request.clone();
                     chain.current_request.url = effective_next;
@@ -221,6 +371,7 @@ impl NetworkBackend for SessionRedirectNetwork {
     fn cancel(&self, id: FetchId) {
         self.chains.borrow_mut().remove(&id);
         self.redirect_policies.remove(id);
+        self.cors_redirect_policies.remove(id);
         self.cookie_policies.remove(id);
         self.inner.cancel(id);
     }
