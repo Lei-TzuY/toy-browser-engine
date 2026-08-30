@@ -14,7 +14,10 @@ use std::time::Duration;
 
 use crate::cookie_network::CookieJarRef;
 use crate::cookie_same_site::SameSiteRequestContext;
-use crate::document::{Document, LoopReport, PageAction, PointerState};
+use crate::document::{
+    committed_referrer_context_from_response, Document, LoopReport, PageAction, PointerState,
+};
+use crate::document_referrer::DocumentReferrerContext;
 use crate::eventloop::{Clock, RealClock};
 use crate::forms::{self, encode_form_entries, Submission, SubmissionMethod};
 use crate::input::{Key, KeyEvent};
@@ -65,6 +68,10 @@ pub struct Browser {
     /// Index into `history` of the entry on screen.
     index: usize,
     document: Document,
+    /// Referrer source/policy frozen when `document` was committed. This is
+    /// kept beside the current Document because the final HTTP response header
+    /// is browsing-session state; standalone Documents may not have one.
+    document_referrer: DocumentReferrerContext,
     /// Drives the event loop. Real time in a window, virtual time in tests.
     clock: Rc<dyn Clock>,
     /// Loop time at which the current document started, so `performance.now()`
@@ -139,6 +146,7 @@ impl Browser {
             clock.clone(),
         );
         let initial = navigation.load_initial(url)?;
+        let document_referrer = committed_referrer_context_from_response(&initial);
         let final_url = initial.url.clone();
         let origin = format!("{}://{}", final_url.scheme(), final_url.host());
         let storage = pool
@@ -164,6 +172,7 @@ impl Browser {
             history: vec![document.url.clone()],
             index: 0,
             document,
+            document_referrer,
             clock,
             document_epoch_ms: epoch,
             local_storage_pool: pool,
@@ -213,7 +222,7 @@ impl Browser {
         &self,
         url: &Url,
         method: Method,
-    ) -> Result<(Document, Url), LoadError> {
+    ) -> Result<(Document, Url, DocumentReferrerContext), LoadError> {
         // HSTS runs before cookie selection. SameSite is schemeful, so classify
         // the target that will actually be dispatched rather than the authored
         // pre-upgrade HTTP spelling.
@@ -230,6 +239,7 @@ impl Browser {
             });
         }
 
+        let document_referrer = committed_referrer_context_from_response(&response);
         let final_url = response.url.clone();
         let storage = self.storage_for_url(&final_url);
         let document = Document::from_response_with_session_subresources(
@@ -238,7 +248,7 @@ impl Browser {
             Some(storage),
             Some(self.cookie_jar.clone()),
         );
-        Ok((document, final_url))
+        Ok((document, final_url, document_referrer))
     }
 
     /// Navigate to `url`, pushing a history entry.
@@ -247,8 +257,9 @@ impl Browser {
     /// same way a real browser jumps within the current page.
     pub fn navigate(&mut self, url: &Url) -> Result<(), LoadError> {
         let history_url = if !url.same_document(self.url()) {
-            let (document, final_url) = self.load_navigation_document(url, Method::Get)?;
-            self.replace_document(document);
+            let (document, final_url, document_referrer) =
+                self.load_navigation_document(url, Method::Get)?;
+            self.replace_document(document, document_referrer);
             final_url
         } else {
             url.clone()
@@ -271,17 +282,22 @@ impl Browser {
     /// Reload the current entry from its source.
     pub fn reload(&mut self) -> Result<(), LoadError> {
         let url = self.url().clone();
-        let (document, _final_url) = self.load_navigation_document(&url, Method::Get)?;
-        self.replace_document(document);
+        let (document, _final_url, document_referrer) =
+            self.load_navigation_document(&url, Method::Get)?;
+        self.replace_document(document, document_referrer);
         Ok(())
     }
 
-    /// Put a freshly loaded document on screen.
+    /// Put a freshly loaded document and its committed policy on screen.
     ///
     /// The outgoing document — and with it every timer, interval and
     /// animation-frame callback its scripts registered — is dropped here, so a
     /// page that has been navigated away from cannot keep running.
-    fn replace_document(&mut self, mut document: Document) {
+    fn replace_document(
+        &mut self,
+        mut document: Document,
+        document_referrer: DocumentReferrerContext,
+    ) {
         // Cancelling first drops the outgoing page's fetch registry, and with
         // it every pending promise: an answer that arrives afterwards has
         // nothing left to settle and is discarded.
@@ -292,6 +308,7 @@ impl Browser {
         document.runtime.cookie_jar = self.cookie_jar.clone();
         document.set_network(self.network.clone());
         self.document = document;
+        self.document_referrer = document_referrer;
         self.document_epoch_ms = self.clock.now_ms();
     }
 
@@ -323,7 +340,9 @@ impl Browser {
             return;
         }
         match self.load_navigation_document(&url, Method::Get) {
-            Ok((document, _final_url)) => self.replace_document(document),
+            Ok((document, _final_url, document_referrer)) => {
+                self.replace_document(document, document_referrer)
+            }
             Err(error) => self.document.diagnostics.push(crate::document::Diagnostic {
                 url: url.to_string(),
                 message: error.to_string(),
@@ -340,17 +359,24 @@ impl Browser {
         // handler sees when it reads `document.activeElement`.
         self.document.focus_from_click(path);
 
-        let outcome = self.document.dispatch_runtime_event(path, "click");
+        let outcome = {
+            let document = &mut self.document;
+            document
+                .runtime
+                .dispatch_event(&mut document.dom, path, "click")
+        };
         let submitted = self.document.apply_pending_actions();
         // A listener is a task like any other, so its microtasks run now
         // rather than waiting for the next turn of the loop: a promise
         // resolved in a click handler settles before the click returns.
         self.document.run_microtask_checkpoint();
         // Handlers may have added images or rewritten the page. Keep those
-        // loads above the same CORS/credential boundary as parser-time images.
+        // loads above the same CORS/credential boundary as parser-time images,
+        // using the exact policy frozen when this document was committed.
         if outcome.dispatched {
+            let referrer = self.document_referrer.clone();
             self.document
-                .refresh_images_with_subresource_policy(&self.navigation);
+                .refresh_images_with_committed_referrer(&self.navigation, &referrer);
         }
         if let Some(submission) = submitted {
             // `form.submit()` is the programmatic path: by design it bypasses
@@ -618,11 +644,15 @@ impl Browser {
         form_path: NodePath,
         submitter: Option<NodePath>,
     ) -> ClickOutcome {
-        let key_outcome = self.document.dispatch_runtime_event_init(
-            &target,
-            "keydown",
-            browser_key_event_init(event),
-        );
+        let key_outcome = {
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
+                &target,
+                "keydown",
+                browser_key_event_init(event),
+            )
+        };
         let requested = self.document.apply_pending_actions();
         self.document.run_microtask_checkpoint();
         if let Some(submission) = requested {
@@ -643,11 +673,15 @@ impl Browser {
             return ClickOutcome::Script;
         }
 
-        let submit_outcome = self.document.dispatch_runtime_event_init(
-            &form_path,
-            "submit",
-            EventInit::bubbling(),
-        );
+        let submit_outcome = {
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
+                &form_path,
+                "submit",
+                EventInit::bubbling(),
+            )
+        };
         let requested = self.document.apply_pending_actions();
         self.document.run_microtask_checkpoint();
         if let Some(submission) = requested {
@@ -680,13 +714,15 @@ impl Browser {
         }
 
         for path in &invalid {
-            self.document.dispatch_runtime_event_init(
+            let document = &mut self.document;
+            document.runtime.dispatch_event_init(
+                &mut document.dom,
                 path,
                 "invalid",
                 EventInit::non_bubbling(),
             );
-            self.document.apply_pending_actions();
-            self.document.run_microtask_checkpoint();
+            document.apply_pending_actions();
+            document.run_microtask_checkpoint();
         }
         if let Some(first) = invalid.first() {
             self.document.focus_path(first);
@@ -727,6 +763,7 @@ impl Browser {
 
         match self.navigation.fetch(&request, context) {
             Ok(response) if response.ok() => {
+                let document_referrer = committed_referrer_context_from_response(&response);
                 let final_url = response.url.clone();
                 let storage = self.storage_for_url(&final_url);
                 let document = Document::from_response_with_session_subresources(
@@ -735,7 +772,7 @@ impl Browser {
                     Some(storage),
                     Some(self.cookie_jar.clone()),
                 );
-                self.replace_document(document);
+                self.replace_document(document, document_referrer);
                 self.history.truncate(self.index + 1);
                 self.history.push(final_url.clone());
                 self.index = self.history.len() - 1;
