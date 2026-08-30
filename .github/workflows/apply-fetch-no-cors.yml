@@ -37,6 +37,19 @@ jobs:
           PY
       - name: Apply no-cors implementation
         run: python3 .github/scripts/apply_fetch_no_cors.py
+      - name: Update legacy unsupported-mode regression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/document_core.rs')
+          text = path.read_text()
+          old = 'fetch("a", { mode: "no-cors" }).catch(function (e) { console.log("mode: " + e); });'
+          new = 'fetch("a", { mode: "navigate" }).catch(function (e) { console.log("mode: " + e); });'
+          if old not in text:
+              raise SystemExit('legacy unsupported-mode assertion not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Format patched files
         run: cargo fmt
       - name: Run focused no-cors tests
@@ -47,6 +60,7 @@ jobs:
           cargo test --locked --test fetch_cors_simple
           cargo test --locked --test fetch_cors_preflight
           cargo test --locked --test fetch_cors_response_headers
+          cargo test --locked --lib unsupported_init_members_are_refused_rather_than_ignored
       - name: Run full suite
         run: cargo test --locked
       - name: Commit validated product changes
@@ -55,6 +69,6 @@ jobs:
           git rm .github/scripts/apply_fetch_no_cors.py .github/workflows/apply-fetch-no-cors.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+Lei-TzuY@users.noreply.github.com"
-          git add src/script/host.rs src/script/fetch_api.rs tests/fetch_response_type.rs tests/fetch_no_cors.rs
+          git add src/document_core.rs src/script/host.rs src/script/fetch_api.rs tests/fetch_response_type.rs tests/fetch_no_cors.rs
           git commit -m "Implement Fetch no-cors opaque responses"
           git push origin HEAD:agent/fetch-no-cors-opaque
