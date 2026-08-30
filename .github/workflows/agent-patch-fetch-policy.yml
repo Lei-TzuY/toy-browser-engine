@@ -23,26 +23,19 @@ jobs:
 
           path = Path("src/script/fetch_api.rs")
           text = path.read_text()
-          old = '''        if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
-              return Err(FetchError::UnsupportedScheme(scheme.to_string()));
-          }
-
-          let source_origin = Origin::of(&self.url);'''
-          new = '''        if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
-              return Err(FetchError::UnsupportedScheme(scheme.to_string()));
-          }
-          if request.credentials == RequestCredentials::Include
+          needle = "        let source_origin = Origin::of(&self.url);"
+          replacement = '''        if request.credentials == RequestCredentials::Include
               && !matches!(scheme, "http" | "https")
           {
-              return Err(FetchError::BadRequest(format!(
-                  "credentials mode \\"include\\" is only supported for HTTP(S) requests"
-              )));
+              return Err(FetchError::BadRequest(
+                  "credentials mode \\"include\\" is only supported for HTTP(S) requests".into(),
+              ));
           }
 
           let source_origin = Origin::of(&self.url);'''
-          if old not in text:
-              raise SystemExit("target Fetch policy block not found")
-          path.write_text(text.replace(old, new, 1))
+          if text.count(needle) != 1:
+              raise SystemExit(f"expected one source-origin needle, found {text.count(needle)}")
+          path.write_text(text.replace(needle, replacement, 1))
           Path(".github/workflows/agent-patch-fetch-policy.yml").unlink()
       - name: Commit focused fix
         run: |
