@@ -9,9 +9,7 @@
 
 use crate::integrity_policy_reporting::IntegrityViolationReport;
 use crate::net::{FetchCompletion, FetchError, FetchId, NetworkBackend};
-use crate::reporting_delivery::{
-    batch_resolved_integrity_reports, ReportingDeliveryBatch,
-};
+use crate::reporting_delivery::{batch_resolved_integrity_reports, ReportingDeliveryBatch};
 use crate::reporting_endpoint_state::ReportingEndpointState;
 use crate::reporting_endpoints::ReportingEndpoints;
 use crate::reporting_retry::ReportingRetryPolicy;
@@ -50,10 +48,19 @@ impl ReportingCoordinator {
     /// Replace the mapping after a new response commits Reporting-Endpoints.
     ///
     /// Removal state belongs to the mapping that learned it, so committing a
-    /// fresh mapping intentionally clears prior removals. Already in-flight
-    /// deliveries remain owned by the transport runtime and are not cancelled.
-    pub fn replace_endpoints(&mut self, endpoints: ReportingEndpoints) {
+    /// fresh mapping intentionally clears prior removals. Replacement is only
+    /// accepted while the delivery runtime is idle: otherwise an older
+    /// in-flight or retrying request could complete with `410 Gone` after the
+    /// replacement and incorrectly remove a URL from the new mapping.
+    ///
+    /// Returns `true` when the mapping was replaced and `false` while delivery
+    /// work from the current mapping is still live.
+    pub fn replace_endpoints(&mut self, endpoints: ReportingEndpoints) -> bool {
+        if !self.runtime.is_idle() {
+            return false;
+        }
         self.endpoints = ReportingEndpointState::new(endpoints);
+        true
     }
 
     /// Resolve reports through the current endpoint state and group them into
