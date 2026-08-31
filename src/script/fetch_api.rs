@@ -1153,7 +1153,7 @@ impl JsRuntime {
                     }
                     _ => JsValue::Undefined,
                 }
-            },
+            }
             HostObject::IntersectionObserverEntry(entry) => match prop {
                 "isIntersecting" => JsValue::Bool(entry.is_intersecting),
                 "intersectionRatio" => JsValue::Number(entry.intersection_ratio),
@@ -1822,6 +1822,11 @@ impl JsRuntime {
     }
 
     fn headers_method(&mut self, headers: &HeadersRef, prop: &str, args: &[JsValue]) -> JsValue {
+        if headers.is_immutable() && matches!(prop, "set" | "append" | "delete") {
+            self.throw_type_error("Headers are immutable".to_string());
+            return JsValue::Undefined;
+        }
+
         let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
         let value = to_string(args.get(1).unwrap_or(&JsValue::Undefined));
 

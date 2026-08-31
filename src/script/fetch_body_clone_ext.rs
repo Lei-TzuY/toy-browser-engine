@@ -42,7 +42,7 @@ impl JsRuntime {
             url: response.url.clone(),
             status: response.status,
             status_text: response.status_text.clone(),
-            headers: headers_ref(response.headers.borrow().clone()),
+            headers: response.headers.clone_detached(),
             body: if response.body.present() {
                 Body::new(response.body.peek().unwrap_or_default())
             } else {

@@ -13,7 +13,7 @@
 //  adds exactly what JavaScript needs — shared mutable headers, single-use
 //  bodies, and an abort flag two objects can see at once.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 use crate::fetch_redirect_policy::FetchRedirectMode;
@@ -21,15 +21,63 @@ use crate::net::fetch::{FetchRequest, FetchResponse, HeaderMap, Method};
 use crate::net::Url;
 use crate::referrer_policy::ReferrerPolicy;
 
-/// A shared, mutable header list.
+/// The mutation policy attached to one script-visible header list.
 ///
-/// `response.headers` hands back a new wrapper each time, but every wrapper
-/// points at the same map — so a `set` through one is visible through another,
-/// the way a single JavaScript object would behave.
-pub type HeadersRef = Rc<RefCell<HeaderMap>>;
+/// Constructor-created Headers/Request/Response objects remain mutable. Header
+/// lists exposed by a network Response are immutable, matching Fetch's response
+/// header guard without pushing script-only state into the wire HeaderMap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadersGuard {
+    Mutable,
+    Immutable,
+}
+
+#[derive(Debug)]
+struct HeadersData {
+    map: RefCell<HeaderMap>,
+    guard: HeadersGuard,
+}
+
+/// A shared script-visible header list plus its Fetch mutation guard.
+///
+/// Multiple wrappers for the same Headers object share both the map and guard.
+/// Copying through `new Headers(existing)` creates a fresh mutable list instead.
+#[derive(Debug, Clone)]
+pub struct HeadersRef(Rc<HeadersData>);
+
+impl HeadersRef {
+    fn new(headers: HeaderMap, guard: HeadersGuard) -> Self {
+        Self(Rc::new(HeadersData {
+            map: RefCell::new(headers),
+            guard,
+        }))
+    }
+
+    pub fn borrow(&self) -> Ref<'_, HeaderMap> {
+        self.0.map.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, HeaderMap> {
+        self.0.map.borrow_mut()
+    }
+
+    pub(crate) fn is_immutable(&self) -> bool {
+        self.0.guard == HeadersGuard::Immutable
+    }
+
+    /// Clone the header list while preserving its Fetch guard. Response.clone()
+    /// uses this; constructor copies deliberately go through `headers_ref`.
+    pub(crate) fn clone_detached(&self) -> HeadersRef {
+        HeadersRef::new(self.borrow().clone(), self.0.guard)
+    }
+}
 
 pub fn headers_ref(headers: HeaderMap) -> HeadersRef {
-    Rc::new(RefCell::new(headers))
+    HeadersRef::new(headers, HeadersGuard::Mutable)
+}
+
+fn immutable_headers_ref(headers: HeaderMap) -> HeadersRef {
+    HeadersRef::new(headers, HeadersGuard::Immutable)
 }
 
 // ── Bodies ────────────────────────────────────────────────────────────────────
@@ -319,7 +367,7 @@ impl ResponseData {
             url: response.url,
             status: response.status,
             status_text: response.status_text,
-            headers: headers_ref(response.headers),
+            headers: immutable_headers_ref(response.headers),
             body: if null_body {
                 Body::absent()
             } else {
@@ -340,7 +388,7 @@ impl ResponseData {
             url: response.url,
             status: 0,
             status_text: String::new(),
-            headers: headers_ref(HeaderMap::new()),
+            headers: immutable_headers_ref(HeaderMap::new()),
             body: Body::absent(),
             redirected: false,
             response_type: ResponseType::Opaque,
@@ -361,7 +409,7 @@ impl ResponseData {
             url: response.url,
             status: 0,
             status_text: String::new(),
-            headers: headers_ref(HeaderMap::new()),
+            headers: immutable_headers_ref(HeaderMap::new()),
             body: Body::absent(),
             redirected: false,
             response_type: ResponseType::OpaqueRedirect,
