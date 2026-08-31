@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::net::{FetchCompletion, FetchError, FetchId, NetworkBackend};
+use crate::net::{FetchCompletion, FetchError, FetchId, NetworkBackend, Url};
 use crate::reporting_delivery::ReportingDeliveryBatch;
 use crate::reporting_retry::{
     ReportingRetryDecision, ReportingRetryPolicy, ReportingRetryQueue,
@@ -277,6 +277,13 @@ impl ReportingDeliveryRuntime {
         self.scheduler.is_empty() && self.retries.is_empty()
     }
 
+    /// Drop delayed retries for an endpoint that has been removed by a terminal
+    /// Reporting API delivery result. Already-dispatched requests remain owned
+    /// by the network backend and will settle normally.
+    pub fn discard_retries_for_endpoint(&mut self, endpoint_url: &Url) -> usize {
+        self.retries.remove_endpoint(endpoint_url)
+    }
+
     /// Queue a newly-created delivery batch as attempt 1.
     pub fn queue_initial(
         &mut self,
@@ -393,7 +400,7 @@ impl ReportingDeliveryRuntime {
 mod tests {
     use super::*;
     use crate::integrity_policy_reporting::{IntegrityViolationReport, IntegrityViolationReportBody};
-    use crate::net::{FetchResponse, ManualNetwork, Url};
+    use crate::net::{FetchResponse, ManualNetwork};
     use crate::reporting_endpoints::ResolvedIntegrityViolationReport;
     use crate::reporting_scheduler::ReportingDeliveryFailure;
 
