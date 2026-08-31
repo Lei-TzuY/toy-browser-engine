@@ -32,11 +32,12 @@ pub struct SubresourceIntegrityResult {
 /// Evaluate an element subresource against the committed document
 /// `Integrity-Policy` and, when applicable, verify its response bytes using SRI.
 ///
-/// The request policy gate runs first. A syntactically supported integrity hash
-/// only satisfies Integrity-Policy for CORS or same-origin request modes; an
-/// unsupported-only metadata string therefore cannot bypass policy. Once the
-/// request is allowed, classic SRI verification applies to supported metadata.
-/// Empty or unsupported-only metadata remains non-verifying for hash agility.
+/// The request policy gate runs first. A syntactically valid supported integrity
+/// hash only satisfies Integrity-Policy for CORS or same-origin request modes;
+/// malformed or unsupported-only metadata therefore cannot bypass policy. Once
+/// the request is allowed, classic SRI verification applies to supported
+/// metadata. Empty or unsupported-only metadata remains non-verifying for hash
+/// agility in the lower-level SRI verifier.
 pub fn enforce_subresource_integrity(
     container: &IntegrityPolicyContainer,
     destination: IntegrityPolicyDestination,
@@ -68,23 +69,68 @@ pub fn enforce_subresource_integrity(
     })
 }
 
-/// Return whether metadata contains at least one integrity expression using an
-/// algorithm implemented by this engine.
+/// Return whether metadata contains at least one syntactically valid integrity
+/// expression using an algorithm implemented by this engine.
 ///
-/// SRI ignores unsupported algorithms for hash agility. Integrity-Policy must
-/// not, however, treat unsupported-only metadata as a valid opt-in, otherwise a
-/// future-looking token such as `sha999-...` would disable policy enforcement.
+/// Integrity-Policy's `inline` source is satisfied by actual integrity metadata,
+/// not merely by an algorithm-looking prefix. In particular, strings such as
+/// `sha256-deadbeef` must not turn a request-time policy violation into a
+/// post-response hash mismatch and thereby cause a request that should have
+/// been blocked before dispatch.
+///
+/// We accept both the normal and URL-safe Base64 alphabets and both padded and
+/// unpadded encodings. The decoded size must equal the digest size mandated by
+/// the selected SHA-2 algorithm.
 pub fn integrity_metadata_has_supported_expression(metadata: &str) -> bool {
     metadata.split_ascii_whitespace().any(|item| {
         let expression = item.split('?').next().unwrap_or(item);
         let Some((algorithm, digest)) = expression.split_once('-') else {
             return false;
         };
-        !digest.is_empty()
-            && (algorithm.eq_ignore_ascii_case("sha256")
-                || algorithm.eq_ignore_ascii_case("sha384")
-                || algorithm.eq_ignore_ascii_case("sha512"))
+        let Some(expected_len) = supported_digest_length_bytes(algorithm) else {
+            return false;
+        };
+        base64_value_matches_digest_length(digest, expected_len)
     })
+}
+
+fn supported_digest_length_bytes(algorithm: &str) -> Option<usize> {
+    if algorithm.eq_ignore_ascii_case("sha256") {
+        Some(32)
+    } else if algorithm.eq_ignore_ascii_case("sha384") {
+        Some(48)
+    } else if algorithm.eq_ignore_ascii_case("sha512") {
+        Some(64)
+    } else {
+        None
+    }
+}
+
+fn base64_value_matches_digest_length(value: &str, expected_len: usize) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+
+    let unpadded_len = value.trim_end_matches('=').len();
+    let padding = value.len().saturating_sub(unpadded_len);
+    if padding > 2 || value[..unpadded_len].contains('=') {
+        return false;
+    }
+    if padding > 0 && value.len() % 4 != 0 {
+        return false;
+    }
+    if unpadded_len % 4 == 1 {
+        return false;
+    }
+    if !value[..unpadded_len].bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'-' | b'_')
+    }) {
+        return false;
+    }
+
+    // Each Base64 character contributes six payload bits. Integer division is
+    // exactly the decoded byte length for legal unpadded lengths (mod 4 != 1).
+    unpadded_len.saturating_mul(6) / 8 == expected_len
 }
 
 /// Expose the policy-only decision for loaders that need to reject before they
@@ -118,12 +164,34 @@ mod tests {
     }
 
     #[test]
-    fn supported_metadata_detection_ignores_unknown_algorithms() {
+    fn supported_metadata_detection_requires_valid_digest_shape() {
         assert!(!integrity_metadata_has_supported_expression(""));
         assert!(!integrity_metadata_has_supported_expression("sha999-deadbeef"));
-        assert!(integrity_metadata_has_supported_expression("sha256-deadbeef"));
+        assert!(!integrity_metadata_has_supported_expression("sha256-deadbeef"));
+        assert!(!integrity_metadata_has_supported_expression("sha256-%%%%"));
+        assert!(!integrity_metadata_has_supported_expression(
+            "sha256-Jok2eyBcFs4y7UIAlCuLix4mLfxw2byfvHfElpmk8d8=="
+        ));
         assert!(integrity_metadata_has_supported_expression(
-            "sha999-x sha512-deadbeef?foo"
+            "sha256-Jok2eyBcFs4y7UIAlCuLix4mLfxw2byfvHfElpmk8d8="
+        ));
+        assert!(integrity_metadata_has_supported_expression(
+            "sha256-Jok2eyBcFs4y7UIAlCuLix4mLfxw2byfvHfElpmk8d8?foo"
+        ));
+        assert!(integrity_metadata_has_supported_expression(
+            "sha999-x sha512-n7u7Wg8yn5eC4jVvpB2Jz5s2lDJ8GpNNavKp3y1/k2zoNxf7UTGWpM5VSEcXCM1xNMKumbPDV7yrsur8e5t1cA=="
+        ));
+    }
+
+    #[test]
+    fn url_safe_unpadded_digest_shape_is_accepted() {
+        assert!(base64_value_matches_digest_length(
+            "Jok2eyBcFs4y7UIAlCuLix4mLfxw2byfvHfElpmk8d8",
+            32
+        ));
+        assert!(base64_value_matches_digest_length(
+            "___________________________________________",
+            32
         ));
     }
 
@@ -134,6 +202,21 @@ mod tests {
                 &blocking_container(),
                 IntegrityPolicyDestination::Script,
                 "",
+                IntegrityPolicyRequestMode::Cors,
+                false,
+                b"ok",
+            ),
+            Err(SubresourceIntegrityError::PolicyBlocked)
+        );
+    }
+
+    #[test]
+    fn malformed_supported_algorithm_metadata_is_still_policy_blocked() {
+        assert_eq!(
+            enforce_subresource_integrity(
+                &blocking_container(),
+                IntegrityPolicyDestination::Script,
+                "sha256-deadbeef",
                 IntegrityPolicyRequestMode::Cors,
                 false,
                 b"ok",
