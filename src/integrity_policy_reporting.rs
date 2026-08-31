@@ -88,10 +88,17 @@ fn destination_token(destination: IntegrityPolicyDestination) -> &'static str {
 }
 
 fn strip_url_for_report(url: &Url) -> String {
-    // Reporting payloads must not expose fragments. The engine's Url type does
-    // not carry a separate report-URL abstraction yet, so keep the conservative
-    // privacy boundary here and leave broader Reporting spec redaction for the
-    // eventual shared Reporting API layer.
+    // Reporting API URL serialization is intentionally privacy-preserving.
+    // HTTP(S) URLs keep their normal components except the fragment. For any
+    // other scheme the standard exposes only the scheme, so local paths or
+    // opaque payloads such as file:/data: URLs cannot leak through a report.
+    if !matches!(url.scheme(), "http" | "https") {
+        return url.scheme().to_string();
+    }
+
+    // `Url::parse` already discards authority userinfo, so removing the
+    // fragment closes the remaining HTTP(S) redaction boundary represented by
+    // this engine's URL type.
     let mut stripped = url.clone();
     stripped.set_fragment(None);
     stripped.to_string()
@@ -138,6 +145,30 @@ mod tests {
         assert_eq!(reports[0].body.destination, "script");
         assert_eq!(reports[0].body.document_url, "https://example.test/page");
         assert_eq!(reports[0].body.blocked_url, "https://cdn.test/app.js");
+    }
+
+    #[test]
+    fn strips_non_http_urls_to_their_scheme() {
+        let enforced = IntegrityPolicy::parse(
+            "blocked-destinations=(script), endpoints=(primary)",
+        );
+        let decision = IntegrityPolicyDecision {
+            blocked: true,
+            enforced_violation: true,
+            report_only_violation: false,
+        };
+        let reports = build_integrity_violation_reports(
+            &Url::parse("file:///Users/alice/private/page.html#secret").unwrap(),
+            &Url::parse("data:text/javascript,alert(1)#payload").unwrap(),
+            IntegrityPolicyDestination::Script,
+            decision,
+            &enforced,
+            &IntegrityPolicy::default(),
+        );
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].body.document_url, "file");
+        assert_eq!(reports[0].body.blocked_url, "data");
     }
 
     #[test]
