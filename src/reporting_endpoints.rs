@@ -264,6 +264,10 @@ fn split_dictionary_members(value: &str) -> Option<Vec<&str>> {
     Some(out)
 }
 
+fn valid_sf_string_char(ch: char) -> bool {
+    ch.is_ascii() && matches!(ch as u8, 0x20..=0x7e)
+}
+
 fn parse_string_item_with_parameters(value: &str) -> Option<String> {
     if !value.starts_with('"') {
         return None;
@@ -285,7 +289,7 @@ fn parse_string_item_with_parameters(value: &str) -> Option<String> {
                 closing_quote = Some(index);
                 break;
             }
-            _ if ch.is_control() => return None,
+            _ if !valid_sf_string_char(ch) => return None,
             _ => {}
         }
     }
@@ -382,7 +386,7 @@ fn quoted_item_len(value: &str) -> Option<usize> {
         match ch {
             '\\' => escaped = true,
             '"' => return Some(index + 1),
-            _ if ch.is_control() => return None,
+            _ if !valid_sf_string_char(ch) => return None,
             _ => {}
         }
     }
@@ -445,7 +449,7 @@ fn parse_quoted_string(value: &str) -> Option<String> {
         match ch {
             '\\' => escaped = true,
             '"' => return None,
-            _ if ch.is_control() => return None,
+            _ if !valid_sf_string_char(ch) => return None,
             _ => out.push(ch),
         }
     }
@@ -481,6 +485,18 @@ mod tests {
             endpoints.get("primary").unwrap().to_string(),
             "https://reports.test/a"
         );
+    }
+
+    #[test]
+    fn structured_field_strings_reject_non_ascii_octets() {
+        assert!(ReportingEndpoints::parse(
+            "default=\"https://reports.test/café\""
+        )
+        .is_empty());
+        assert!(ReportingEndpoints::parse(
+            "default=\"https://reports.test/a\";label=\"é\""
+        )
+        .is_empty());
     }
 
     #[test]
