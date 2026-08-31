@@ -14,7 +14,7 @@ use crate::reporting_endpoint_state::ReportingEndpointState;
 use crate::reporting_endpoints::ReportingEndpoints;
 use crate::reporting_retry::ReportingRetryPolicy;
 use crate::reporting_runtime::{ReportingDeliveryRuntime, ReportingRuntimeCompletion};
-use crate::reporting_scheduler::{ReportingDeliveryDisposition, ReportingDeliveryOutcome};
+use crate::reporting_scheduler::ReportingDeliveryOutcome;
 
 /// End-to-end Reporting API state for one committed endpoint mapping.
 ///
@@ -172,17 +172,6 @@ impl ReportingCoordinator {
     }
 
     fn apply_endpoint_outcomes(&mut self, completed: &[ReportingRuntimeCompletion]) -> usize {
-        let removed_urls = completed
-            .iter()
-            .filter_map(|completion| match &completion.outcome {
-                ReportingDeliveryOutcome::Delivered {
-                    batch,
-                    disposition: ReportingDeliveryDisposition::RemoveEndpoint,
-                    ..
-                } => Some(batch.endpoint_url.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         let outcomes = completed
             .iter()
             .map(|completion| completion.outcome.clone())
@@ -190,10 +179,20 @@ impl ReportingCoordinator {
         let removed = self.endpoints.apply_delivery_outcomes(&outcomes);
 
         // A 410 applies to the endpoint, not just the request that observed it.
-        // If another delivery to the same URL failed earlier and is waiting in
-        // the delayed retry queue, it must not be resurrected later.
-        for endpoint_url in removed_urls {
-            self.runtime.discard_retries_for_endpoint(&endpoint_url);
+        // The runtime may already hold an older delayed retry for that URL, or a
+        // request that was in flight when the 410 arrived may fail later and
+        // momentarily create a fresh retry. After applying removal outcomes,
+        // prune retries for every completed batch whose endpoint is now removed.
+        for endpoint_url in completed.iter().filter_map(|completion| {
+            let endpoint_url = match &completion.outcome {
+                ReportingDeliveryOutcome::Delivered { batch, .. }
+                | ReportingDeliveryOutcome::Retryable { batch, .. } => &batch.endpoint_url,
+            };
+            self.endpoints
+                .is_removed(endpoint_url)
+                .then_some(endpoint_url)
+        }) {
+            self.runtime.discard_retries_for_endpoint(endpoint_url);
         }
 
         removed
