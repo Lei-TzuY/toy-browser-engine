@@ -51,6 +51,7 @@ pub mod paint;
 pub mod redirect_policy;
 pub mod referrer_meta;
 pub mod referrer_policy;
+pub mod reporting_coordinator;
 pub mod reporting_delivery;
 pub mod reporting_endpoint_state;
 pub mod reporting_endpoints;
@@ -109,6 +110,7 @@ pub use net::{MemoryLoader, ResourceLoader, Url};
 pub use redirect_policy::{RedirectError, RedirectPlanner, FETCH_MAX_REDIRECTS};
 pub use referrer_meta::apply_meta_referrer_policies;
 pub use referrer_policy::{RedirectReferrerState, ReferrerPolicy};
+pub use reporting_coordinator::ReportingCoordinator;
 pub use reporting_delivery::{
     batch_resolved_integrity_reports, ReportingDeliveryBatch, REPORTING_CONTENT_TYPE,
 };
