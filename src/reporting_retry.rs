@@ -49,6 +49,18 @@ impl ReportingRetryPolicy {
             .saturating_mul(1u64 << exponent)
             .min(self.max_delay_ms)
     }
+
+    /// Apply a server-requested minimum delay without allowing one response to
+    /// retain a report beyond this queue's configured maximum backoff window.
+    pub fn delay_after_failure_with_minimum(
+        &self,
+        failed_attempt: u32,
+        minimum_delay_ms: u64,
+    ) -> u64 {
+        self.delay_after_failure(failed_attempt)
+            .max(minimum_delay_ms)
+            .min(self.max_delay_ms)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +130,26 @@ impl ReportingRetryQueue {
         now_ms: u64,
         age_ms: u64,
     ) -> ReportingRetryDecision {
+        self.schedule_failure_with_age_and_minimum_delay(
+            batch,
+            failed_attempt,
+            now_ms,
+            age_ms,
+            0,
+        )
+    }
+
+    /// Schedule a failed delivery while honoring a server-requested minimum
+    /// delay (for example an HTTP `Retry-After` delta). The configured
+    /// `max_delay_ms` remains a hard retention bound.
+    pub fn schedule_failure_with_age_and_minimum_delay(
+        &mut self,
+        batch: ReportingDeliveryBatch,
+        failed_attempt: u32,
+        now_ms: u64,
+        age_ms: u64,
+        minimum_delay_ms: u64,
+    ) -> ReportingRetryDecision {
         let failed_attempt = failed_attempt.max(1);
         if failed_attempt >= self.policy.max_attempts {
             return ReportingRetryDecision::Dropped {
@@ -126,7 +158,9 @@ impl ReportingRetryQueue {
             };
         }
 
-        let delay_ms = self.policy.delay_after_failure(failed_attempt);
+        let delay_ms = self
+            .policy
+            .delay_after_failure_with_minimum(failed_attempt, minimum_delay_ms);
         let entry = ReportingRetryEntry {
             batch,
             attempt: failed_attempt.saturating_add(1),
@@ -232,6 +266,14 @@ mod tests {
     }
 
     #[test]
+    fn server_minimum_delay_extends_backoff_but_respects_cap() {
+        let policy = ReportingRetryPolicy::new(100, 5_000, 4);
+        assert_eq!(policy.delay_after_failure_with_minimum(1, 3_000), 3_000);
+        assert_eq!(policy.delay_after_failure_with_minimum(2, 50), 200);
+        assert_eq!(policy.delay_after_failure_with_minimum(2, 20_000), 5_000);
+    }
+
+    #[test]
     fn bounded_drain_preserves_ready_overflow() {
         let mut queue = ReportingRetryQueue::new(ReportingRetryPolicy::new(10, 10, 4));
         queue.schedule_failure(batch("https://reports.test/a"), 1, 0);
@@ -264,5 +306,22 @@ mod tests {
         };
         assert_eq!(entry.ready_at_ms, u64::MAX);
         assert_eq!(entry.minimum_age_ms, u64::MAX);
+    }
+
+    #[test]
+    fn server_minimum_delay_advances_ready_time_and_age_together() {
+        let mut queue = ReportingRetryQueue::new(ReportingRetryPolicy::new(100, 10_000, 4));
+        let decision = queue.schedule_failure_with_age_and_minimum_delay(
+            batch("https://reports.test/a"),
+            1,
+            1_000,
+            250,
+            3_000,
+        );
+        let ReportingRetryDecision::Scheduled(entry) = decision else {
+            panic!("retry should be scheduled");
+        };
+        assert_eq!(entry.ready_at_ms, 4_000);
+        assert_eq!(entry.minimum_age_ms, 3_250);
     }
 }
