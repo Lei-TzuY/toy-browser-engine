@@ -400,18 +400,29 @@ fn numeric_item_len(value: &str) -> Option<usize> {
     while bytes.get(index).is_some_and(u8::is_ascii_digit) {
         index += 1;
     }
-    if index == digits_start {
+    let integer_digits = index - digits_start;
+    if integer_digits == 0 {
         return None;
     }
+
     if bytes.get(index) == Some(&b'.') {
+        // Structured Fields decimals have at most 12 digits before
+        // the decimal point and at most three digits after it.
+        if integer_digits > 12 {
+            return None;
+        }
         index += 1;
         let fraction_start = index;
         while bytes.get(index).is_some_and(u8::is_ascii_digit) {
             index += 1;
         }
-        if index == fraction_start {
+        let fraction_digits = index - fraction_start;
+        if fraction_digits == 0 || fraction_digits > 3 {
             return None;
         }
+    } else if integer_digits > 15 {
+        // sf-integer is bounded to 15 decimal digits (sign excluded).
+        return None;
     }
     Some(index)
 }
@@ -495,6 +506,29 @@ mod tests {
         .is_empty());
         assert!(ReportingEndpoints::parse(
             "default=\"https://reports.test/a\";label=\"é\""
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn structured_field_numeric_parameters_enforce_wire_limits() {
+        assert_eq!(
+            ReportingEndpoints::parse(
+                r#"a="https://reports.test/1";integer=999999999999999;decimal=999999999999.999"#
+            )
+            .len(),
+            1
+        );
+        assert!(ReportingEndpoints::parse(
+            r#"a="https://reports.test/1";integer=9999999999999999"#
+        )
+        .is_empty());
+        assert!(ReportingEndpoints::parse(
+            r#"a="https://reports.test/1";decimal=9999999999999.1"#
+        )
+        .is_empty());
+        assert!(ReportingEndpoints::parse(
+            r#"a="https://reports.test/1";decimal=1.2345"#
         )
         .is_empty());
     }
