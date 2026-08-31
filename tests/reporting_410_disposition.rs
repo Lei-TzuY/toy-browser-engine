@@ -61,14 +61,14 @@ fn successful_delivery_and_endpoint_removal_are_observably_distinct() {
     assert_eq!(completed.len(), 2);
 
     assert!(matches!(
-        completed[0].outcome,
+        &completed[0].outcome,
         ReportingDeliveryOutcome::Delivered {
             disposition: ReportingDeliveryDisposition::Delivered,
             ..
         }
     ));
     assert!(matches!(
-        completed[1].outcome,
+        &completed[1].outcome,
         ReportingDeliveryOutcome::Delivered {
             disposition: ReportingDeliveryDisposition::RemoveEndpoint,
             ..
