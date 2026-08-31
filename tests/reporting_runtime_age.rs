@@ -1,7 +1,7 @@
 use browser_engine::integrity_policy_reporting::{
     IntegrityViolationReport, IntegrityViolationReportBody,
 };
-use browser_engine::net::{ManualNetwork, Url};
+use browser_engine::net::{ManualNetwork, NetworkBackend, Url};
 use browser_engine::{
     ReportingDeliveryBatch, ReportingDeliveryRuntime, ReportingRetryPolicy,
     ResolvedIntegrityViolationReport,
