@@ -126,7 +126,10 @@ impl ReportingDeliveryScheduler {
     /// whose ids do not belong to this scheduler are returned untouched so the
     /// event loop can route them to the page Fetch registry.
     ///
-    /// Successful 2xx responses consume the batch. Network failures and
+    /// Successful 2xx responses consume the batch. A `410 Gone` response is
+    /// also terminal: Reporting API explicitly uses it to tell the user agent
+    /// to remove the endpoint, so retrying the same batch to that endpoint would
+    /// violate the endpoint-removal signal. Network failures and all other
     /// non-2xx responses return the original batch so a higher-level policy can
     /// retry it without reconstructing report contents.
     pub fn process_completions(
@@ -147,7 +150,9 @@ impl ReportingDeliveryScheduler {
             };
             let (_, batch) = self.pending.remove(index);
             let outcome = match completion.result {
-                Ok(response) if reporting_delivery_succeeded(response.status) => {
+                Ok(response)
+                    if reporting_delivery_succeeded(response.status) || response.status == 410 =>
+                {
                     ReportingDeliveryOutcome::Delivered {
                         id: completion.id,
                         batch,
@@ -226,6 +231,25 @@ mod tests {
         let (outcomes, unhandled) = scheduler.process_completions(network.poll());
         assert!(matches!(outcomes.as_slice(), [ReportingDeliveryOutcome::Delivered { .. }]));
         assert!(unhandled.is_empty());
+        assert!(scheduler.is_empty());
+    }
+
+    #[test]
+    fn gone_is_terminal_and_not_retryable() {
+        let network = ManualNetwork::new();
+        network.respond_with("https://reports.test/collect", 410, "text/plain", Vec::new());
+        network.set_auto_complete(true);
+        let mut scheduler = ReportingDeliveryScheduler::new();
+        scheduler
+            .queue(batch("https://reports.test/collect"), 0, "ua")
+            .unwrap();
+        scheduler.dispatch(&network);
+        let (outcomes, unhandled) = scheduler.process_completions(network.poll());
+        assert!(unhandled.is_empty());
+        assert!(matches!(
+            outcomes.as_slice(),
+            [ReportingDeliveryOutcome::Delivered { .. }]
+        ));
         assert!(scheduler.is_empty());
     }
 
