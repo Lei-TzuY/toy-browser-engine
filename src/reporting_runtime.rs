@@ -89,7 +89,7 @@ fn parse_rfc850_date_unix_ms(value: &str, now_unix_ms: u64) -> Option<u64> {
         return None;
     }
     let rest = value.get(comma + 1..)?;
-    if rest.len() != 24 || !rest.starts_with(' ') || &rest[3..4] != "-"
+    if rest.len() != 23 || !rest.starts_with(' ') || &rest[3..4] != "-"
         || &rest[7..8] != "-" || &rest[10..11] != " "
         || &rest[13..14] != ":" || &rest[16..17] != ":"
         || &rest[19..23] != " GMT"
@@ -191,17 +191,18 @@ fn date_time_unix_ms(
 }
 
 fn year_from_unix_ms(unix_ms: u64) -> Option<i32> {
-    let days = unix_ms / 86_400_000;
-    let mut year = 1970i32;
-    let mut first_day = 0u64;
-    loop {
-        let year_days = if is_leap_year(year) { 366 } else { 365 };
-        if first_day.saturating_add(year_days) > days {
-            return Some(year);
+    let target_days = i64::try_from(unix_ms / 86_400_000).ok()?;
+    let mut low = 1970i32;
+    let mut high = i32::MAX;
+    while low < high {
+        let mid = ((low as i64 + high as i64 + 1) / 2) as i32;
+        if days_from_civil(mid, 1, 1) <= target_days {
+            low = mid;
+        } else {
+            high = mid - 1;
         }
-        first_day = first_day.saturating_add(year_days);
-        year = year.checked_add(1)?;
     }
+    Some(low)
 }
 
 fn valid_day_of_month(year: i32, month: u32, day: u32) -> bool {
