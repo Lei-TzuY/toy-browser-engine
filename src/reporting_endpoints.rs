@@ -84,11 +84,8 @@ impl ReportingEndpoints {
             let Some(url_text) = parse_quoted_string(raw_value.trim()) else {
                 return Self::default();
             };
-            let resolved = match base_url {
-                Some(base) => base.join(&url_text),
-                None => Url::parse(&url_text),
-            };
-            let Ok(mut url) = resolved else {
+            let resolved = resolve_uri_reference(&url_text, base_url);
+            let Some(mut url) = resolved else {
                 // The dictionary itself was valid, but this member was not a
                 // usable URI-reference. Reporting ignores that member only.
                 continue;
@@ -157,6 +154,29 @@ pub fn resolve_integrity_violation_reports(
             })
         })
         .collect()
+}
+
+fn resolve_uri_reference(reference: &str, base_url: Option<&Url>) -> Option<Url> {
+    match Url::parse(reference) {
+        Ok(url) => Some(url),
+        Err(_) if has_scheme_prefix(reference) => None,
+        Err(_) => base_url?.join(reference).ok(),
+    }
+}
+
+fn has_scheme_prefix(reference: &str) -> bool {
+    let Some(colon) = reference.find(':') else {
+        return false;
+    };
+    if reference[..colon].contains(['/', '?', '#']) {
+        return false;
+    }
+    let mut chars = reference[..colon].chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
 }
 
 fn is_potentially_trustworthy(url: &Url) -> bool {
@@ -306,6 +326,20 @@ mod tests {
         assert_eq!(
             endpoints.get("cdn").unwrap().to_string(),
             "https://reports.test/a"
+        );
+    }
+
+    #[test]
+    fn malformed_absolute_reference_is_not_reinterpreted_as_relative() {
+        let base = Url::parse("https://example.test/app/page.html").unwrap();
+        let endpoints = ReportingEndpoints::parse_with_base(
+            r#"broken="https://reports.test:bad/report", good="/report""#,
+            &base,
+        );
+        assert!(endpoints.get("broken").is_none());
+        assert_eq!(
+            endpoints.get("good").unwrap().to_string(),
+            "https://example.test/report"
         );
     }
 
