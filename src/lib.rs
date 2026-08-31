@@ -54,6 +54,7 @@ pub mod referrer_policy;
 pub mod reporting_delivery;
 pub mod reporting_endpoints;
 pub mod reporting_request;
+pub mod reporting_scheduler;
 pub mod script;
 pub mod select_state;
 pub mod session_network;
@@ -115,6 +116,10 @@ pub use reporting_endpoints::{
 pub use reporting_request::{
     build_reporting_delivery_request, build_reporting_delivery_requests,
     reporting_delivery_succeeded,
+};
+pub use reporting_scheduler::{
+    ReportingDeliveryFailure, ReportingDeliveryOutcome, ReportingDeliveryScheduler,
+    MAX_IN_FLIGHT_REPORTING_DELIVERIES,
 };
 pub use session_network::SessionNetwork;
 pub use subresource_cors::validate_subresource_cors_response;
