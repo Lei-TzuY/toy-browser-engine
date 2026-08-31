@@ -3395,8 +3395,8 @@ mod tests {
         assert_eq!(sent[0].body.as_deref(), Some(&b"payload"[..]));
         assert_eq!(
             logs(&document),
-            "bodyUsed after fetch false\nsent, got 201",
-            "sending a request does not consume its body"
+            "bodyUsed after fetch true\nsent, got 201",
+            "Fetch synchronously disturbs the Request input body"
         );
     }
 

@@ -43,6 +43,7 @@ pub fn headers_ref(headers: HeaderMap) -> HeadersRef {
 pub struct Body {
     bytes: RefCell<Option<Vec<u8>>>,
     used: Cell<bool>,
+    present: bool,
 }
 
 impl Body {
@@ -50,11 +51,28 @@ impl Body {
         Body {
             bytes: RefCell::new(Some(bytes)),
             used: Cell::new(false),
+            present: true,
         }
     }
 
     pub fn empty() -> Body {
         Body::new(Vec::new())
+    }
+
+    /// A genuinely body-less value. Reading it yields empty bytes without
+    /// disturbing a stream because no body stream exists.
+    pub fn absent() -> Body {
+        Body {
+            bytes: RefCell::new(Some(Vec::new())),
+            used: Cell::new(false),
+            present: false,
+        }
+    }
+
+    /// Whether this wrapper represents a real body, including an authored
+    /// zero-length body.
+    pub fn present(&self) -> bool {
+        self.present
     }
 
     /// True once the body has been consumed.
@@ -64,6 +82,9 @@ impl Body {
 
     /// Take the bytes, or explain why they are no longer there.
     pub fn take(&self) -> Result<Vec<u8>, String> {
+        if !self.present {
+            return Ok(Vec::new());
+        }
         if self.used.get() {
             return Err("TypeError: body stream already read".to_string());
         }
@@ -217,16 +238,21 @@ pub struct RequestData {
 impl RequestData {
     /// The wire request this describes.
     ///
-    /// Reads the body without consuming it, so `fetch(request)` still leaves
-    /// `request.bodyUsed` false until the script itself reads it. Mode and
-    /// credentials remain browser-only metadata and therefore are intentionally
-    /// absent from this transport representation.
+    /// Reads this internal request copy without consuming it. Script-visible
+    /// Request input consumption is handled by `fetch()` when the operation
+    /// successfully starts. A present zero-length body remains distinct from a
+    /// genuinely body-less request on the wire.
     pub fn to_wire(&self) -> FetchRequest {
+        let body = if self.body.present() {
+            Some(self.body.peek().unwrap_or_default())
+        } else {
+            None
+        };
         FetchRequest::new(
             self.url.clone(),
             self.method,
             self.headers.borrow().clone(),
-            self.body.peek(),
+            body,
         )
     }
 }
@@ -673,6 +699,16 @@ mod tests {
         assert_eq!(body.peek(), None, "an empty wrapper has no transport body");
         assert_eq!(body.take().unwrap(), Vec::<u8>::new());
         assert!(body.take().is_err(), "even an empty body is single-use");
+    }
+
+    #[test]
+    fn an_absent_body_has_no_stream_to_disturb() {
+        let body = Body::absent();
+        assert!(!body.present());
+        assert_eq!(body.peek(), None);
+        assert_eq!(body.take().unwrap(), Vec::<u8>::new());
+        assert!(!body.used());
+        assert_eq!(body.take().unwrap(), Vec::<u8>::new());
     }
 
     #[test]

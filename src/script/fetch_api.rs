@@ -112,6 +112,8 @@ impl JsRuntime {
                 let redirect_context = fetch_redirect_context(&request, environment_url, referrer);
                 if signal.as_ref().is_some_and(|state| state.aborted()) {
                     self.reject_with(&promise, &FetchError::Aborted);
+                } else if let Err(error) = consume_fetch_input_body(&args) {
+                    self.reject_with(&promise, &error);
                 } else {
                     let needs_preflight = match cors.as_ref() {
                         Some(state) if state.needs_preflight => {
@@ -574,7 +576,10 @@ impl JsRuntime {
                         existing.url.clone(),
                         existing.method,
                         existing.headers.borrow().clone(),
-                        existing.body.peek(),
+                        existing
+                            .body
+                            .peek()
+                            .or_else(|| existing.body.present().then(Vec::new)),
                         existing.signal.clone(),
                         existing.mode,
                         existing.credentials,
@@ -652,7 +657,7 @@ impl JsRuntime {
             headers: headers_ref(headers),
             body: match body {
                 Some(bytes) => Body::new(bytes),
-                None => Body::empty(),
+                None => Body::absent(),
             },
             signal,
             mode,
@@ -1881,6 +1886,31 @@ impl JsRuntime {
             _ => JsValue::Undefined,
         }
     }
+}
+
+/// Once Fetch accepts a Request input, it owns that input body unless
+/// RequestInit supplied a replacement. Disturb the script-visible source
+/// synchronously while retaining the prepared internal copy for a later
+/// network turn or CORS preflight.
+fn consume_fetch_input_body(args: &[JsValue]) -> Result<(), FetchError> {
+    let Some(JsValue::Host(host)) = args.first() else {
+        return Ok(());
+    };
+    let Some(request) = host.as_request() else {
+        return Ok(());
+    };
+    let init_replaces_body = args.get(1).is_some_and(|init| match init {
+        JsValue::Object(props) => props.borrow().iter().any(|(key, _)| key == "body"),
+        _ => false,
+    });
+    if init_replaces_body || !request.body.present() {
+        return Ok(());
+    }
+    request
+        .body
+        .take()
+        .map(|_| ())
+        .map_err(FetchError::BadRequest)
 }
 
 fn host_value(object: HostObject) -> JsValue {

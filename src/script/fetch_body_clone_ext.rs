@@ -15,9 +15,10 @@ impl JsRuntime {
             url: request.url.clone(),
             method: request.method,
             headers: headers_ref(request.headers.borrow().clone()),
-            body: match request.body.peek() {
-                Some(bytes) => Body::new(bytes),
-                None => Body::empty(),
+            body: if request.body.present() {
+                Body::new(request.body.peek().unwrap_or_default())
+            } else {
+                Body::absent()
             },
             signal: request.signal.clone(),
             mode: request.mode,
