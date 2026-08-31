@@ -14,6 +14,7 @@ use crate::reporting_endpoint_state::ReportingEndpointState;
 use crate::reporting_endpoints::ReportingEndpoints;
 use crate::reporting_retry::ReportingRetryPolicy;
 use crate::reporting_runtime::{ReportingDeliveryRuntime, ReportingRuntimeCompletion};
+use crate::reporting_scheduler::{ReportingDeliveryDisposition, ReportingDeliveryOutcome};
 
 /// End-to-end Reporting API state for one committed endpoint mapping.
 ///
@@ -171,10 +172,30 @@ impl ReportingCoordinator {
     }
 
     fn apply_endpoint_outcomes(&mut self, completed: &[ReportingRuntimeCompletion]) -> usize {
+        let removed_urls = completed
+            .iter()
+            .filter_map(|completion| match &completion.outcome {
+                ReportingDeliveryOutcome::Delivered {
+                    batch,
+                    disposition: ReportingDeliveryDisposition::RemoveEndpoint,
+                    ..
+                } => Some(batch.endpoint_url.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let outcomes = completed
             .iter()
             .map(|completion| completion.outcome.clone())
             .collect::<Vec<_>>();
-        self.endpoints.apply_delivery_outcomes(&outcomes)
+        let removed = self.endpoints.apply_delivery_outcomes(&outcomes);
+
+        // A 410 applies to the endpoint, not just the request that observed it.
+        // If another delivery to the same URL failed earlier and is waiting in
+        // the delayed retry queue, it must not be resurrected later.
+        for endpoint_url in removed_urls {
+            self.runtime.discard_retries_for_endpoint(&endpoint_url);
+        }
+
+        removed
     }
 }

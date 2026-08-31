@@ -6,6 +6,7 @@
 //! policy separate from the transport scheduler: failed batches are assigned a
 //! bounded exponential delay and become eligible for a later network phase.
 
+use crate::net::Url;
 use crate::reporting_delivery::ReportingDeliveryBatch;
 use crate::reporting_scheduler::ReportingDeliveryOutcome;
 
@@ -109,6 +110,18 @@ impl ReportingRetryQueue {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Remove delayed retries targeting a concrete endpoint URL.
+    ///
+    /// A `410 Gone` removal applies to the endpoint itself, not merely to the
+    /// delivery attempt that observed it. Any older failures for the same URL
+    /// must therefore be discarded before they become eligible again.
+    pub fn remove_endpoint(&mut self, endpoint_url: &Url) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|entry| &entry.batch.endpoint_url != endpoint_url);
+        before - self.entries.len()
     }
 
     pub fn schedule_failure(
@@ -223,7 +236,6 @@ impl ReportingRetryQueue {
 mod tests {
     use super::*;
     use crate::integrity_policy_reporting::{IntegrityViolationReport, IntegrityViolationReportBody};
-    use crate::net::Url;
     use crate::reporting_endpoints::ResolvedIntegrityViolationReport;
 
     fn batch(endpoint: &str) -> ReportingDeliveryBatch {
@@ -290,6 +302,22 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].batch.endpoint_url.to_string(), "https://reports.test/c");
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn removing_endpoint_discards_only_matching_delayed_retries() {
+        let mut queue = ReportingRetryQueue::new(ReportingRetryPolicy::new(10, 10, 4));
+        queue.schedule_failure(batch("https://reports.test/a"), 1, 0);
+        queue.schedule_failure(batch("https://reports.test/b"), 1, 0);
+        queue.schedule_failure(batch("https://reports.test/a"), 1, 0);
+
+        let endpoint = Url::parse("https://reports.test/a").unwrap();
+        assert_eq!(queue.remove_endpoint(&endpoint), 2);
+        assert_eq!(queue.len(), 1);
+        let ready = queue.drain_ready(10);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].batch.endpoint_url.to_string(), "https://reports.test/b");
+        assert_eq!(queue.remove_endpoint(&endpoint), 0);
     }
 
     #[test]
