@@ -1,3 +1,4 @@
+use browser_engine::reporting_scheduler::ReportingDeliveryDisposition;
 use browser_engine::{
     IntegrityViolationReport, IntegrityViolationReportBody, ReportingDeliveryBatch,
     ReportingDeliveryFailure, ReportingDeliveryOutcome, ReportingRetryDecision,
@@ -106,6 +107,7 @@ fn delivered_outcome_never_enters_retry_queue() {
     let outcome = ReportingDeliveryOutcome::Delivered {
         id: 7,
         batch: batch("https://reports.test/collect", "https://cdn.test/app.js"),
+        disposition: ReportingDeliveryDisposition::Delivered,
     };
     assert_eq!(retries.schedule_outcome(outcome, 1, 0), None);
     assert!(retries.is_empty());
