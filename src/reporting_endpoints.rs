@@ -1,7 +1,7 @@
 //! Reporting API endpoint parsing and Integrity-Policy report resolution.
 //!
 //! `Integrity-Policy` names Reporting API endpoints, while the navigation
-//! response's `Reporting-Endpoints` field maps those names to concrete HTTPS
+//! response's `Reporting-Endpoints` field maps those names to concrete secure
 //! destinations. Keeping that mapping separate from policy evaluation avoids
 //! turning an unknown or malformed endpoint name into an accidental network
 //! destination.
@@ -26,12 +26,12 @@ pub struct ReportingEndpoints {
 }
 
 impl ReportingEndpoints {
-    /// Parse `Reporting-Endpoints` as a Structured Fields dictionary whose
-    /// members are endpoint-name => quoted URL strings.
+    /// Parse `Reporting-Endpoints` without a response URL.
     ///
-    /// A malformed dictionary is ignored as a whole. This is deliberately
-    /// fail-closed for delivery: policy violations can still be queued, but an
-    /// ambiguous header can never redirect reports somewhere unintended.
+    /// This compatibility entry point accepts only absolute endpoint URLs. Use
+    /// [`ReportingEndpoints::from_response`] when processing a real response;
+    /// the Reporting API defines endpoint strings as URI-references and resolves
+    /// them against that response's URL.
     pub fn from_headers(headers: &HeaderMap) -> Self {
         let Some(value) = headers.get(REPORTING_ENDPOINTS_HEADER) else {
             return Self::default();
@@ -39,11 +39,33 @@ impl ReportingEndpoints {
         Self::parse(&value)
     }
 
+    /// Process `Reporting-Endpoints` in the context of the response that
+    /// declared it.
+    ///
+    /// Relative URI-references are resolved against `response.url`. An
+    /// untrustworthy response cannot establish reporting endpoints at all.
     pub fn from_response(response: &FetchResponse) -> Self {
-        Self::from_headers(&response.headers)
+        if !is_potentially_trustworthy(&response.url) {
+            return Self::default();
+        }
+        let Some(value) = response.headers.get(REPORTING_ENDPOINTS_HEADER) else {
+            return Self::default();
+        };
+        Self::parse_with_base(&value, &response.url)
     }
 
+    /// Parse an endpoint dictionary where endpoint values must be absolute.
     pub fn parse(value: &str) -> Self {
+        Self::parse_impl(value, None)
+    }
+
+    /// Parse an endpoint dictionary and resolve every URI-reference against
+    /// `base_url`, matching Reporting API response processing.
+    pub fn parse_with_base(value: &str, base_url: &Url) -> Self {
+        Self::parse_impl(value, Some(base_url))
+    }
+
+    fn parse_impl(value: &str, base_url: Option<&Url>) -> Self {
         let Some(members) = split_dictionary_members(value) else {
             return Self::default();
         };
@@ -62,14 +84,20 @@ impl ReportingEndpoints {
             let Some(url_text) = parse_quoted_string(raw_value.trim()) else {
                 return Self::default();
             };
-            let Ok(mut url) = Url::parse(&url_text) else {
-                return Self::default();
+            let resolved = match base_url {
+                Some(base) => base.join(&url_text),
+                None => Url::parse(&url_text),
+            };
+            let Ok(mut url) = resolved else {
+                // The dictionary itself was valid, but this member was not a
+                // usable URI-reference. Reporting ignores that member only.
+                continue;
             };
 
-            // Reporting destinations are network sinks and must be secure.
-            // Ignore insecure members without invalidating otherwise-valid
-            // mappings, matching the Reporting-Endpoints processing model.
-            if url.scheme() != "https" {
+            // Reporting destinations are network sinks and must be potentially
+            // trustworthy. In this engine that means HTTPS, plus loopback HTTP
+            // development origins.
+            if !is_potentially_trustworthy(&url) {
                 continue;
             }
             url.set_fragment(None);
@@ -129,6 +157,23 @@ pub fn resolve_integrity_violation_reports(
             })
         })
         .collect()
+}
+
+fn is_potentially_trustworthy(url: &Url) -> bool {
+    if url.scheme() == "https" {
+        return true;
+    }
+    if url.scheme() != "http" {
+        return false;
+    }
+
+    let host = url.host().to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "127.0.0.1"
+        || host.starts_with("127.")
+        || host == "::1"
+        || host == "[::1]"
 }
 
 fn valid_dictionary_key(key: &str) -> bool {
@@ -242,11 +287,44 @@ mod tests {
     }
 
     #[test]
+    fn resolves_relative_uri_references_against_response_url() {
+        let base = Url::parse("https://example.test/app/page.html?old=1#fragment").unwrap();
+        let endpoints = ReportingEndpoints::parse_with_base(
+            r#"root="/reports", sibling="../collector?kind=csp#private", cdn="//reports.test/a""#,
+            &base,
+        );
+
+        assert_eq!(endpoints.len(), 3);
+        assert_eq!(
+            endpoints.get("root").unwrap().to_string(),
+            "https://example.test/reports"
+        );
+        assert_eq!(
+            endpoints.get("sibling").unwrap().to_string(),
+            "https://example.test/collector?kind=csp"
+        );
+        assert_eq!(
+            endpoints.get("cdn").unwrap().to_string(),
+            "https://reports.test/a"
+        );
+    }
+
+    #[test]
     fn ignores_insecure_endpoint_members() {
         let endpoints = ReportingEndpoints::parse(
             r#"secure="https://reports.test/a", insecure="http://reports.test/b""#,
         );
         assert!(endpoints.get("secure").is_some());
+        assert!(endpoints.get("insecure").is_none());
+    }
+
+    #[test]
+    fn allows_potentially_trustworthy_loopback_http() {
+        let endpoints = ReportingEndpoints::parse(
+            r#"local="http://localhost:8080/report", loopback="http://127.0.0.1/report", insecure="http://example.test/report""#,
+        );
+        assert!(endpoints.get("local").is_some());
+        assert!(endpoints.get("loopback").is_some());
         assert!(endpoints.get("insecure").is_none());
     }
 
