@@ -57,6 +57,11 @@ pub struct ReportingRetryEntry {
     /// Attempt number to use when this entry is delivered next.
     pub attempt: u32,
     pub ready_at_ms: u64,
+    /// Lowest Reporting API `age` that may be serialized for this retry.
+    ///
+    /// This prevents callers from accidentally making a retried report appear
+    /// younger than the preceding attempt when they provide a stale age value.
+    pub minimum_age_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,16 +99,24 @@ impl ReportingRetryQueue {
         self.entries.is_empty()
     }
 
-    /// Schedule a batch after a failed delivery attempt.
-    ///
-    /// `failed_attempt` starts at 1 for the original delivery. Once the maximum
-    /// number of attempts has been consumed the batch is returned as dropped
-    /// instead of being retained forever.
     pub fn schedule_failure(
         &mut self,
         batch: ReportingDeliveryBatch,
         failed_attempt: u32,
         now_ms: u64,
+    ) -> ReportingRetryDecision {
+        self.schedule_failure_with_age(batch, failed_attempt, now_ms, 0)
+    }
+
+    /// Schedule a failed batch while carrying forward the report age used by
+    /// the failed attempt. The retry delay is added to that age using saturating
+    /// arithmetic so a later request cannot regress the Reporting API `age`.
+    pub fn schedule_failure_with_age(
+        &mut self,
+        batch: ReportingDeliveryBatch,
+        failed_attempt: u32,
+        now_ms: u64,
+        age_ms: u64,
     ) -> ReportingRetryDecision {
         let failed_attempt = failed_attempt.max(1);
         if failed_attempt >= self.policy.max_attempts {
@@ -113,37 +126,42 @@ impl ReportingRetryQueue {
             };
         }
 
+        let delay_ms = self.policy.delay_after_failure(failed_attempt);
         let entry = ReportingRetryEntry {
             batch,
             attempt: failed_attempt.saturating_add(1),
-            ready_at_ms: now_ms.saturating_add(self.policy.delay_after_failure(failed_attempt)),
+            ready_at_ms: now_ms.saturating_add(delay_ms),
+            minimum_age_ms: age_ms.saturating_add(delay_ms),
         };
         self.entries.push(entry.clone());
         ReportingRetryDecision::Scheduled(entry)
     }
 
-    /// Consume a scheduler outcome when it represents a retryable failure.
-    /// Successful deliveries are intentionally ignored.
     pub fn schedule_outcome(
         &mut self,
         outcome: ReportingDeliveryOutcome,
         attempt: u32,
         now_ms: u64,
     ) -> Option<ReportingRetryDecision> {
+        self.schedule_outcome_with_age(outcome, attempt, now_ms, 0)
+    }
+
+    /// Consume a scheduler outcome with the age serialized for that attempt.
+    pub fn schedule_outcome_with_age(
+        &mut self,
+        outcome: ReportingDeliveryOutcome,
+        attempt: u32,
+        now_ms: u64,
+        age_ms: u64,
+    ) -> Option<ReportingRetryDecision> {
         match outcome {
             ReportingDeliveryOutcome::Delivered { .. } => None,
-            ReportingDeliveryOutcome::Retryable { batch, .. } => {
-                Some(self.schedule_failure(batch, attempt, now_ms))
-            }
+            ReportingDeliveryOutcome::Retryable { batch, .. } => Some(
+                self.schedule_failure_with_age(batch, attempt, now_ms, age_ms),
+            ),
         }
     }
 
-    /// Remove and return at most `limit` entries whose delay has elapsed.
-    ///
-    /// Ready entries beyond the caller's capacity remain queued in their
-    /// original position instead of being lost or assigned a new backoff. This
-    /// is important when the delivery scheduler's in-flight window is smaller
-    /// than the number of retries that become ready at once.
     pub fn drain_ready_up_to(&mut self, now_ms: u64, limit: usize) -> Vec<ReportingRetryEntry> {
         if limit == 0 {
             return Vec::new();
@@ -162,10 +180,6 @@ impl ReportingRetryQueue {
         ready
     }
 
-    /// Remove and return all entries whose delay has elapsed.
-    ///
-    /// Insertion order is preserved both among ready entries and among entries
-    /// that remain queued, keeping retry dispatch deterministic.
     pub fn drain_ready(&mut self, now_ms: u64) -> Vec<ReportingRetryEntry> {
         self.drain_ready_up_to(now_ms, usize::MAX)
     }
@@ -234,5 +248,21 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].batch.endpoint_url.to_string(), "https://reports.test/c");
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn retry_minimum_age_includes_backoff_and_saturates() {
+        let mut queue = ReportingRetryQueue::new(ReportingRetryPolicy::new(100, 100, 4));
+        let decision = queue.schedule_failure_with_age(
+            batch("https://reports.test/a"),
+            1,
+            u64::MAX - 50,
+            u64::MAX - 25,
+        );
+        let ReportingRetryDecision::Scheduled(entry) = decision else {
+            panic!("retry should be scheduled");
+        };
+        assert_eq!(entry.ready_at_ms, u64::MAX);
+        assert_eq!(entry.minimum_age_ms, u64::MAX);
     }
 }
