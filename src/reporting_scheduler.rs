@@ -6,7 +6,7 @@
 //! dispatch queue, and completion classification while reusing the common
 //! `NetworkBackend` transport boundary.
 
-use crate::net::{FetchError, FetchId, FetchRequest, NetworkBackend};
+use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend};
 use crate::reporting_delivery::ReportingDeliveryBatch;
 use crate::reporting_request::{build_reporting_delivery_request, reporting_delivery_succeeded};
 
@@ -118,21 +118,31 @@ impl ReportingDeliveryScheduler {
         count
     }
 
-    /// Classify completed report submissions.
+    /// Route completions that the browser event loop has already polled.
+    ///
+    /// This intentionally does **not** call `NetworkBackend::poll()` itself.
+    /// Reporting and script Fetch may share a backend, and a reporting helper
+    /// must never steal a page completion merely by polling first. Completions
+    /// whose ids do not belong to this scheduler are returned untouched so the
+    /// event loop can route them to the page Fetch registry.
     ///
     /// Successful 2xx responses consume the batch. Network failures and
     /// non-2xx responses return the original batch so a higher-level policy can
     /// retry it without reconstructing report contents.
-    pub fn poll(&mut self, network: &dyn NetworkBackend) -> Vec<ReportingDeliveryOutcome> {
+    pub fn process_completions(
+        &mut self,
+        completions: Vec<FetchCompletion>,
+    ) -> (Vec<ReportingDeliveryOutcome>, Vec<FetchCompletion>) {
         let mut outcomes = Vec::new();
-        for completion in network.poll() {
+        let mut unhandled = Vec::new();
+
+        for completion in completions {
             let Some(index) = self
                 .pending
                 .iter()
                 .position(|(id, _)| *id == completion.id)
             else {
-                // This scheduler may share a backend with page Fetch. Never
-                // consume or reinterpret a completion from another id space.
+                unhandled.push(completion);
                 continue;
             };
             let (_, batch) = self.pending.remove(index);
@@ -156,7 +166,7 @@ impl ReportingDeliveryScheduler {
             };
             outcomes.push(outcome);
         }
-        outcomes
+        (outcomes, unhandled)
     }
 }
 
@@ -164,7 +174,7 @@ impl ReportingDeliveryScheduler {
 mod tests {
     use super::*;
     use crate::integrity_policy_reporting::{IntegrityViolationReport, IntegrityViolationReportBody};
-    use crate::net::{FetchResponse, ManualNetwork, Url};
+    use crate::net::{HeaderMap, ManualNetwork, Method, Url};
     use crate::reporting_endpoints::ResolvedIntegrityViolationReport;
 
     fn batch(endpoint: &str) -> ReportingDeliveryBatch {
@@ -213,8 +223,9 @@ mod tests {
             .queue(batch("https://reports.test/collect"), 0, "ua")
             .unwrap();
         scheduler.dispatch(&network);
-        let outcomes = scheduler.poll(&network);
+        let (outcomes, unhandled) = scheduler.process_completions(network.poll());
         assert!(matches!(outcomes.as_slice(), [ReportingDeliveryOutcome::Delivered { .. }]));
+        assert!(unhandled.is_empty());
         assert!(scheduler.is_empty());
     }
 
@@ -228,7 +239,8 @@ mod tests {
             .queue(batch("https://reports.test/collect"), 0, "ua")
             .unwrap();
         scheduler.dispatch(&network);
-        let outcomes = scheduler.poll(&network);
+        let (outcomes, unhandled) = scheduler.process_completions(network.poll());
+        assert!(unhandled.is_empty());
         assert!(matches!(
             outcomes.as_slice(),
             [ReportingDeliveryOutcome::Retryable {
@@ -249,7 +261,8 @@ mod tests {
             .queue(batch("https://reports.test/collect"), 0, "ua")
             .unwrap();
         scheduler.dispatch(&network);
-        let outcomes = scheduler.poll(&network);
+        let (outcomes, unhandled) = scheduler.process_completions(network.poll());
+        assert!(unhandled.is_empty());
         assert!(matches!(
             outcomes.as_slice(),
             [ReportingDeliveryOutcome::Retryable {
@@ -272,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_unrelated_page_fetch_completions() {
+    fn returns_unrelated_page_fetch_completions_untouched() {
         let network = ManualNetwork::new();
         network.respond_with("https://example.test/data", 200, "text/plain", b"ok".to_vec());
         network.set_auto_complete(true);
@@ -280,13 +293,16 @@ mod tests {
             1,
             FetchRequest::new(
                 Url::parse("https://example.test/data").unwrap(),
-                crate::net::Method::Get,
-                crate::net::HeaderMap::new(),
+                Method::Get,
+                HeaderMap::new(),
                 None,
             ),
         );
         let mut scheduler = ReportingDeliveryScheduler::new();
-        assert!(scheduler.poll(&network).is_empty());
-        assert!(scheduler.is_empty());
+        let completions = network.poll();
+        let (outcomes, unhandled) = scheduler.process_completions(completions);
+        assert!(outcomes.is_empty());
+        assert_eq!(unhandled.len(), 1);
+        assert_eq!(unhandled[0].id, 1);
     }
 }
