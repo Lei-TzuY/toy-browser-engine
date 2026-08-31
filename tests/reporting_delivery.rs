@@ -32,7 +32,7 @@ fn resolves_then_batches_multiple_policy_names_sharing_one_url() {
     assert_eq!(REPORTING_CONTENT_TYPE, "application/reports+json");
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].len(), 2);
-    assert_eq!(batches[0].endpoint_url.as_str(), "https://reports.test/collect");
+    assert_eq!(batches[0].endpoint_url.to_string(), "https://reports.test/collect");
 
     let json = batches[0].to_json(42, "toy-browser-test");
     assert_eq!(json.matches("\"type\":\"integrity-violation\"").count(), 2);
@@ -67,8 +67,8 @@ fn distinct_concrete_destinations_remain_separate_posts() {
     let batches = batch_resolved_integrity_reports(&resolved);
 
     assert_eq!(batches.len(), 2);
-    assert_eq!(batches[0].endpoint_url.as_str(), "https://reports.test/a");
+    assert_eq!(batches[0].endpoint_url.to_string(), "https://reports.test/a");
     assert_eq!(batches[0].len(), 2);
-    assert_eq!(batches[1].endpoint_url.as_str(), "https://reports.test/b");
+    assert_eq!(batches[1].endpoint_url.to_string(), "https://reports.test/b");
     assert_eq!(batches[1].len(), 1);
 }
