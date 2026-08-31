@@ -150,6 +150,27 @@ fn endpoint_mapping_cannot_change_while_delivery_work_is_live() {
 }
 
 #[test]
+fn stale_batch_from_previous_mapping_is_rejected_after_idle_replacement() {
+    let old_mapping = r#"default="https://reports.test/old""#;
+    let new_mapping = r#"default="https://reports.test/new""#;
+    let mut coordinator = coordinator(old_mapping);
+    let reports = vec![report("default", "https://cdn.test/a.js")];
+    let stale_batch = coordinator.resolve_and_batch(&reports).remove(0);
+
+    assert!(coordinator.replace_endpoints(ReportingEndpoints::parse(new_mapping)));
+    assert!(coordinator
+        .queue_initial_batch(stale_batch, 0, "ua")
+        .is_err());
+
+    let current = coordinator.resolve_and_batch(&reports);
+    assert_eq!(current.len(), 1);
+    assert_eq!(
+        current[0].endpoint_url.to_string(),
+        "https://reports.test/new"
+    );
+}
+
+#[test]
 fn committing_a_fresh_mapping_clears_prior_removal_state_when_idle() {
     let endpoint = "https://reports.test/collect";
     let network = ManualNetwork::new();
