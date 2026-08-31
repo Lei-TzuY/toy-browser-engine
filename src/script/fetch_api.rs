@@ -564,19 +564,26 @@ impl JsRuntime {
             mut integrity,
         ) = match &input {
             JsValue::Host(host) => match host.as_request() {
-                Some(existing) => (
-                    existing.url.clone(),
-                    existing.method,
-                    existing.headers.borrow().clone(),
-                    existing.body.peek(),
-                    existing.signal.clone(),
-                    existing.mode,
-                    existing.credentials,
-                    existing.redirect,
-                    existing.referrer.clone(),
-                    existing.referrer_policy,
-                    existing.integrity.clone(),
-                ),
+                Some(existing) => {
+                    if existing.body.used() {
+                        return Err(FetchError::BadRequest(
+                            "Request body stream is already used".into(),
+                        ));
+                    }
+                    (
+                        existing.url.clone(),
+                        existing.method,
+                        existing.headers.borrow().clone(),
+                        existing.body.peek(),
+                        existing.signal.clone(),
+                        existing.mode,
+                        existing.credentials,
+                        existing.redirect,
+                        existing.referrer.clone(),
+                        existing.referrer_policy,
+                        existing.integrity.clone(),
+                    )
+                }
                 None => return Err(FetchError::InvalidUrl(to_string(&input))),
             },
             other => (
@@ -1143,6 +1150,7 @@ impl JsRuntime {
             HostObject::Request(request) => match prop {
                 "text" => self.consume_body(&request.body, false),
                 "json" => self.consume_body(&request.body, true),
+                "clone" => self.clone_request_host(request),
                 _ => JsValue::Undefined,
             },
             HostObject::Response(response) => match prop {
@@ -1150,6 +1158,7 @@ impl JsRuntime {
                 "json" if response.is_opaque() => self.consume_null_body(true),
                 "text" => self.consume_body(&response.body, false),
                 "json" => self.consume_body(&response.body, true),
+                "clone" => self.clone_response_host(response),
                 _ => JsValue::Undefined,
             },
             HostObject::AbortController(state) => match prop {
@@ -2091,3 +2100,5 @@ fn validate_cors_preflight_response(
         response,
     )
 }
+
+include!("fetch_body_clone_ext.rs");
