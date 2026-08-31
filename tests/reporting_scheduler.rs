@@ -90,7 +90,8 @@ fn scheduler_surfaces_http_and_network_failures_with_original_batches() {
         .unwrap();
     scheduler.dispatch(&network);
 
-    let outcomes = scheduler.poll(&network);
+    let (outcomes, unhandled) = scheduler.process_completions(network.poll());
+    assert!(unhandled.is_empty());
     assert_eq!(outcomes.len(), 2);
     match &outcomes[0] {
         ReportingDeliveryOutcome::Retryable { batch, failure, .. } => {
@@ -127,8 +128,9 @@ fn successful_delivery_is_consumed_without_retry_work() {
         )
         .unwrap();
     scheduler.dispatch(&network);
-    let outcomes = scheduler.poll(&network);
+    let (outcomes, unhandled) = scheduler.process_completions(network.poll());
 
+    assert!(unhandled.is_empty());
     assert!(matches!(
         outcomes.as_slice(),
         [ReportingDeliveryOutcome::Delivered { .. }]
