@@ -54,6 +54,54 @@ fn supported_integrity_metadata_allows_policy_then_verifies_body() {
 }
 
 #[test]
+fn malformed_supported_algorithm_metadata_cannot_satisfy_integrity_policy() {
+    let policy = container("blocked-destinations=(script style)", "sources=()");
+
+    for malformed in [
+        "sha256-deadbeef",
+        "sha256-%%%%",
+        "sha256-Jok2eyBcFs4y7UIAlCuLix4mLfxw2byfvHfElpmk8d8==",
+    ] {
+        let decision = evaluate_subresource_integrity_policy(
+            &policy,
+            IntegrityPolicyDestination::Script,
+            malformed,
+            IntegrityPolicyRequestMode::Cors,
+            false,
+        );
+        assert!(decision.blocked, "{malformed} unexpectedly satisfied policy");
+        assert!(decision.enforced_violation);
+
+        assert_eq!(
+            enforce_subresource_integrity(
+                &policy,
+                IntegrityPolicyDestination::Style,
+                malformed,
+                IntegrityPolicyRequestMode::Cors,
+                false,
+                b"body",
+            ),
+            Err(SubresourceIntegrityError::PolicyBlocked),
+            "malformed metadata must fail at the request policy gate"
+        );
+    }
+}
+
+#[test]
+fn valid_metadata_with_options_still_counts_as_integrity_metadata() {
+    let policy = container("blocked-destinations=(script)", "sources=()");
+    let metadata = "sha256-Jok2eyBcFs4y7UIAlCuLix4mLfxw2byfvHfElpmk8d8=?option";
+    let decision = evaluate_subresource_integrity_policy(
+        &policy,
+        IntegrityPolicyDestination::Script,
+        metadata,
+        IntegrityPolicyRequestMode::Cors,
+        false,
+    );
+    assert!(!decision.blocked);
+}
+
+#[test]
 fn unsupported_only_metadata_does_not_bypass_integrity_policy() {
     let policy = container("blocked-destinations=(style)", "sources=()");
     assert_eq!(
