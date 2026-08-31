@@ -39,17 +39,23 @@ pub fn retry_after_delta_ms(value: &str) -> Option<u64> {
 
 /// Parse either Retry-After form into a delay relative to `now_unix_ms`.
 ///
-/// HTTP-date support is intentionally limited to the IMF-fixdate form emitted
-/// by modern HTTP senders. Obsolete RFC 850/asctime forms are rejected rather
-/// than guessed. Dates in the past map to a zero delay; the retry policy still
-/// applies its local exponential-backoff floor afterwards.
+/// HTTP-date recipients accept IMF-fixdate plus the two obsolete forms that
+/// HTTP retains for compatibility (RFC 850 and ANSI C asctime). Dates in the
+/// past map to a zero delay; the retry policy still applies its local
+/// exponential-backoff floor afterwards.
 pub fn retry_after_delay_ms(value: &str, now_unix_ms: u64) -> Option<u64> {
     if let Some(delay) = retry_after_delta_ms(value) {
         return Some(delay);
     }
 
-    let target_unix_ms = parse_imf_fixdate_unix_ms(value.trim())?;
+    let target_unix_ms = parse_http_date_unix_ms(value.trim(), now_unix_ms)?;
     Some(target_unix_ms.saturating_sub(now_unix_ms))
+}
+
+fn parse_http_date_unix_ms(value: &str, now_unix_ms: u64) -> Option<u64> {
+    parse_imf_fixdate_unix_ms(value)
+        .or_else(|| parse_rfc850_date_unix_ms(value, now_unix_ms))
+        .or_else(|| parse_asctime_date_unix_ms(value))
 }
 
 fn parse_imf_fixdate_unix_ms(value: &str) -> Option<u64> {
@@ -63,13 +69,88 @@ fn parse_imf_fixdate_unix_ms(value: &str) -> Option<u64> {
         return None;
     }
 
-    let weekday = &value[0..3];
-    if !matches!(weekday, "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun") {
+    if !short_weekday(&value[0..3]) {
         return None;
     }
 
     let day = value[5..7].parse::<u32>().ok()?;
-    let month = match &value[8..11] {
+    let month = parse_month(&value[8..11])?;
+    let year = value[12..16].parse::<i32>().ok()?;
+    let hour = value[17..19].parse::<u32>().ok()?;
+    let minute = value[20..22].parse::<u32>().ok()?;
+    let second = value[23..25].parse::<u32>().ok()?;
+    date_time_unix_ms(year, month, day, hour, minute, second)
+}
+
+fn parse_rfc850_date_unix_ms(value: &str, now_unix_ms: u64) -> Option<u64> {
+    // RFC 850: Sunday, 06-Nov-94 08:49:37 GMT
+    let comma = value.find(',')?;
+    if !long_weekday(&value[..comma]) {
+        return None;
+    }
+    let rest = value.get(comma + 1..)?;
+    if rest.len() != 24 || !rest.starts_with(' ') || &rest[3..4] != "-"
+        || &rest[7..8] != "-" || &rest[10..11] != " "
+        || &rest[13..14] != ":" || &rest[16..17] != ":"
+        || &rest[19..23] != " GMT"
+    {
+        return None;
+    }
+
+    let day = rest[1..3].parse::<u32>().ok()?;
+    let month = parse_month(&rest[4..7])?;
+    let short_year = rest[8..10].parse::<i32>().ok()?;
+    let current_year = year_from_unix_ms(now_unix_ms)?;
+    let mut year = (current_year / 100) * 100 + short_year;
+    if year > current_year + 50 {
+        year -= 100;
+    }
+    let hour = rest[11..13].parse::<u32>().ok()?;
+    let minute = rest[14..16].parse::<u32>().ok()?;
+    let second = rest[17..19].parse::<u32>().ok()?;
+    date_time_unix_ms(year, month, day, hour, minute, second)
+}
+
+fn parse_asctime_date_unix_ms(value: &str) -> Option<u64> {
+    // asctime: Sun Nov  6 08:49:37 1994
+    let bytes = value.as_bytes();
+    if bytes.len() != 24 || &bytes[3..4] != b" " || &bytes[7..8] != b" "
+        || &bytes[10..11] != b" " || &bytes[13..14] != b":"
+        || &bytes[16..17] != b":" || &bytes[19..20] != b" "
+    {
+        return None;
+    }
+    if !short_weekday(&value[0..3]) {
+        return None;
+    }
+
+    let month = parse_month(&value[4..7])?;
+    let day_field = &value[8..10];
+    let day = if let Some(day) = day_field.strip_prefix(' ') {
+        day.parse::<u32>().ok()?
+    } else {
+        day_field.parse::<u32>().ok()?
+    };
+    let hour = value[11..13].parse::<u32>().ok()?;
+    let minute = value[14..16].parse::<u32>().ok()?;
+    let second = value[17..19].parse::<u32>().ok()?;
+    let year = value[20..24].parse::<i32>().ok()?;
+    date_time_unix_ms(year, month, day, hour, minute, second)
+}
+
+fn short_weekday(value: &str) -> bool {
+    matches!(value, "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun")
+}
+
+fn long_weekday(value: &str) -> bool {
+    matches!(
+        value,
+        "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday"
+    )
+}
+
+fn parse_month(value: &str) -> Option<u32> {
+    Some(match value {
         "Jan" => 1,
         "Feb" => 2,
         "Mar" => 3,
@@ -83,15 +164,20 @@ fn parse_imf_fixdate_unix_ms(value: &str) -> Option<u64> {
         "Nov" => 11,
         "Dec" => 12,
         _ => return None,
-    };
-    let year = value[12..16].parse::<i32>().ok()?;
-    let hour = value[17..19].parse::<u32>().ok()?;
-    let minute = value[20..22].parse::<u32>().ok()?;
-    let second = value[23..25].parse::<u32>().ok()?;
-    if hour > 23 || minute > 59 || second > 59 || !valid_day_of_month(year, month, day) {
+    })
+}
+
+fn date_time_unix_ms(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> Option<u64> {
+    if hour > 23 || minute > 59 || second > 60 || !valid_day_of_month(year, month, day) {
         return None;
     }
-
     let days = days_from_civil(year, month, day);
     if days < 0 {
         return None;
@@ -102,6 +188,20 @@ fn parse_imf_fixdate_unix_ms(value: &str) -> Option<u64> {
         .saturating_add((minute as u64) * 60)
         .saturating_add(second as u64);
     Some(seconds.saturating_mul(1_000))
+}
+
+fn year_from_unix_ms(unix_ms: u64) -> Option<i32> {
+    let days = unix_ms / 86_400_000;
+    let mut year = 1970i32;
+    let mut first_day = 0u64;
+    loop {
+        let year_days = if is_leap_year(year) { 366 } else { 365 };
+        if first_day.saturating_add(year_days) > days {
+            return Some(year);
+        }
+        first_day = first_day.saturating_add(year_days);
+        year = year.checked_add(1)?;
+    }
 }
 
 fn valid_day_of_month(year: i32, month: u32, day: u32) -> bool {
@@ -357,12 +457,24 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_http_date_parser_handles_future_past_and_invalid_dates() {
+    fn retry_after_http_date_parser_accepts_all_http_date_forms() {
         let base = parse_imf_fixdate_unix_ms("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
         assert_eq!(retry_after_delay_ms("Sun, 06 Nov 1994 08:49:40 GMT", base), Some(3_000));
+        assert_eq!(retry_after_delay_ms("Sunday, 06-Nov-94 08:49:40 GMT", base), Some(3_000));
+        assert_eq!(retry_after_delay_ms("Sun Nov  6 08:49:40 1994", base), Some(3_000));
         assert_eq!(retry_after_delay_ms("Sun, 06 Nov 1994 08:49:30 GMT", base), Some(0));
         assert_eq!(retry_after_delay_ms("Sun, 31 Feb 1994 08:49:40 GMT", base), None);
-        assert_eq!(retry_after_delay_ms("Sunday, 06-Nov-94 08:49:40 GMT", base), None);
+    }
+
+    #[test]
+    fn rfc850_two_digit_year_uses_fifty_year_rule() {
+        let now = parse_imf_fixdate_unix_ms("Thu, 01 Jan 1970 00:00:00 GMT").unwrap();
+        let expected = parse_imf_fixdate_unix_ms("Sun, 06 Nov 1994 08:49:40 GMT").unwrap();
+        assert_eq!(parse_rfc850_date_unix_ms("Sunday, 06-Nov-94 08:49:40 GMT", now), Some(expected));
+
+        let now = parse_imf_fixdate_unix_ms("Mon, 01 Jan 2091 00:00:00 GMT").unwrap();
+        let expected = parse_imf_fixdate_unix_ms("Sat, 06 Nov 2094 08:49:40 GMT").unwrap();
+        assert_eq!(parse_rfc850_date_unix_ms("Sunday, 06-Nov-94 08:49:40 GMT", now), Some(expected));
     }
 
     #[test]
