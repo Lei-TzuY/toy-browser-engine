@@ -228,7 +228,7 @@ mod tests {
         let decision = evaluate_subresource_integrity_policy(
             &container,
             IntegrityPolicyDestination::Script,
-            "sha256-deadbeef",
+            "sha256-Jok2eyBcFs4y7UIAlCuLix4mLfxw2byfvHfElpmk8d8=",
             IntegrityPolicyRequestMode::SameOrigin,
             false,
         );
