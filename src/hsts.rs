@@ -2,7 +2,7 @@
 //  hsts.rs — HTTP Strict Transport Security policy/cache
 // ============================================================
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use crate::net::Url;
@@ -19,12 +19,13 @@ impl HstsPolicy {
     ///
     /// `max-age` is mandatory and may be quoted. Directive names are
     /// case-insensitive; unknown extension directives are ignored. Repeating
-    /// either standardized directive invalidates the field rather than making
-    /// the result depend on ordering.
+    /// any directive invalidates the field rather than making the result depend
+    /// on ordering, as required by RFC 6797.
     pub fn parse(header: &str) -> Option<HstsPolicy> {
         let mut max_age = None;
         let mut include_subdomains = false;
         let mut saw_include_subdomains = false;
+        let mut seen_directives = HashSet::new();
 
         for raw in header.split(';') {
             let directive = raw.trim();
@@ -35,6 +36,10 @@ impl HstsPolicy {
                 Some((name, value)) => (name.trim(), Some(value.trim())),
                 None => (directive, None),
             };
+
+            if !seen_directives.insert(name.to_ascii_lowercase()) {
+                return None;
+            }
 
             if name.eq_ignore_ascii_case("max-age") {
                 if max_age.is_some() {
@@ -268,6 +273,19 @@ mod tests {
             None
         );
         assert_eq!(HstsPolicy::parse("max-age=1; includeSubDomains=yes"), None);
+    }
+
+    #[test]
+    fn rejects_duplicate_extension_directives_case_insensitively() {
+        assert_eq!(HstsPolicy::parse("max-age=60; preload; preload"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60; Foo=1; fOO=2"), None);
+        assert_eq!(
+            HstsPolicy::parse("max-age=60; preload; other=1"),
+            Some(HstsPolicy {
+                max_age_seconds: 60,
+                include_subdomains: false,
+            })
+        );
     }
 
     #[test]
