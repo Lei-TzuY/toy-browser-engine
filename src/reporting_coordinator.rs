@@ -76,14 +76,22 @@ impl ReportingCoordinator {
 
     /// Queue one already-resolved delivery batch as attempt 1.
     ///
-    /// A stale caller cannot re-queue a concrete endpoint after this
-    /// coordinator has applied a `410 Gone` removal for it.
+    /// The batch must still belong to the current endpoint mapping. This rejects
+    /// batches retained across a mapping replacement as well as batches whose
+    /// endpoint name/URL pair was never committed by the current response. A
+    /// concrete URL removed by an earlier `410 Gone` is rejected independently.
     pub fn queue_initial_batch(
         &mut self,
         batch: ReportingDeliveryBatch,
         age_ms: u64,
         user_agent: &str,
     ) -> Result<FetchId, FetchError> {
+        if !self.batch_belongs_to_current_mapping(&batch) {
+            return Err(FetchError::BadRequest(format!(
+                "Reporting batch for {} does not belong to the current endpoint mapping",
+                batch.endpoint_url
+            )));
+        }
         if self.endpoints.is_removed(&batch.endpoint_url) {
             return Err(FetchError::BadRequest(format!(
                 "Reporting endpoint {} was removed by a prior 410 response",
@@ -147,6 +155,15 @@ impl ReportingCoordinator {
                 .process_completions_at(completions, now_ms, now_unix_ms);
         let removed = self.apply_endpoint_outcomes(&completed);
         (completed, unhandled, removed)
+    }
+
+    fn batch_belongs_to_current_mapping(&self, batch: &ReportingDeliveryBatch) -> bool {
+        !batch.reports.is_empty()
+            && batch.reports.iter().all(|resolved| {
+                resolved.endpoint_url == batch.endpoint_url
+                    && self.endpoints.endpoints().get(&resolved.endpoint_name)
+                        == Some(&batch.endpoint_url)
+            })
     }
 
     fn apply_endpoint_outcomes(&mut self, completed: &[ReportingRuntimeCompletion]) -> usize {
