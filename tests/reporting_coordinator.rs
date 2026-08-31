@@ -131,7 +131,26 @@ fn retryable_failure_keeps_endpoint_and_retry_state_in_one_coordinator() {
 }
 
 #[test]
-fn committing_a_fresh_mapping_clears_prior_removal_state() {
+fn endpoint_mapping_cannot_change_while_delivery_work_is_live() {
+    let old_mapping = r#"default="https://reports.test/old""#;
+    let new_mapping = r#"default="https://reports.test/new""#;
+    let mut coordinator = coordinator(old_mapping);
+    let reports = vec![report("default", "https://cdn.test/a.js")];
+    let batch = coordinator.resolve_and_batch(&reports).remove(0);
+
+    coordinator.queue_initial_batch(batch, 0, "ua").unwrap();
+    assert!(!coordinator.replace_endpoints(ReportingEndpoints::parse(new_mapping)));
+
+    let still_old = coordinator.resolve_and_batch(&reports);
+    assert_eq!(still_old.len(), 1);
+    assert_eq!(
+        still_old[0].endpoint_url.to_string(),
+        "https://reports.test/old"
+    );
+}
+
+#[test]
+fn committing_a_fresh_mapping_clears_prior_removal_state_when_idle() {
     let endpoint = "https://reports.test/collect";
     let network = ManualNetwork::new();
     network.respond_with(endpoint, 410, "text/plain", Vec::new());
@@ -145,9 +164,10 @@ fn committing_a_fresh_mapping_clears_prior_removal_state() {
     coordinator.dispatch(&network);
     let (_, _, removed) = coordinator.process_completions(network.poll(), 10);
     assert_eq!(removed, 1);
+    assert!(coordinator.is_idle());
     assert!(coordinator.resolve_and_batch(&reports).is_empty());
 
-    coordinator.replace_endpoints(ReportingEndpoints::parse(mapping));
+    assert!(coordinator.replace_endpoints(ReportingEndpoints::parse(mapping)));
     assert_eq!(coordinator.endpoint_state().removed_len(), 0);
     assert_eq!(coordinator.resolve_and_batch(&reports).len(), 1);
 }
