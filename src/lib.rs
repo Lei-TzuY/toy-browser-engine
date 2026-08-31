@@ -54,6 +54,7 @@ pub mod referrer_policy;
 pub mod reporting_delivery;
 pub mod reporting_endpoints;
 pub mod reporting_request;
+pub mod reporting_retry;
 pub mod reporting_scheduler;
 pub mod script;
 pub mod select_state;
@@ -116,6 +117,11 @@ pub use reporting_endpoints::{
 pub use reporting_request::{
     build_reporting_delivery_request, build_reporting_delivery_requests,
     reporting_delivery_succeeded,
+};
+pub use reporting_retry::{
+    ReportingRetryDecision, ReportingRetryEntry, ReportingRetryPolicy, ReportingRetryQueue,
+    DEFAULT_REPORTING_MAX_ATTEMPTS, DEFAULT_REPORTING_RETRY_INITIAL_DELAY_MS,
+    DEFAULT_REPORTING_RETRY_MAX_DELAY_MS,
 };
 pub use reporting_scheduler::{
     ReportingDeliveryFailure, ReportingDeliveryOutcome, ReportingDeliveryScheduler,
