@@ -43,7 +43,11 @@ impl JsRuntime {
             status: response.status,
             status_text: response.status_text.clone(),
             headers: headers_ref(response.headers.borrow().clone()),
-            body: Body::new(response.body.peek().unwrap_or_default()),
+            body: if response.body.present() {
+                Body::new(response.body.peek().unwrap_or_default())
+            } else {
+                Body::absent()
+            },
             redirected: response.redirected,
             response_type: response.response_type,
         }))

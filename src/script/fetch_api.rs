@@ -617,7 +617,15 @@ impl JsRuntime {
                     "body" => {
                         body = match value {
                             JsValue::Undefined | JsValue::Null => None,
-                            other => Some(to_string(other).into_bytes()),
+                            other => {
+                                let (bytes, content_type) = extract_body_init(other);
+                                if let Some(content_type) = content_type {
+                                    if !headers.has("content-type") {
+                                        headers.append_raw("content-type", content_type);
+                                    }
+                                }
+                                Some(bytes)
+                            }
                         }
                     }
                     "signal" => {
@@ -756,12 +764,15 @@ impl JsRuntime {
                 }
             }
             Builtin::ResponseCtor => {
-                let body = match args.first() {
-                    None | Some(JsValue::Undefined) | Some(JsValue::Null) => Vec::new(),
-                    Some(other) => to_string(other).into_bytes(),
+                let (body, body_type) = match args.first() {
+                    None | Some(JsValue::Undefined) | Some(JsValue::Null) => (None, None),
+                    Some(other) => {
+                        let (bytes, content_type) = extract_body_init(other);
+                        (Some(bytes), content_type)
+                    }
                 };
                 let mut status = 200u16;
-                let mut status_text: Option<String> = None;
+                let mut status_text = String::new();
                 let mut headers = HeaderMap::new();
 
                 if let Some(JsValue::Object(props)) = args.get(1) {
@@ -770,7 +781,7 @@ impl JsRuntime {
                             "status" => {
                                 status = super::interp::to_number(value).max(0.0) as u16;
                             }
-                            "statusText" => status_text = Some(to_string(value)),
+                            "statusText" => status_text = to_string(value),
                             "headers" => match self.header_map_from(value) {
                                 Ok(map) => headers = map,
                                 Err(error) => {
@@ -782,13 +793,37 @@ impl JsRuntime {
                         }
                     }
                 }
+
+                if !(200..=599).contains(&status) {
+                    self.throw_type_error(format!(
+                        "RangeError: Response status must be in the range 200 to 599, got {status}"
+                    ));
+                    return JsValue::Undefined;
+                }
+                if !valid_response_status_text(&status_text) {
+                    self.throw_type_error(
+                        "Response statusText contains invalid reason-phrase characters".to_string(),
+                    );
+                    return JsValue::Undefined;
+                }
+                if body.is_some() && matches!(status, 204 | 205 | 304) {
+                    self.throw_type_error(format!(
+                        "Response with status {status} cannot have a body"
+                    ));
+                    return JsValue::Undefined;
+                }
+                if let Some(content_type) = body_type {
+                    if !headers.has("content-type") {
+                        headers.append_raw("content-type", content_type);
+                    }
+                }
+
                 let response = ResponseData {
                     url: self.url.clone(),
                     status,
-                    status_text: status_text
-                        .unwrap_or_else(|| crate::net::fetch::reason_phrase(status).to_string()),
+                    status_text,
                     headers: headers_ref(headers),
-                    body: Body::new(body),
+                    body: body.map(Body::new).unwrap_or_else(Body::absent),
                     redirected: false,
                     response_type: ResponseType::Default,
                 };
@@ -1911,6 +1946,27 @@ fn consume_fetch_input_body(args: &[JsValue]) -> Result<(), FetchError> {
         .take()
         .map(|_| ())
         .map_err(FetchError::BadRequest)
+}
+
+fn extract_body_init(value: &JsValue) -> (Vec<u8>, Option<&'static str>) {
+    if let JsValue::Host(host) = value {
+        if let HostObject::URLSearchParams(params) = host.as_ref() {
+            return (
+                params.borrow().to_query_string().into_bytes(),
+                Some("application/x-www-form-urlencoded;charset=UTF-8"),
+            );
+        }
+    }
+    (
+        to_string(value).into_bytes(),
+        Some("text/plain;charset=UTF-8"),
+    )
+}
+
+fn valid_response_status_text(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte == b'\t' || byte >= 0x20 && byte != 0x7f)
 }
 
 fn host_value(object: HostObject) -> JsValue {

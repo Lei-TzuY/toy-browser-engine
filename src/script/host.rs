@@ -352,7 +352,7 @@ impl ResponseData {
     }
 
     pub fn script_url(&self) -> String {
-        if self.is_opaque() {
+        if self.is_opaque() || self.response_type == ResponseType::Default {
             String::new()
         } else {
             self.url.to_string()
