@@ -27,6 +27,25 @@ struct ReportingAttemptState {
     age_ms: u64,
 }
 
+/// Parse an HTTP `Retry-After` delta-seconds value into milliseconds.
+///
+/// HTTP-date values require a wall clock, while this runtime deliberately owns
+/// only monotonic millisecond timestamps. Date-form values therefore fall back
+/// to the normal bounded exponential policy instead of being guessed.
+pub fn retry_after_delta_ms(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(value.parse::<u64>().ok()?.saturating_mul(1_000))
+}
+
+fn completion_retry_after_ms(completion: &FetchCompletion) -> Option<u64> {
+    let response = completion.result.as_ref().ok()?;
+    let value = response.headers.get("retry-after")?;
+    retry_after_delta_ms(&value)
+}
+
 /// Owns the live Reporting API scheduler plus delayed retry state.
 #[derive(Debug)]
 pub struct ReportingDeliveryRuntime {
@@ -117,6 +136,13 @@ impl ReportingDeliveryRuntime {
         completions: Vec<FetchCompletion>,
         now_ms: u64,
     ) -> (Vec<ReportingRuntimeCompletion>, Vec<FetchCompletion>) {
+        let retry_after_by_id: HashMap<FetchId, u64> = completions
+            .iter()
+            .filter_map(|completion| {
+                completion_retry_after_ms(completion).map(|delay| (completion.id, delay))
+            })
+            .collect();
+
         let (outcomes, unhandled) = self.scheduler.process_completions(completions);
         let mut completed = Vec::with_capacity(outcomes.len());
 
@@ -129,12 +155,18 @@ impl ReportingDeliveryRuntime {
                 attempt: 1,
                 age_ms: 0,
             });
-            let retry = self.retries.schedule_outcome_with_age(
-                outcome.clone(),
-                state.attempt,
-                now_ms,
-                state.age_ms,
-            );
+            let retry = match &outcome {
+                ReportingDeliveryOutcome::Delivered { .. } => None,
+                ReportingDeliveryOutcome::Retryable { batch, .. } => Some(
+                    self.retries.schedule_failure_with_age_and_minimum_delay(
+                        batch.clone(),
+                        state.attempt,
+                        now_ms,
+                        state.age_ms,
+                        retry_after_by_id.get(&id).copied().unwrap_or(0),
+                    ),
+                ),
+            };
             completed.push(ReportingRuntimeCompletion {
                 attempt: state.attempt,
                 outcome,
@@ -150,7 +182,7 @@ impl ReportingDeliveryRuntime {
 mod tests {
     use super::*;
     use crate::integrity_policy_reporting::{IntegrityViolationReport, IntegrityViolationReportBody};
-    use crate::net::{ManualNetwork, Url};
+    use crate::net::{FetchResponse, ManualNetwork, Url};
     use crate::reporting_endpoints::ResolvedIntegrityViolationReport;
     use crate::reporting_scheduler::ReportingDeliveryFailure;
 
@@ -203,5 +235,40 @@ mod tests {
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].1, 2);
         assert_eq!(runtime.retry_len(), 0);
+    }
+
+    #[test]
+    fn retry_after_delta_parser_is_strict_and_saturating() {
+        assert_eq!(retry_after_delta_ms("7"), Some(7_000));
+        assert_eq!(retry_after_delta_ms(" 12 "), Some(12_000));
+        assert_eq!(retry_after_delta_ms("1.5"), None);
+        assert_eq!(retry_after_delta_ms("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+        assert_eq!(retry_after_delta_ms(""), None);
+        assert_eq!(retry_after_delta_ms(&u64::MAX.to_string()), Some(u64::MAX));
+    }
+
+    #[test]
+    fn retry_after_extends_retry_eligibility() {
+        let network = ManualNetwork::new();
+        let url = Url::parse("https://reports.test/collect").unwrap();
+        let mut response = FetchResponse::synthetic(url, 503, Some("text/plain"), Vec::new());
+        response.headers.insert_raw("retry-after", "3");
+        network.respond("https://reports.test/collect", response);
+        network.set_auto_complete(true);
+
+        let mut runtime = ReportingDeliveryRuntime::new(ReportingRetryPolicy::new(100, 10_000, 3));
+        runtime
+            .queue_initial(batch("https://reports.test/collect"), 250, "ua")
+            .unwrap();
+        runtime.dispatch(&network);
+        runtime.process_completions(network.poll(), 1_000);
+
+        assert!(runtime.queue_ready_retries(3_999, 0, "ua").is_empty());
+        let queued = runtime.queue_ready_retries(4_000, 0, "ua");
+        assert_eq!(queued.len(), 1);
+        runtime.dispatch(&network);
+        let requests = network.requests();
+        let retry_body = String::from_utf8(requests[1].body.clone().unwrap()).unwrap();
+        assert!(retry_body.contains("\"age\":3250"), "{retry_body}");
     }
 }
