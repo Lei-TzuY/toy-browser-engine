@@ -308,8 +308,12 @@ pub struct ResponseData {
 
 impl ResponseData {
     /// Wrap what came back from the network. Null-body statuses remain truly
-    /// body-less even if a malformed backend supplied payload bytes.
-    pub fn from_wire(response: FetchResponse) -> ResponseData {
+    /// body-less even if a malformed backend supplied payload bytes. Forbidden
+    /// response headers are removed only at this script-visible boundary so
+    /// lower cookie/policy layers can still process the original wire fields.
+    pub fn from_wire(mut response: FetchResponse) -> ResponseData {
+        response.headers.delete("set-cookie");
+        response.headers.delete("set-cookie2");
         let null_body = is_null_body_status(response.status);
         ResponseData {
             url: response.url,
@@ -588,7 +592,7 @@ impl ResizeObserverData {
     }
 }
 
-/// A ResizeObserverEntry snapshot.
+/// An ResizeObserverEntry snapshot.
 #[derive(Debug, Clone)]
 pub struct ResizeObserverEntryData {
     pub target_id: String,
