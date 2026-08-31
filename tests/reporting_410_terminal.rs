@@ -51,7 +51,7 @@ fn gone_response_does_not_enter_retry_queue() {
     assert!(unhandled.is_empty());
     assert_eq!(completed.len(), 1);
     assert!(matches!(
-        completed[0].outcome,
+        &completed[0].outcome,
         ReportingDeliveryOutcome::Delivered { .. }
     ));
     assert!(completed[0].retry.is_none());
