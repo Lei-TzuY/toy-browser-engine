@@ -138,15 +138,21 @@ impl ReportingRetryQueue {
         }
     }
 
-    /// Remove and return all entries whose delay has elapsed.
+    /// Remove and return at most `limit` entries whose delay has elapsed.
     ///
-    /// Insertion order is preserved both among ready entries and among entries
-    /// that remain queued, keeping retry dispatch deterministic.
-    pub fn drain_ready(&mut self, now_ms: u64) -> Vec<ReportingRetryEntry> {
-        let mut ready = Vec::new();
+    /// Ready entries beyond the caller's capacity remain queued in their
+    /// original position instead of being lost or assigned a new backoff. This
+    /// is important when the delivery scheduler's in-flight window is smaller
+    /// than the number of retries that become ready at once.
+    pub fn drain_ready_up_to(&mut self, now_ms: u64, limit: usize) -> Vec<ReportingRetryEntry> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let mut ready = Vec::with_capacity(limit.min(self.entries.len()));
         let mut waiting = Vec::with_capacity(self.entries.len());
         for entry in self.entries.drain(..) {
-            if entry.ready_at_ms <= now_ms {
+            if entry.ready_at_ms <= now_ms && ready.len() < limit {
                 ready.push(entry);
             } else {
                 waiting.push(entry);
@@ -155,11 +161,43 @@ impl ReportingRetryQueue {
         self.entries = waiting;
         ready
     }
+
+    /// Remove and return all entries whose delay has elapsed.
+    ///
+    /// Insertion order is preserved both among ready entries and among entries
+    /// that remain queued, keeping retry dispatch deterministic.
+    pub fn drain_ready(&mut self, now_ms: u64) -> Vec<ReportingRetryEntry> {
+        self.drain_ready_up_to(now_ms, usize::MAX)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrity_policy_reporting::{IntegrityViolationReport, IntegrityViolationReportBody};
+    use crate::net::Url;
+    use crate::reporting_endpoints::ResolvedIntegrityViolationReport;
+
+    fn batch(endpoint: &str) -> ReportingDeliveryBatch {
+        let endpoint_url = Url::parse(endpoint).unwrap();
+        ReportingDeliveryBatch {
+            endpoint_url: endpoint_url.clone(),
+            reports: vec![ResolvedIntegrityViolationReport {
+                endpoint_name: "default".into(),
+                endpoint_url,
+                report: IntegrityViolationReport {
+                    report_type: "integrity-violation",
+                    endpoint: "default".into(),
+                    body: IntegrityViolationReportBody {
+                        document_url: "https://example.test/page".into(),
+                        blocked_url: "https://cdn.test/app.js".into(),
+                        destination: "script".into(),
+                        report_only: false,
+                    },
+                },
+            }],
+        }
+    }
 
     #[test]
     fn exponential_delay_is_capped() {
@@ -177,5 +215,24 @@ mod tests {
         assert_eq!(policy.initial_delay_ms, 500);
         assert_eq!(policy.max_delay_ms, 500);
         assert_eq!(policy.max_attempts, 1);
+    }
+
+    #[test]
+    fn bounded_drain_preserves_ready_overflow() {
+        let mut queue = ReportingRetryQueue::new(ReportingRetryPolicy::new(10, 10, 4));
+        queue.schedule_failure(batch("https://reports.test/a"), 1, 0);
+        queue.schedule_failure(batch("https://reports.test/b"), 1, 0);
+        queue.schedule_failure(batch("https://reports.test/c"), 1, 0);
+
+        let first = queue.drain_ready_up_to(10, 2);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].batch.endpoint_url.to_string(), "https://reports.test/a");
+        assert_eq!(first[1].batch.endpoint_url.to_string(), "https://reports.test/b");
+        assert_eq!(queue.len(), 1);
+
+        let second = queue.drain_ready_up_to(10, 2);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].batch.endpoint_url.to_string(), "https://reports.test/c");
+        assert!(queue.is_empty());
     }
 }
