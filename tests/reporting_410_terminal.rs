@@ -1,12 +1,11 @@
-use toy_browser_engine::integrity_policy_reporting::{
+use browser_engine::integrity_policy_reporting::{
     IntegrityViolationReport, IntegrityViolationReportBody,
 };
-use toy_browser_engine::net::{ManualNetwork, NetworkBackend, Url};
-use toy_browser_engine::reporting_delivery::ReportingDeliveryBatch;
-use toy_browser_engine::reporting_endpoints::ResolvedIntegrityViolationReport;
-use toy_browser_engine::reporting_retry::ReportingRetryPolicy;
-use toy_browser_engine::reporting_runtime::ReportingDeliveryRuntime;
-use toy_browser_engine::reporting_scheduler::ReportingDeliveryOutcome;
+use browser_engine::net::{ManualNetwork, NetworkBackend, Url};
+use browser_engine::{
+    ReportingDeliveryBatch, ReportingDeliveryOutcome, ReportingDeliveryRuntime,
+    ReportingRetryPolicy, ResolvedIntegrityViolationReport,
+};
 
 fn batch(endpoint: &str) -> ReportingDeliveryBatch {
     let endpoint_url = Url::parse(endpoint).unwrap();
