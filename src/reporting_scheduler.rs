@@ -16,6 +16,12 @@ const REPORTING_FETCH_ID_BASE: FetchId = 1 << 63;
 /// Default maximum number of concurrently pending Reporting API deliveries.
 pub const MAX_IN_FLIGHT_REPORTING_DELIVERIES: usize = 6;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportingDeliveryDisposition {
+    Delivered,
+    RemoveEndpoint,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReportingDeliveryFailure {
     HttpStatus(u16),
@@ -27,6 +33,7 @@ pub enum ReportingDeliveryOutcome {
     Delivered {
         id: FetchId,
         batch: ReportingDeliveryBatch,
+        disposition: ReportingDeliveryDisposition,
     },
     Retryable {
         id: FetchId,
@@ -126,12 +133,13 @@ impl ReportingDeliveryScheduler {
     /// whose ids do not belong to this scheduler are returned untouched so the
     /// event loop can route them to the page Fetch registry.
     ///
-    /// Successful 2xx responses consume the batch. A `410 Gone` response is
-    /// also terminal: Reporting API explicitly uses it to tell the user agent
-    /// to remove the endpoint, so retrying the same batch to that endpoint would
-    /// violate the endpoint-removal signal. Network failures and all other
-    /// non-2xx responses return the original batch so a higher-level policy can
-    /// retry it without reconstructing report contents.
+    /// Successful 2xx responses consume the batch with a normal delivery
+    /// disposition. A `410 Gone` response is also terminal, but exposes a
+    /// distinct `RemoveEndpoint` disposition so the owner of the reporting
+    /// endpoint cache can invalidate that endpoint rather than losing the
+    /// specification's removal signal at this transport boundary. Network
+    /// failures and all other non-2xx responses return the original batch so a
+    /// higher-level policy can retry it without reconstructing report contents.
     pub fn process_completions(
         &mut self,
         completions: Vec<FetchCompletion>,
@@ -150,14 +158,18 @@ impl ReportingDeliveryScheduler {
             };
             let (_, batch) = self.pending.remove(index);
             let outcome = match completion.result {
-                Ok(response)
-                    if reporting_delivery_succeeded(response.status) || response.status == 410 =>
-                {
+                Ok(response) if reporting_delivery_succeeded(response.status) => {
                     ReportingDeliveryOutcome::Delivered {
                         id: completion.id,
                         batch,
+                        disposition: ReportingDeliveryDisposition::Delivered,
                     }
                 }
+                Ok(response) if response.status == 410 => ReportingDeliveryOutcome::Delivered {
+                    id: completion.id,
+                    batch,
+                    disposition: ReportingDeliveryDisposition::RemoveEndpoint,
+                },
                 Ok(response) => ReportingDeliveryOutcome::Retryable {
                     id: completion.id,
                     batch,
@@ -229,13 +241,19 @@ mod tests {
             .unwrap();
         scheduler.dispatch(&network);
         let (outcomes, unhandled) = scheduler.process_completions(network.poll());
-        assert!(matches!(outcomes.as_slice(), [ReportingDeliveryOutcome::Delivered { .. }]));
+        assert!(matches!(
+            outcomes.as_slice(),
+            [ReportingDeliveryOutcome::Delivered {
+                disposition: ReportingDeliveryDisposition::Delivered,
+                ..
+            }]
+        ));
         assert!(unhandled.is_empty());
         assert!(scheduler.is_empty());
     }
 
     #[test]
-    fn gone_is_terminal_and_not_retryable() {
+    fn gone_is_terminal_and_exposes_remove_endpoint_disposition() {
         let network = ManualNetwork::new();
         network.respond_with("https://reports.test/collect", 410, "text/plain", Vec::new());
         network.set_auto_complete(true);
@@ -248,7 +266,10 @@ mod tests {
         assert!(unhandled.is_empty());
         assert!(matches!(
             outcomes.as_slice(),
-            [ReportingDeliveryOutcome::Delivered { .. }]
+            [ReportingDeliveryOutcome::Delivered {
+                disposition: ReportingDeliveryDisposition::RemoveEndpoint,
+                ..
+            }]
         ));
         assert!(scheduler.is_empty());
     }
