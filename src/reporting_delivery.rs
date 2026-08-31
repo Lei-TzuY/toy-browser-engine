@@ -139,11 +139,11 @@ mod tests {
         ];
         let batches = batch_resolved_integrity_reports(&input);
         assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].endpoint_url.as_str(), "https://reports.test/a");
+        assert_eq!(batches[0].endpoint_url.to_string(), "https://reports.test/a");
         assert_eq!(batches[0].reports.len(), 2);
         assert_eq!(batches[0].reports[0].report.body.blocked_url, "https://cdn.test/1.js");
         assert_eq!(batches[0].reports[1].report.body.blocked_url, "https://cdn.test/3.js");
-        assert_eq!(batches[1].endpoint_url.as_str(), "https://reports.test/b");
+        assert_eq!(batches[1].endpoint_url.to_string(), "https://reports.test/b");
     }
 
     #[test]
