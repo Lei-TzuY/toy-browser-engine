@@ -266,7 +266,11 @@ impl JsRuntime {
                         );
                         ResponseData::opaque_from_wire(response)
                     } else {
-                        ResponseData::from_wire(response)
+                        let mut response_data = ResponseData::from_wire(response);
+                        if method == Method::Head {
+                            response_data.body = Body::absent();
+                        }
+                        response_data
                     };
                     if cors_visible {
                         response_data.response_type = ResponseType::Cors;
@@ -1149,7 +1153,7 @@ impl JsRuntime {
                     }
                     _ => JsValue::Undefined,
                 }
-            }
+            },
             HostObject::IntersectionObserverEntry(entry) => match prop {
                 "isIntersecting" => JsValue::Bool(entry.is_intersecting),
                 "intersectionRatio" => JsValue::Number(entry.intersection_ratio),
@@ -1852,20 +1856,20 @@ impl JsRuntime {
                     .into_iter()
                     .map(JsValue::Str)
                     .collect();
-                JsValue::Array(Rc::new(std::cell::RefCell::new(names)))
+                JsValue::Array(Rc::new(RefCell::new(names)))
             }
             "entries" => {
                 let entries: Vec<JsValue> = headers
                     .borrow()
                     .iter()
                     .map(|(name, value)| {
-                        JsValue::Array(Rc::new(std::cell::RefCell::new(vec![
+                        JsValue::Array(Rc::new(RefCell::new(vec![
                             JsValue::Str(name.to_string()),
                             JsValue::Str(value.to_string()),
                         ])))
                     })
                     .collect();
-                JsValue::Array(Rc::new(std::cell::RefCell::new(entries)))
+                JsValue::Array(Rc::new(RefCell::new(entries)))
             }
             _ => JsValue::Undefined,
         }
