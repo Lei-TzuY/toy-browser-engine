@@ -348,18 +348,7 @@ fn structured_bare_item_len(value: &str) -> Option<usize> {
                 None
             }
         }
-        ':' => {
-            let end = value[1..].find(':')? + 2;
-            let payload = &value[1..end - 1];
-            if payload
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
-            {
-                Some(end)
-            } else {
-                None
-            }
-        }
+        ':' => binary_item_len(value),
         '-' | '0'..='9' => numeric_item_len(value),
         _ if valid_token_start(first) => {
             let len = value
@@ -371,6 +360,49 @@ fn structured_bare_item_len(value: &str) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+fn binary_item_len(value: &str) -> Option<usize> {
+    let end = value[1..].find(':')? + 2;
+    let payload = &value[1..end - 1];
+    let bytes = payload.as_bytes();
+
+    if !bytes
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/' | b'='))
+    {
+        return None;
+    }
+
+    // Structured Fields Byte Sequences use RFC 4648 base64. Recipients are
+    // encouraged to tolerate omitted padding, but malformed padding and input
+    // lengths that cannot decode still fail parsing.
+    let first_padding = bytes.iter().position(|byte| *byte == b'=');
+    let data_len = first_padding.unwrap_or(bytes.len());
+    let padding_len = bytes.len() - data_len;
+    if padding_len > 2 || bytes[data_len..].iter().any(|byte| *byte != b'=') {
+        return None;
+    }
+
+    if padding_len == 0 {
+        if data_len % 4 == 1 {
+            return None;
+        }
+    } else {
+        if bytes.len() % 4 != 0 {
+            return None;
+        }
+        let expected_padding = match data_len % 4 {
+            2 => 2,
+            3 => 1,
+            _ => return None,
+        };
+        if padding_len != expected_padding {
+            return None;
+        }
+    }
+
+    Some(end)
 }
 
 fn quoted_item_len(value: &str) -> Option<usize> {
@@ -531,6 +563,27 @@ mod tests {
             r#"a="https://reports.test/1";decimal=1.2345"#
         )
         .is_empty());
+    }
+
+    #[test]
+    fn structured_field_binary_parameters_validate_base64_shape() {
+        assert_eq!(
+            ReportingEndpoints::parse(
+                r#"a="https://reports.test/1";digest=:YWJj:;short=:YWI:"#
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            ReportingEndpoints::parse(r#"a="https://reports.test/1";digest=:YWI=:"#).len(),
+            1
+        );
+        assert!(ReportingEndpoints::parse(r#"a="https://reports.test/1";digest=:A:"#)
+            .is_empty());
+        assert!(ReportingEndpoints::parse(r#"a="https://reports.test/1";digest=:Y=WI:"#)
+            .is_empty());
+        assert!(ReportingEndpoints::parse(r#"a="https://reports.test/1";digest=:YWI==:"#)
+            .is_empty());
     }
 
     #[test]
