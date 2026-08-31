@@ -78,8 +78,11 @@ impl ReportingCoordinator {
     ///
     /// The batch must still belong to the current endpoint mapping. This rejects
     /// batches retained across a mapping replacement as well as batches whose
-    /// endpoint name/URL pair was never committed by the current response. A
-    /// concrete URL removed by an earlier `410 Gone` is rejected independently.
+    /// endpoint name/URL pair was never committed by the current response. The
+    /// embedded report must also name the same endpoint that resolution used;
+    /// callers cannot forge a pre-resolved wrapper around a report that names a
+    /// different destination. A concrete URL removed by an earlier `410 Gone`
+    /// is rejected independently.
     pub fn queue_initial_batch(
         &mut self,
         batch: ReportingDeliveryBatch,
@@ -161,6 +164,7 @@ impl ReportingCoordinator {
         !batch.reports.is_empty()
             && batch.reports.iter().all(|resolved| {
                 resolved.endpoint_url == batch.endpoint_url
+                    && resolved.report.endpoint == resolved.endpoint_name
                     && self.endpoints.endpoints().get(&resolved.endpoint_name)
                         == Some(&batch.endpoint_url)
             })
