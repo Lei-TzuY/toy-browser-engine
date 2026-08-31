@@ -81,7 +81,11 @@ impl ReportingEndpoints {
                 return Self::default();
             }
 
-            let Some(url_text) = parse_quoted_string(raw_value.trim()) else {
+            // Reporting-Endpoints is a Structured Fields dictionary whose
+            // member value must be a String. Parameters belong to the member
+            // and do not change the endpoint URI-reference, so parse and
+            // validate them while intentionally ignoring their values here.
+            let Some(url_text) = parse_string_item_with_parameters(raw_value.trim()) else {
                 return Self::default();
             };
             let resolved = resolve_uri_reference(&url_text, base_url);
@@ -260,6 +264,167 @@ fn split_dictionary_members(value: &str) -> Option<Vec<&str>> {
     Some(out)
 }
 
+fn parse_string_item_with_parameters(value: &str) -> Option<String> {
+    if !value.starts_with('"') {
+        return None;
+    }
+
+    let mut escaped = false;
+    let mut closing_quote = None;
+    for (index, ch) in value.char_indices().skip(1) {
+        if escaped {
+            if !matches!(ch, '"' | '\\') {
+                return None;
+            }
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => {
+                closing_quote = Some(index);
+                break;
+            }
+            _ if ch.is_control() => return None,
+            _ => {}
+        }
+    }
+    if escaped {
+        return None;
+    }
+
+    let end = closing_quote? + 1;
+    let item = parse_quoted_string(&value[..end])?;
+    if !parse_parameters(&value[end..]) {
+        return None;
+    }
+    Some(item)
+}
+
+fn parse_parameters(mut value: &str) -> bool {
+    let mut names = HashSet::new();
+    loop {
+        value = value.trim_start_matches([' ', '\t']);
+        if value.is_empty() {
+            return true;
+        }
+        let Some(rest) = value.strip_prefix(';') else {
+            return false;
+        };
+        value = rest.trim_start_matches([' ', '\t']);
+
+        let key_end = value
+            .find(|ch: char| ch == '=' || ch == ';' || ch == ' ' || ch == '\t')
+            .unwrap_or(value.len());
+        let key = &value[..key_end];
+        if !valid_dictionary_key(key) || !names.insert(key.to_string()) {
+            return false;
+        }
+        value = &value[key_end..];
+        value = value.trim_start_matches([' ', '\t']);
+
+        if let Some(rest) = value.strip_prefix('=') {
+            value = rest;
+            let Some(consumed) = structured_bare_item_len(value) else {
+                return false;
+            };
+            value = &value[consumed..];
+        }
+    }
+}
+
+fn structured_bare_item_len(value: &str) -> Option<usize> {
+    let first = value.chars().next()?;
+    match first {
+        '"' => quoted_item_len(value),
+        '?' => {
+            if value.starts_with("?0") || value.starts_with("?1") {
+                Some(2)
+            } else {
+                None
+            }
+        }
+        ':' => {
+            let end = value[1..].find(':')? + 2;
+            let payload = &value[1..end - 1];
+            if payload
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
+            {
+                Some(end)
+            } else {
+                None
+            }
+        }
+        '-' | '0'..='9' => numeric_item_len(value),
+        _ if valid_token_start(first) => {
+            let len = value
+                .char_indices()
+                .take_while(|(_, ch)| valid_token_char(*ch))
+                .map(|(index, ch)| index + ch.len_utf8())
+                .last()?;
+            Some(len)
+        }
+        _ => None,
+    }
+}
+
+fn quoted_item_len(value: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (index, ch) in value.char_indices().skip(1) {
+        if escaped {
+            if !matches!(ch, '"' | '\\') {
+                return None;
+            }
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(index + 1),
+            _ if ch.is_control() => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn numeric_item_len(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut index = usize::from(bytes.first() == Some(&b'-'));
+    let digits_start = index;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+    }
+    if index == digits_start {
+        return None;
+    }
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        let fraction_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == fraction_start {
+            return None;
+        }
+    }
+    Some(index)
+}
+
+fn valid_token_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '*'
+}
+
+fn valid_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(
+            ch,
+            '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '.' | '^' | '_' | '`' | '|' | '~'
+                | ':' | '/'
+        )
+}
+
 fn parse_quoted_string(value: &str) -> Option<String> {
     if value.len() < 2 || !value.starts_with('"') || !value.ends_with('"') {
         return None;
@@ -304,6 +469,34 @@ mod tests {
             endpoints.get("primary").unwrap().to_string(),
             "https://reports.test/a"
         );
+    }
+
+    #[test]
+    fn accepts_structured_field_member_parameters() {
+        let endpoints = ReportingEndpoints::parse(
+            r#"primary="https://reports.test/a";priority=high;persist=?1;sample=0.5;label="edge", backup="https://reports.test/b";flag"#,
+        );
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(
+            endpoints.get("primary").unwrap().to_string(),
+            "https://reports.test/a"
+        );
+    }
+
+    #[test]
+    fn malformed_structured_field_parameters_fail_closed() {
+        assert!(ReportingEndpoints::parse(
+            r#"a="https://reports.test/1";priority="unterminated"#
+        )
+        .is_empty());
+        assert!(ReportingEndpoints::parse(
+            r#"a="https://reports.test/1";flag;flag=?0"#
+        )
+        .is_empty());
+        assert!(ReportingEndpoints::parse(
+            r#"a="https://reports.test/1";priority=@bad"#
+        )
+        .is_empty());
     }
 
     #[test]
