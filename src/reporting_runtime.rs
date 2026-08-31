@@ -16,11 +16,15 @@ use crate::reporting_scheduler::{ReportingDeliveryOutcome, ReportingDeliverySche
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportingRuntimeCompletion {
-    /// Delivery attempt that produced this completion, starting at 1.
     pub attempt: u32,
     pub outcome: ReportingDeliveryOutcome,
-    /// Present only when a retryable outcome was scheduled or exhausted.
     pub retry: Option<ReportingRetryDecision>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReportingAttemptState {
+    attempt: u32,
+    age_ms: u64,
 }
 
 /// Owns the live Reporting API scheduler plus delayed retry state.
@@ -28,7 +32,7 @@ pub struct ReportingRuntimeCompletion {
 pub struct ReportingDeliveryRuntime {
     scheduler: ReportingDeliveryScheduler,
     retries: ReportingRetryQueue,
-    attempts: HashMap<FetchId, u32>,
+    attempts: HashMap<FetchId, ReportingAttemptState>,
 }
 
 impl ReportingDeliveryRuntime {
@@ -65,17 +69,17 @@ impl ReportingDeliveryRuntime {
         user_agent: &str,
     ) -> Result<FetchId, FetchError> {
         let id = self.scheduler.queue(batch, age_ms, user_agent)?;
-        self.attempts.insert(id, 1);
+        self.attempts.insert(id, ReportingAttemptState { attempt: 1, age_ms });
         Ok(id)
     }
 
     /// Move eligible retries back into the transport scheduler without
     /// exceeding its in-flight limit.
     ///
-    /// Ready retries beyond current capacity remain in the retry queue with the
-    /// same ready timestamp. They are not dropped and do not receive another
-    /// backoff merely because unrelated report requests occupy the network
-    /// window.
+    /// The caller may supply its current report age, but a retry always uses at
+    /// least the minimum age carried by the retry entry. This makes age
+    /// monotonic across delivery attempts even if the caller accidentally
+    /// reuses a stale age value.
     pub fn queue_ready_retries(
         &mut self,
         now_ms: u64,
@@ -87,26 +91,27 @@ impl ReportingDeliveryRuntime {
         let mut queued = Vec::with_capacity(ready.len());
 
         for entry in ready {
-            // `ready` is bounded by capacity and this coordinator is the sole
-            // mutator of the scheduler during this method, so queueing cannot
-            // hit the in-flight limit here.
+            let retry_age_ms = age_ms.max(entry.minimum_age_ms);
             let id = self
                 .scheduler
-                .queue(entry.batch, age_ms, user_agent)
+                .queue(entry.batch, retry_age_ms, user_agent)
                 .expect("bounded Reporting API retry must fit scheduler capacity");
-            self.attempts.insert(id, entry.attempt);
+            self.attempts.insert(
+                id,
+                ReportingAttemptState {
+                    attempt: entry.attempt,
+                    age_ms: retry_age_ms,
+                },
+            );
             queued.push((id, entry.attempt));
         }
         queued
     }
 
-    /// Dispatch all transport-ready report requests.
     pub fn dispatch(&mut self, network: &dyn NetworkBackend) -> usize {
         self.scheduler.dispatch(network)
     }
 
-    /// Route network completions, schedule retryable failures, and return page
-    /// Fetch completions untouched for the browser's normal Fetch registry.
     pub fn process_completions(
         &mut self,
         completions: Vec<FetchCompletion>,
@@ -120,12 +125,18 @@ impl ReportingDeliveryRuntime {
                 ReportingDeliveryOutcome::Delivered { id, .. }
                 | ReportingDeliveryOutcome::Retryable { id, .. } => *id,
             };
-            let attempt = self.attempts.remove(&id).unwrap_or(1);
-            let retry = self
-                .retries
-                .schedule_outcome(outcome.clone(), attempt, now_ms);
+            let state = self.attempts.remove(&id).unwrap_or(ReportingAttemptState {
+                attempt: 1,
+                age_ms: 0,
+            });
+            let retry = self.retries.schedule_outcome_with_age(
+                outcome.clone(),
+                state.attempt,
+                now_ms,
+                state.age_ms,
+            );
             completed.push(ReportingRuntimeCompletion {
-                attempt,
+                attempt: state.attempt,
                 outcome,
                 retry,
             });
@@ -186,9 +197,9 @@ mod tests {
             }
         ));
         assert_eq!(runtime.retry_len(), 1);
-        assert!(runtime.queue_ready_retries(1_099, 99, "ua").is_empty());
+        assert!(runtime.queue_ready_retries(1_099, 0, "ua").is_empty());
 
-        let queued = runtime.queue_ready_retries(1_100, 100, "ua");
+        let queued = runtime.queue_ready_retries(1_100, 0, "ua");
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].1, 2);
         assert_eq!(runtime.retry_len(), 0);
