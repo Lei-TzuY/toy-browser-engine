@@ -52,6 +52,7 @@ pub mod redirect_policy;
 pub mod referrer_meta;
 pub mod referrer_policy;
 pub mod reporting_delivery;
+pub mod reporting_endpoint_state;
 pub mod reporting_endpoints;
 pub mod reporting_request;
 pub mod reporting_retry;
@@ -111,6 +112,7 @@ pub use referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 pub use reporting_delivery::{
     batch_resolved_integrity_reports, ReportingDeliveryBatch, REPORTING_CONTENT_TYPE,
 };
+pub use reporting_endpoint_state::ReportingEndpointState;
 pub use reporting_endpoints::{
     resolve_integrity_violation_reports, ReportingEndpoint, ReportingEndpoints,
     ResolvedIntegrityViolationReport, REPORTING_ENDPOINTS_HEADER,
@@ -126,8 +128,8 @@ pub use reporting_retry::{
 };
 pub use reporting_runtime::{ReportingDeliveryRuntime, ReportingRuntimeCompletion};
 pub use reporting_scheduler::{
-    ReportingDeliveryFailure, ReportingDeliveryOutcome, ReportingDeliveryScheduler,
-    MAX_IN_FLIGHT_REPORTING_DELIVERIES,
+    ReportingDeliveryDisposition, ReportingDeliveryFailure, ReportingDeliveryOutcome,
+    ReportingDeliveryScheduler, MAX_IN_FLIGHT_REPORTING_DELIVERIES,
 };
 pub use session_network::SessionNetwork;
 pub use subresource_cors::validate_subresource_cors_response;
