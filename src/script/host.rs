@@ -287,6 +287,13 @@ impl ResponseType {
     }
 }
 
+/// Fetch statuses whose response body is always null rather than an empty
+/// readable stream. This is shared by network response wrapping and later
+/// request-method-aware handling (HEAD adds another null-body condition).
+pub const fn is_null_body_status(status: u16) -> bool {
+    matches!(status, 101 | 103 | 204 | 205 | 304)
+}
+
 /// A `Response` object.
 #[derive(Debug)]
 pub struct ResponseData {
@@ -300,14 +307,20 @@ pub struct ResponseData {
 }
 
 impl ResponseData {
-    /// Wrap what came back from the network.
+    /// Wrap what came back from the network. Null-body statuses remain truly
+    /// body-less even if a malformed backend supplied payload bytes.
     pub fn from_wire(response: FetchResponse) -> ResponseData {
+        let null_body = is_null_body_status(response.status);
         ResponseData {
             url: response.url,
             status: response.status,
             status_text: response.status_text,
             headers: headers_ref(response.headers),
-            body: Body::new(response.body),
+            body: if null_body {
+                Body::absent()
+            } else {
+                Body::new(response.body)
+            },
             redirected: response.redirected,
             response_type: ResponseType::Basic,
         }
@@ -324,7 +337,7 @@ impl ResponseData {
             status: 0,
             status_text: String::new(),
             headers: headers_ref(HeaderMap::new()),
-            body: Body::empty(),
+            body: Body::absent(),
             redirected: false,
             response_type: ResponseType::Opaque,
         }
@@ -345,7 +358,7 @@ impl ResponseData {
             status: 0,
             status_text: String::new(),
             headers: headers_ref(HeaderMap::new()),
-            body: Body::empty(),
+            body: Body::absent(),
             redirected: false,
             response_type: ResponseType::OpaqueRedirect,
         }
@@ -805,6 +818,34 @@ mod tests {
             ));
             assert_eq!(response.ok(), expected, "status {status}");
         }
+    }
+
+    #[test]
+    fn null_body_statuses_do_not_create_a_readable_stream() {
+        for status in [101, 103, 204, 205, 304] {
+            let response = ResponseData::from_wire(FetchResponse::synthetic(
+                Url::parse("http://x/").unwrap(),
+                status,
+                Some("text/plain"),
+                b"backend payload that must be ignored".to_vec(),
+            ));
+            assert!(!response.body.present(), "status {status}");
+            assert_eq!(response.body.take().unwrap(), Vec::<u8>::new());
+            assert!(!response.body.used(), "status {status}");
+        }
+    }
+
+    #[test]
+    fn opaque_filtered_responses_are_bodyless_internally_too() {
+        let wire = FetchResponse::synthetic(
+            Url::parse("http://cross-origin.test/").unwrap(),
+            200,
+            Some("text/plain"),
+            b"secret".to_vec(),
+        );
+        let opaque = ResponseData::opaque_from_wire(wire);
+        assert!(!opaque.body.present());
+        assert!(!opaque.body.used());
     }
 
     #[test]
