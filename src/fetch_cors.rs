@@ -20,6 +20,21 @@ fn trim_http_whitespace(value: &str) -> &str {
     value.trim_matches(|ch| matches!(ch, '\t' | '\n' | '\r' | ' '))
 }
 
+/// Return the Fetch/Web IDL ByteString length represented by our internal
+/// Rust string. Header values authored by script are ByteStrings on the web
+/// platform: code points through U+00FF map one-to-one to bytes, while larger
+/// code points cannot be represented at all.
+fn byte_string_len(value: &str) -> Option<usize> {
+    let mut len = 0usize;
+    for ch in value.chars() {
+        if ch as u32 > 0xff {
+            return None;
+        }
+        len += 1;
+    }
+    Some(len)
+}
+
 /// Parse Fetch's CORS-safelisted single byte-range form.
 ///
 /// The safelist deliberately excludes suffix ranges such as `bytes=-500`, even
@@ -56,8 +71,11 @@ fn is_cors_safelisted_range_value(value: &str) -> bool {
     start.len() < end.len() || (start.len() == end.len() && start <= end)
 }
 
-fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
-    if value.len() > 128 {
+pub(crate) fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+    let Some(value_len) = byte_string_len(value) else {
+        return false;
+    };
+    if value_len > 128 {
         return false;
     }
     match name {
@@ -105,7 +123,9 @@ pub(crate) fn cors_unsafe_request_header_names(headers: &HeaderMap) -> Vec<Strin
         }
 
         if is_cors_safelisted_request_header(name, value) {
-            safelist_value_size = safelist_value_size.saturating_add(value.len());
+            let value_len = byte_string_len(value)
+                .expect("a CORS-safelisted request header is always a ByteString");
+            safelist_value_size = safelist_value_size.saturating_add(value_len);
             potentially_unsafe_names.push(name.to_string());
         } else {
             unsafe_names.push(name.to_string());
@@ -165,6 +185,26 @@ pub(crate) fn validate_cors_response_origin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cors_safelist_uses_webidl_bytestring_length_for_latin1_values() {
+        let latin1_128 = "é".repeat(128);
+        assert_eq!(latin1_128.len(), 256, "Rust stores é as two UTF-8 bytes");
+        assert_eq!(byte_string_len(&latin1_128), Some(128));
+        assert!(is_cors_safelisted_request_header("accept", &latin1_128));
+
+        let latin1_129 = "é".repeat(129);
+        assert_eq!(byte_string_len(&latin1_129), Some(129));
+        assert!(!is_cors_safelisted_request_header("accept", &latin1_129));
+    }
+
+    #[test]
+    fn cors_safelist_rejects_values_outside_webidl_bytestring_range() {
+        for value in ["Ā", "😀", "text/😀"] {
+            assert_eq!(byte_string_len(value), None, "{value:?}");
+            assert!(!is_cors_safelisted_request_header("accept", value), "{value:?}");
+        }
+    }
 
     #[test]
     fn cors_safelisted_content_type_trims_only_http_whitespace() {
