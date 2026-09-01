@@ -1830,18 +1830,10 @@ impl JsRuntime {
             },
             "has" => JsValue::Bool(headers.borrow().has(&name)),
             "set" | "append" => {
-                // Keep the engine's historical script-owned header protection,
-                // then apply the more complete Request-specific forbidden-name
-                // set when this Headers object belongs to a Request.
-                if HeaderMap::is_forbidden(&name)
-                    || headers.is_request_guard() && is_forbidden_request_header_name(&name)
-                {
-                    return JsValue::Undefined;
-                }
-
-                // Validate against a detached candidate first. request-no-cors
-                // must judge append using the combined field value, not merely
-                // the newly supplied fragment.
+                // Normalize and validate on a detached candidate first. Fetch
+                // checks forbidden request headers after header-value
+                // normalization, and request-no-cors append must judge the
+                // resulting combined field value rather than only the fragment.
                 let mut candidate = headers.borrow().clone();
                 let outcome = if prop == "set" {
                     candidate.set(&name, &value)
@@ -1852,9 +1844,19 @@ impl JsRuntime {
                     self.throw_type_error(error.to_string());
                     return JsValue::Undefined;
                 }
+
+                let combined = candidate.get(&name).unwrap_or_default();
+                // Keep the engine's historical script-owned header protection,
+                // then apply the Fetch request guard. The method-override names
+                // are value-sensitive: they are forbidden only when a
+                // comma-delimited method token is CONNECT, TRACE, or TRACK.
+                if HeaderMap::is_forbidden(&name)
+                    || headers.is_request_guard() && is_forbidden_request_header(&name, &combined)
+                {
+                    return JsValue::Undefined;
+                }
                 if headers.is_request_no_cors() {
-                    let normalized_name = name.to_ascii_lowercase();
-                    let combined = candidate.get(&name).unwrap_or_default();
+                    let normalized_name = name.trim().to_ascii_lowercase();
                     if !is_cors_safelisted_request_header(&normalized_name, &combined) {
                         return JsValue::Undefined;
                     }
@@ -2145,13 +2147,13 @@ fn is_cors_safelisted_range(value: &str) -> bool {
 
 fn is_no_cors_safelisted_request_header_name(name: &str) -> bool {
     matches!(
-        name.to_ascii_lowercase().as_str(),
+        name.trim().to_ascii_lowercase().as_str(),
         "accept" | "accept-language" | "content-language" | "content-type" | "range"
     )
 }
 
 fn is_forbidden_request_header_name(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
+    let name = name.trim().to_ascii_lowercase();
     HeaderMap::is_forbidden(&name)
         || name.starts_with("proxy-")
         || name.starts_with("sec-")
@@ -2169,16 +2171,63 @@ fn is_forbidden_request_header_name(name: &str) -> bool {
                 | "origin"
                 | "permissions-policy"
                 | "referer"
+                | "set-cookie"
                 | "te"
                 | "trailer"
                 | "via"
         )
 }
 
+fn is_forbidden_request_header(name: &str, value: &str) -> bool {
+    if is_forbidden_request_header_name(name) {
+        return true;
+    }
+    let normalized_name = name.trim().to_ascii_lowercase();
+    matches!(
+        normalized_name.as_str(),
+        "x-http-method" | "x-http-method-override" | "x-method-override"
+    ) && contains_forbidden_override_method(value)
+}
+
+fn contains_forbidden_override_method(value: &str) -> bool {
+    // Fetch uses its HTTP-aware "get, decode, and split" algorithm here:
+    // commas inside a quoted string are data, not list separators. Preserve the
+    // quotes in each candidate token so `"TRACE"` is not the method TRACE.
+    let bytes = value.as_bytes();
+    let mut start = 0usize;
+    let mut index = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+
+    while index <= bytes.len() {
+        if index == bytes.len() || bytes[index] == b',' && !quoted {
+            let method = value[start..index].trim_matches(|c| c == ' ' || c == '\t');
+            if method.eq_ignore_ascii_case("CONNECT")
+                || method.eq_ignore_ascii_case("TRACE")
+                || method.eq_ignore_ascii_case("TRACK")
+            {
+                return true;
+            }
+            start = index.saturating_add(1);
+            index += 1;
+            continue;
+        }
+
+        match bytes[index] {
+            b'\\' if quoted && !escaped => escaped = true,
+            b'"' if quoted && !escaped => quoted = false,
+            b'"' if !quoted => quoted = true,
+            _ => escaped = false,
+        }
+        index += 1;
+    }
+    false
+}
+
 fn retain_request_headers_for_mode(headers: &mut HeaderMap, mode: RequestMode) {
     for name in headers.names() {
         let value = headers.get(&name).unwrap_or_default();
-        if is_forbidden_request_header_name(&name)
+        if is_forbidden_request_header(&name, &value)
             || mode == RequestMode::NoCors
                 && !is_cors_safelisted_request_header(&name.to_ascii_lowercase(), &value)
         {
