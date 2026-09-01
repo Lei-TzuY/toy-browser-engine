@@ -2277,16 +2277,39 @@ fn retain_request_headers_for_mode(
     }
 }
 
+const CORS_SAFELIST_VALUE_SIZE_LIMIT: usize = 1024;
+
 fn cors_unsafe_request_header_names(request: &RequestData) -> Vec<String> {
-    let mut names = Vec::new();
-    for (name, value) in request.headers.borrow().iter() {
-        if name != "origin" && !is_cors_safelisted_request_header(name, value) {
-            names.push(name.to_string());
+    let headers = request.headers.borrow();
+    let mut unsafe_names = Vec::new();
+    let mut potentially_unsafe_names = Vec::new();
+    let mut safelist_value_size = 0usize;
+
+    for (name, value) in headers.iter() {
+        // Origin is browser-owned and is inserted after this calculation for
+        // ordinary CORS requests. Keep the exclusion as defense-in-depth for
+        // internally constructed requests that already carry one.
+        if name == "origin" {
+            continue;
+        }
+
+        if is_cors_safelisted_request_header(name, value) {
+            potentially_unsafe_names.push(name.to_ascii_lowercase());
+            safelist_value_size = safelist_value_size.saturating_add(value.len());
+        } else {
+            unsafe_names.push(name.to_ascii_lowercase());
         }
     }
-    names.sort();
-    names.dedup();
-    names
+
+    // Fetch promotes every otherwise-safelisted header name when the sum of
+    // their individual header-value byte lengths exceeds 1024 bytes.
+    if safelist_value_size > CORS_SAFELIST_VALUE_SIZE_LIMIT {
+        unsafe_names.extend(potentially_unsafe_names);
+    }
+
+    unsafe_names.sort();
+    unsafe_names.dedup();
+    unsafe_names
 }
 
 fn build_cors_preflight_request(request: &RequestData, cors: &CorsFetchState) -> FetchRequest {

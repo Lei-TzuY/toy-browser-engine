@@ -180,7 +180,7 @@ pub(crate) fn build_preflight_request(
     if !requested_headers.is_empty() {
         headers.insert_raw(
             "access-control-request-headers",
-            &requested_headers.join(", "),
+            &requested_headers.join(","),
         );
     }
     FetchRequest::new(target, Method::Options, headers, None)
@@ -231,8 +231,7 @@ pub(crate) fn validate_preflight_response(
         let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
         let wildcard = !credentialed && allowed.iter().any(|header| header == "*");
         for requested in requested_headers {
-            let wildcard_allows =
-                wildcard && !is_cors_non_wildcard_request_header_name(requested);
+            let wildcard_allows = wildcard && !is_cors_non_wildcard_request_header_name(requested);
             if !wildcard_allows
                 && !allowed
                     .iter()
