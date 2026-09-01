@@ -206,6 +206,7 @@ fn store_permission(
     credentialed: bool,
     permission: CorsPreflightPermission,
     expires_at_ms: u64,
+    insert_new: bool,
 ) {
     if let Some(entry) = entries.iter_mut().find(|entry| {
         cache_entry_matches_request(entry, source_origin, target_url, credentialed)
@@ -215,9 +216,11 @@ fn store_permission(
         return;
     }
 
-    // A zero max-age refreshes matching entries to immediate expiry, but there
-    // is no value in allocating a brand-new entry that is already expired.
-    if expires_at_ms == 0 {
+    // A zero max-age refreshes matching permissions to immediate expiry, but
+    // must not allocate a brand-new already-expired entry. In particular, a
+    // full cache must not evict a live unrelated permission to make room for
+    // a permission that can never satisfy a later request.
+    if !insert_new {
         return;
     }
 
@@ -245,6 +248,7 @@ pub(crate) fn store_permissions(
     let now_ms = effective_now_ms(jar, now_ms);
     let target_url = target_cache_key(target);
     let expires_at_ms = now_ms.saturating_add(max_age.saturating_mul(1_000));
+    let insert_new = max_age > 0;
     let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
     let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
 
@@ -259,6 +263,7 @@ pub(crate) fn store_permissions(
                 credentialed,
                 CorsPreflightPermission::Method(method),
                 expires_at_ms,
+                insert_new,
             );
         }
         for header in allowed_headers {
@@ -269,6 +274,7 @@ pub(crate) fn store_permissions(
                 credentialed,
                 CorsPreflightPermission::HeaderName(header.to_ascii_lowercase()),
                 expires_at_ms,
+                insert_new,
             );
         }
     });
@@ -418,7 +424,10 @@ mod tests {
     #[test]
     fn malformed_max_age_uses_fetch_default() {
         let response = permissions_response("not-a-number", "PUT", "x-token");
-        assert_eq!(max_age_seconds(&response), DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS);
+        assert_eq!(
+            max_age_seconds(&response),
+            DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS
+        );
     }
 
     #[test]
@@ -495,6 +504,46 @@ mod tests {
 
         assert!(!allows(&jar, 101, Method::Put, &["x-token"]));
         assert!(allows(&jar, 101, Method::Patch, &["x-other"]));
+    }
+
+    #[test]
+    fn zero_max_age_new_permissions_do_not_consume_full_cache_capacity() {
+        let jar = jar();
+        with_session_cache(&jar, |entries| {
+            for index in 0..MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION {
+                entries.push(CorsPreflightCacheEntry {
+                    source_origin: "http://page.test".to_string(),
+                    target_url: format!("http://api.test/item/{index}"),
+                    credentialed: false,
+                    permission: CorsPreflightPermission::HeaderName(format!("x-{index}")),
+                    expires_at_ms: 60_000,
+                });
+            }
+        });
+
+        store_permissions(
+            &jar,
+            1_000,
+            "http://page.test",
+            &target(),
+            false,
+            &permissions_response("0", "PUT", "x-zero"),
+        );
+
+        with_session_cache(&jar, |entries| {
+            assert_eq!(
+                entries.len(),
+                MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION
+            );
+            assert!(entries.iter().any(|entry| {
+                entry.target_url == "http://api.test/item/0"
+                    && entry.permission
+                        == CorsPreflightPermission::HeaderName("x-0".to_string())
+            }));
+            assert!(!entries
+                .iter()
+                .any(|entry| entry.target_url == target_cache_key(&target())));
+        });
     }
 
     #[test]
