@@ -35,6 +35,7 @@ fn browser_for(script: &str, endpoint: &str) -> (Browser, Rc<ManualNetwork>) {
 fn latin1_accept_value_uses_bytestring_length_at_128_byte_boundary() {
     let endpoint = "http://api.test/data";
     let value = "é".repeat(128);
+    assert_eq!(value.len(), 256, "the regression depends on Rust UTF-8 storage length");
     let script = format!(
         "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{value}\" }} }});"
     );
@@ -51,6 +52,7 @@ fn latin1_accept_value_uses_bytestring_length_at_128_byte_boundary() {
 fn latin1_accept_value_over_128_bytes_requires_preflight() {
     let endpoint = "http://api.test/data";
     let value = "é".repeat(129);
+    assert_eq!(value.len(), 258, "the web-visible byte length is 129, not UTF-8 length");
     let script = format!(
         "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{value}\" }} }});"
     );
