@@ -27,21 +27,16 @@ impl HstsPolicy {
         let mut seen = HashSet::new();
 
         for raw in header.split(';') {
-            let directive = trim_http_ows(raw);
+            let directive = trim_http_lws(raw);
             if directive.is_empty() {
                 continue;
             }
 
             let (name, value) = match directive.split_once('=') {
-                Some((name, value)) => {
-                    // RFC 6797's directive grammar does not permit whitespace
-                    // around '='. Only OWS surrounding the whole directive is
-                    // tolerated by the enclosing HTTP field parsing.
-                    if name != trim_http_ows(name) || value != trim_http_ows(value) {
-                        return None;
-                    }
-                    (name, Some(value))
-                }
+                // RFC 6797 is explicitly based on RFC 2616's generic grammar,
+                // including implied *LWS between words and separators. Accept
+                // SP/HT around '=' while refusing broader Unicode whitespace.
+                Some((name, value)) => (trim_http_lws(name), Some(trim_http_lws(value))),
                 None => (directive, None),
             };
 
@@ -87,8 +82,8 @@ impl HstsPolicy {
     }
 }
 
-fn trim_http_ows(value: &str) -> &str {
-    value.trim_matches([' ', '\t'])
+fn trim_http_lws(value: &str) -> &str {
+    value.trim_matches(|ch| matches!(ch, ' ' | '\t'))
 }
 
 fn is_http_token(value: &str) -> bool {
@@ -350,12 +345,13 @@ mod tests {
     }
 
     #[test]
-    fn directive_grammar_uses_http_ows_not_unicode_whitespace() {
+    fn directive_grammar_honors_implied_http_lws_only() {
         assert!(HstsPolicy::parse("\tmax-age=60\t;\tincludeSubDomains\t").is_some());
-        assert_eq!(HstsPolicy::parse("max-age =60"), None);
-        assert_eq!(HstsPolicy::parse("max-age= 60"), None);
+        assert!(HstsPolicy::parse("max-age = 60; ext = \"quoted value\"").is_some());
         assert_eq!(HstsPolicy::parse("max-age=60;\u{00a0}preload"), None);
         assert_eq!(HstsPolicy::parse("max-age=60;preload\u{2003}"), None);
+        assert_eq!(HstsPolicy::parse("max-age\u{00a0}=60"), None);
+        assert_eq!(HstsPolicy::parse("max-age=\u{00a0}60"), None);
     }
 
     #[test]
