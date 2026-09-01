@@ -29,12 +29,17 @@ fn browser_for(script: &str, endpoint: &str) -> (Browser, Rc<ManualNetwork>) {
     (browser, transport)
 }
 
+fn js_latin1_escape(count: usize) -> String {
+    "\\u00e9".repeat(count)
+}
+
 #[test]
 fn latin1_accept_value_uses_bytestring_length_at_128_byte_boundary() {
     let endpoint = "http://api.test/data";
     let value = "é".repeat(128);
+    let js_value = js_latin1_escape(128);
     let script = format!(
-        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{value}\" }} }});"
+        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{js_value}\" }} }});"
     );
     let (mut browser, transport) = browser_for(&script, endpoint);
 
@@ -48,9 +53,9 @@ fn latin1_accept_value_uses_bytestring_length_at_128_byte_boundary() {
 #[test]
 fn latin1_accept_value_over_128_bytes_requires_preflight() {
     let endpoint = "http://api.test/data";
-    let value = "é".repeat(129);
+    let js_value = js_latin1_escape(129);
     let script = format!(
-        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{value}\" }} }});"
+        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{js_value}\" }} }});"
     );
     let (mut browser, transport) = browser_for(&script, endpoint);
 
