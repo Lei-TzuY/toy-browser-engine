@@ -18,8 +18,9 @@ pub type HstsCacheRef = Rc<RefCell<HstsCache>>;
 /// The wrapped backend remains transport-only. This decorator owns the two
 /// user-agent policy transitions required by RFC 6797:
 ///
-/// - before dispatch, an HTTP request to a Known HSTS Host is rewritten to
-///   HTTPS (including the RFC port mapping performed by [`HstsCache`]);
+/// - before dispatch, expired Known HSTS Host state is evicted and an HTTP
+///   request to a still-known HSTS Host is rewritten to HTTPS (including the
+///   RFC port mapping performed by [`HstsCache`]);
 /// - after a successful HTTPS response arrives, the first
 ///   `Strict-Transport-Security` field is processed into the shared cache.
 ///
@@ -58,7 +59,14 @@ impl HstsNetwork {
     }
 
     fn prepare_request(&self, mut request: FetchRequest) -> FetchRequest {
-        request.url = self.cache.borrow().upgrade_url(&request.url, self.now_ms());
+        let now_ms = self.now_ms();
+        let mut cache = self.cache.borrow_mut();
+
+        // RFC 6797 §8.1.1 requires expired Known HSTS Hosts to be evicted.
+        // Do this at the request boundary so a profile that stops receiving
+        // STS responses cannot accumulate stale policies indefinitely.
+        cache.purge_expired(now_ms);
+        request.url = cache.upgrade_url(&request.url, now_ms);
         request
     }
 
