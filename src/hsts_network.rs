@@ -117,3 +117,34 @@ impl NetworkBackend for HstsNetwork {
         self.inner.wait(timeout)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eventloop::ManualClock;
+    use crate::net::{ManualNetwork, Url};
+
+    fn url(input: &str) -> Url {
+        Url::parse(input).unwrap()
+    }
+
+    #[test]
+    fn request_boundary_evicts_expired_entries_before_hsts_lookup() {
+        let clock = Rc::new(ManualClock::new());
+        let transport = Rc::new(ManualNetwork::new());
+        let network = HstsNetwork::with_new_cache(transport, clock.clone());
+
+        network.cache().borrow_mut().observe_response(
+            &url("https://expired.test/"),
+            "max-age=1",
+            0,
+        );
+        assert_eq!(network.cache().borrow().len(), 1);
+
+        clock.set(1_000.0);
+        let prepared = network.prepare_request(FetchRequest::get(url("http://expired.test/data")));
+
+        assert_eq!(prepared.url.to_string(), "http://expired.test/data");
+        assert!(network.cache().borrow().is_empty());
+    }
+}
