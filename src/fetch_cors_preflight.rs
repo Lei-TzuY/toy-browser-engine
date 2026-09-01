@@ -121,12 +121,40 @@ fn extract_cors_token_list(
 }
 
 fn max_age_seconds(response: &FetchResponse) -> u64 {
-    response
+    let mut values = response
         .headers
-        .get("access-control-max-age")
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS)
-        .min(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("access-control-max-age"))
+        .map(|(_, value)| value);
+
+    let Some(value) = values.next() else {
+        return DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS;
+    };
+
+    // Access-Control-Max-Age = delta-seconds, and delta-seconds is a single
+    // 1*DIGIT value. Duplicate physical fields therefore make extraction fail.
+    if values.next().is_some()
+        || value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS;
+    }
+
+    // Parse only as far as the implementation-defined cache limit. A decimal
+    // value with hundreds of digits is still valid delta-seconds and must clamp
+    // to the UA limit rather than becoming a parse failure because it exceeds
+    // the host integer width.
+    let mut seconds = 0u64;
+    for byte in value.bytes() {
+        seconds = seconds
+            .saturating_mul(10)
+            .saturating_add(u64::from(byte - b'0'));
+        if seconds >= MAX_CORS_PREFLIGHT_MAX_AGE_SECS {
+            return MAX_CORS_PREFLIGHT_MAX_AGE_SECS;
+        }
+    }
+
+    seconds
 }
 
 fn cache_entry_matches_request(
@@ -227,6 +255,7 @@ fn store_permission(
     target_url: &str,
     credentialed: bool,
     permission: CorsPreflightPermission,
+    now_ms: u64,
     expires_at_ms: u64,
 ) {
     if let Some(entry) = entries.iter_mut().find(|entry| {
@@ -239,7 +268,7 @@ fn store_permission(
 
     // A zero max-age refreshes matching entries to immediate expiry, but there
     // is no value in allocating a brand-new entry that is already expired.
-    if expires_at_ms == 0 {
+    if expires_at_ms <= now_ms {
         return;
     }
 
@@ -289,6 +318,7 @@ pub(crate) fn store_permissions(
                 &target_url,
                 credentialed,
                 CorsPreflightPermission::Method(method),
+                now_ms,
                 expires_at_ms,
             );
         }
@@ -299,6 +329,7 @@ pub(crate) fn store_permissions(
                 &target_url,
                 credentialed,
                 CorsPreflightPermission::HeaderName(header.to_ascii_lowercase()),
+                now_ms,
                 expires_at_ms,
             );
         }
