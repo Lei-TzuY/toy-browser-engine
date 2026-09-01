@@ -105,6 +105,46 @@ fn malformed_allow_headers_member_rejects_even_when_requested_name_is_present() 
 }
 
 #[test]
+fn unicode_whitespace_cannot_authorize_a_method_member() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", { method: "PUT" })
+             .then(function () { console.log("ok"); })
+             .catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        preflight_response(endpoint, Some("\u{00a0}PUT"), None),
+    );
+
+    let first = browser.tick();
+    assert_eq!(first.requests_sent, 1);
+    assert_eq!(transport.requests()[0].method.as_str(), "OPTIONS");
+
+    finish_preflight(&mut browser, &transport);
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+
+#[test]
+fn unicode_whitespace_cannot_authorize_a_header_member() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", { headers: { "X-Token": "secret" } })
+             .then(function () { console.log("ok"); })
+             .catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        preflight_response(endpoint, None, Some("\u{2003}x-token")),
+    );
+
+    let first = browser.tick();
+    assert_eq!(first.requests_sent, 1);
+    assert_eq!(transport.requests()[0].method.as_str(), "OPTIONS");
+
+    finish_preflight(&mut browser, &transport);
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+
+#[test]
 fn valid_token_lists_with_empty_members_still_authorize_the_actual_request() {
     let endpoint = "http://api.test/data";
     let (mut browser, transport) = browser_for(
@@ -114,7 +154,7 @@ fn valid_token_lists_with_empty_members_still_authorize_the_actual_request() {
              }).then(function () { console.log("ok"); })
                .catch(function () { console.log("blocked"); });"#,
         endpoint,
-        preflight_response(endpoint, Some("PUT, ,"), Some(", x-token, ")),
+        preflight_response(endpoint, Some("\tPUT, ,"), Some(", x-token\t, ")),
     );
 
     let first = browser.tick();
