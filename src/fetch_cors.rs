@@ -42,13 +42,14 @@ fn is_cors_safelisted_range_value(value: &str) -> bool {
         return true;
     }
 
-    let Ok(start) = start.parse::<u128>() else {
-        return false;
-    };
-    let Ok(end) = end.parse::<u128>() else {
-        return false;
-    };
-    start <= end
+    fn normalized_decimal(value: &str) -> &str {
+        let normalized = value.trim_start_matches('0');
+        if normalized.is_empty() { "0" } else { normalized }
+    }
+
+    let start = normalized_decimal(start);
+    let end = normalized_decimal(end);
+    start.len() < end.len() || (start.len() == end.len() && start <= end)
 }
 
 fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
@@ -150,6 +151,20 @@ mod tests {
         for value in ["bytes=0-0", "bytes=0-99", "bytes=42-"] {
             assert!(is_cors_safelisted_range_value(value), "{value}");
         }
+    }
+
+    #[test]
+    fn cors_safelisted_range_handles_positions_larger_than_machine_integers() {
+        let huge = "99999999999999999999999999999999999999999999999999";
+        let same = format!("bytes={huge}-{huge}");
+        assert!(same.len() <= 128);
+        assert!(is_cors_safelisted_range_value(&same));
+
+        let forward = format!("bytes=1-{huge}");
+        assert!(is_cors_safelisted_range_value(&forward));
+
+        let reversed = format!("bytes={huge}-1");
+        assert!(!is_cors_safelisted_range_value(&reversed));
     }
 
     #[test]
