@@ -81,13 +81,18 @@ fn is_http_token(value: &str) -> bool {
         })
 }
 
+fn trim_http_ows(value: &str) -> &str {
+    value.trim_matches([' ', '\t'])
+}
+
 fn comma_tokens(value: Option<String>) -> Result<Vec<String>, ()> {
     let mut tokens = Vec::new();
     for item in value.unwrap_or_default().split(',') {
-        let token = item.trim();
+        let token = trim_http_ows(item);
         // HTTP list syntax permits empty list members around commas. Actual
         // Access-Control-Allow-* members still have to satisfy method/field-name,
-        // both of which use the HTTP token grammar.
+        // both of which use the HTTP token grammar. Only HTTP OWS (SP/HTAB)
+        // may surround a member; Unicode whitespace is payload, not OWS.
         if token.is_empty() {
             continue;
         }
@@ -100,7 +105,7 @@ fn comma_tokens(value: Option<String>) -> Result<Vec<String>, ()> {
 }
 
 fn parse_max_age_seconds(value: &str) -> Option<u64> {
-    let value = value.trim();
+    let value = trim_http_ows(value);
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -452,13 +457,15 @@ mod tests {
     }
 
     #[test]
-    fn comma_token_lists_tolerate_empty_members_but_reject_invalid_members() {
+    fn comma_token_lists_tolerate_http_ows_but_reject_unicode_whitespace() {
         assert_eq!(
-            comma_tokens(Some("PUT, ,PATCH,,x-token".into())).unwrap(),
+            comma_tokens(Some("\tPUT, , PATCH\t,,x-token".into())).unwrap(),
             vec!["PUT", "PATCH", "x-token"]
         );
         assert!(comma_tokens(Some("PUT, bad method".into())).is_err());
         assert!(comma_tokens(Some("x-token, bad/name".into())).is_err());
+        assert!(comma_tokens(Some("PUT,\u{00a0}PATCH".into())).is_err());
+        assert!(comma_tokens(Some("x-token,\u{2003}x-other".into())).is_err());
     }
 
     #[test]
@@ -472,11 +479,14 @@ mod tests {
     }
 
     #[test]
-    fn max_age_parser_rejects_non_delta_seconds_syntax() {
+    fn max_age_parser_uses_only_http_ows_around_delta_seconds() {
+        assert_eq!(parse_max_age_seconds("\t 60 \t"), Some(60));
         assert_eq!(parse_max_age_seconds(""), None);
         assert_eq!(parse_max_age_seconds("+60"), None);
         assert_eq!(parse_max_age_seconds("60s"), None);
         assert_eq!(parse_max_age_seconds("1, 2"), None);
+        assert_eq!(parse_max_age_seconds("\u{00a0}60"), None);
+        assert_eq!(parse_max_age_seconds("60\u{2003}"), None);
     }
 
     #[test]
