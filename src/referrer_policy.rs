@@ -230,6 +230,70 @@ fn same_origin(a: &Url, b: &Url) -> bool {
         && effective_port(a) == effective_port(b)
 }
 
+/// Parse the legacy IPv4 textual forms accepted by the WHATWG URL host parser.
+///
+/// This engine's general URL parser is intentionally RFC-3986-oriented and
+/// preserves the host spelling, while web-platform URL parsing canonicalizes
+/// forms such as `127.1`, `2130706433`, `0x7f000001`, and octal components to
+/// the same IPv4 address. Referrer Policy's trust decision needs that semantic
+/// address even when the shared URL representation has not canonicalized it.
+fn whatwg_ipv4_address(host: &str) -> Option<Ipv4Addr> {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if let Ok(address) = host.parse::<Ipv4Addr>() {
+        return Some(address);
+    }
+    if host.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+
+    fn parse_number(part: &str) -> Option<u64> {
+        let (digits, radix) = if let Some(hex) = part
+            .strip_prefix("0x")
+            .or_else(|| part.strip_prefix("0X"))
+        {
+            if hex.is_empty() {
+                return None;
+            }
+            (hex, 16)
+        } else if part.len() >= 2 && part.starts_with('0') {
+            (&part[1..], 8)
+        } else {
+            (part, 10)
+        };
+        if digits.is_empty() {
+            return Some(0);
+        }
+        u64::from_str_radix(digits, radix).ok()
+    }
+
+    let mut numbers = Vec::with_capacity(parts.len());
+    for part in parts {
+        numbers.push(parse_number(part)?);
+    }
+    for number in &numbers[..numbers.len().saturating_sub(1)] {
+        if *number > 255 {
+            return None;
+        }
+    }
+
+    let last_limit = 1u64 << (8 * (5 - numbers.len()));
+    if *numbers.last()? >= last_limit {
+        return None;
+    }
+
+    let mut value = *numbers.last()?;
+    for (index, number) in numbers[..numbers.len() - 1].iter().enumerate() {
+        value += number << (8 * (3 - index));
+    }
+    let value = u32::try_from(value).ok()?;
+    Some(Ipv4Addr::from(value))
+}
+
 /// Secure Contexts' potentially-trustworthy-origin rules that matter for the
 /// HTTP(S)-only referrer computation above.
 ///
@@ -255,7 +319,7 @@ fn is_potentially_trustworthy_http_url(url: &Url) -> bool {
         return true;
     }
 
-    if let Ok(ipv4) = host.parse::<Ipv4Addr>() {
+    if let Some(ipv4) = whatwg_ipv4_address(host) {
         return ipv4.octets()[0] == 127;
     }
 
@@ -474,6 +538,28 @@ mod tests {
                 .compute(&localhost_source, &url("http://public.test/resource")),
             None
         );
+    }
+
+    #[test]
+    fn whatwg_ipv4_parser_recognizes_loopback_equivalents() {
+        for host in [
+            "127.1",
+            "127.0.1",
+            "2130706433",
+            "0x7f000001",
+            "0177.0.0.1",
+            "127.0.0.1.",
+        ] {
+            let parsed = whatwg_ipv4_address(host).expect("WHATWG IPv4 spelling");
+            assert_eq!(parsed.octets()[0], 127, "unexpected address for {host}");
+        }
+        for host in ["0x0a000001", "3232235786", "999.1", "1.2.3.4.5"] {
+            assert_ne!(
+                whatwg_ipv4_address(host).map(|address| address.octets()[0]),
+                Some(127),
+                "non-loopback must not become trustworthy: {host}"
+            );
+        }
     }
 
     #[test]
