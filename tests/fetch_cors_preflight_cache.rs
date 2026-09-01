@@ -169,6 +169,42 @@ fn expired_entry_is_not_reused_after_the_session_clock_advances() {
 }
 
 #[test]
+fn oversized_valid_max_age_is_clamped_instead_of_falling_back_to_five_seconds() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+              setTimeout(function () {
+                  fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "two" }, body: "b" });
+              }, 6000);
+          });
+    "#;
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(
+            endpoint,
+            "999999999999999999999999999999999999999999",
+            "PUT",
+            "x-token",
+            false,
+        ),
+    );
+
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT"]);
+
+    browser.advance_time(Duration::from_millis(6000));
+    browser.tick();
+
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "PUT"]);
+}
+
+#[test]
 fn noncredentialed_entry_does_not_authorize_a_later_credentialed_request() {
     let endpoint = "http://api.test/data";
     let script = r#"

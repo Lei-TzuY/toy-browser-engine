@@ -84,13 +84,30 @@ fn comma_tokens(value: Option<String>) -> Vec<String> {
         .collect()
 }
 
+fn parse_max_age_seconds(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    let mut parsed = 0_u64;
+    for byte in value.bytes() {
+        parsed = parsed
+            .saturating_mul(10)
+            .saturating_add(u64::from(byte - b'0'));
+        if parsed >= MAX_CORS_PREFLIGHT_MAX_AGE_SECS {
+            return Some(MAX_CORS_PREFLIGHT_MAX_AGE_SECS);
+        }
+    }
+    Some(parsed)
+}
+
 fn max_age_seconds(response: &FetchResponse) -> u64 {
     response
         .headers
         .get("access-control-max-age")
-        .and_then(|value| value.trim().parse::<u64>().ok())
+        .and_then(|value| parse_max_age_seconds(&value))
         .unwrap_or(DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS)
-        .min(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)
 }
 
 fn cache_entry_matches_request(
@@ -378,6 +395,30 @@ mod tests {
             method,
             &headers,
         )
+    }
+
+    #[test]
+    fn max_age_parser_clamps_valid_values_that_exceed_u64() {
+        assert_eq!(
+            parse_max_age_seconds("999999999999999999999999999999999999999999"),
+            Some(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)
+        );
+        assert_eq!(parse_max_age_seconds("7201"), Some(7_200));
+        assert_eq!(parse_max_age_seconds("7200"), Some(7_200));
+    }
+
+    #[test]
+    fn max_age_parser_rejects_non_delta_seconds_syntax() {
+        assert_eq!(parse_max_age_seconds(""), None);
+        assert_eq!(parse_max_age_seconds("+60"), None);
+        assert_eq!(parse_max_age_seconds("60s"), None);
+        assert_eq!(parse_max_age_seconds("1, 2"), None);
+    }
+
+    #[test]
+    fn malformed_max_age_uses_fetch_default() {
+        let response = permissions_response("not-a-number", "PUT", "x-token");
+        assert_eq!(max_age_seconds(&response), DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS);
     }
 
     #[test]
