@@ -136,10 +136,6 @@ pub(crate) fn store_permissions(
     response: &FetchResponse,
 ) {
     let max_age = max_age_seconds(response);
-    if max_age == 0 {
-        return;
-    }
-
     let now_ms = effective_now_ms(jar, now_ms);
     let target_url = target_cache_key(target);
     let expires_at_ms = now_ms.saturating_add(max_age.saturating_mul(1_000));
@@ -148,12 +144,18 @@ pub(crate) fn store_permissions(
     let source_origin = source_origin.to_string();
 
     with_session_cache(jar, |entries| {
+        // A successful preflight refreshes this cache bucket. In particular,
+        // Access-Control-Max-Age: 0 must revoke permissions previously stored
+        // with a positive lifetime instead of leaving stale entries reusable.
         entries.retain(|entry| {
             entry.expires_at_ms > now_ms
                 && (entry.source_origin != source_origin
                     || entry.target_url != target_url
                     || entry.credentialed != credentialed)
         });
+        if max_age == 0 {
+            return;
+        }
         if entries.len() >= MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION {
             entries.remove(0);
         }
@@ -246,4 +248,108 @@ pub(crate) fn validate_preflight_response(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response(target: &Url, max_age: &str, methods: &str, headers: &str) -> FetchResponse {
+        let mut response = FetchResponse::synthetic(
+            target.clone(),
+            200,
+            Some("text/plain"),
+            Vec::new(),
+        );
+        response
+            .headers
+            .insert_raw("access-control-max-age", max_age);
+        response
+            .headers
+            .insert_raw("access-control-allow-methods", methods);
+        response
+            .headers
+            .insert_raw("access-control-allow-headers", headers);
+        response
+    }
+
+    #[test]
+    fn max_age_zero_revokes_existing_permissions_for_the_cache_bucket() {
+        let jar = Rc::new(RefCell::new(CookieJar::new()));
+        let target = Url::parse("http://api.test/data").expect("valid URL");
+        let origin = "http://page.test";
+        let requested = vec!["x-token".to_string()];
+
+        store_permissions(
+            &jar,
+            1_000,
+            origin,
+            &target,
+            false,
+            &response(&target, "60", "PUT", "x-token"),
+        );
+        assert!(cache_allows(
+            &jar,
+            1_001,
+            origin,
+            &target,
+            false,
+            Method::Put,
+            &requested,
+        ));
+
+        store_permissions(
+            &jar,
+            1_002,
+            origin,
+            &target,
+            false,
+            &response(&target, "0", "PATCH", "x-other"),
+        );
+
+        assert!(!cache_allows(
+            &jar,
+            1_003,
+            origin,
+            &target,
+            false,
+            Method::Put,
+            &requested,
+        ));
+    }
+
+    #[test]
+    fn zero_max_age_only_revokes_the_matching_credentials_bucket() {
+        let jar = Rc::new(RefCell::new(CookieJar::new()));
+        let target = Url::parse("http://api.test/data").expect("valid URL");
+        let origin = "http://page.test";
+        let requested = vec!["x-token".to_string()];
+
+        store_permissions(
+            &jar,
+            2_000,
+            origin,
+            &target,
+            true,
+            &response(&target, "60", "PUT", "x-token"),
+        );
+        store_permissions(
+            &jar,
+            2_001,
+            origin,
+            &target,
+            false,
+            &response(&target, "0", "PATCH", "x-other"),
+        );
+
+        assert!(cache_allows(
+            &jar,
+            2_002,
+            origin,
+            &target,
+            true,
+            Method::Put,
+            &requested,
+        ));
+    }
 }
