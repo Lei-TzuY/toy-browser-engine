@@ -172,6 +172,93 @@ fn expired_entry_is_not_reused_after_the_session_clock_advances() {
 }
 
 #[test]
+fn enormous_valid_max_age_clamps_instead_of_falling_back_to_five_seconds() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+              setTimeout(function () {
+                  fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "two" }, body: "b" });
+              }, 6000);
+          });
+    "#;
+    let huge = "999999999999999999999999999999999999999999999999999999999999";
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(endpoint, huge, "PUT", "x-token", false),
+    );
+
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT"]);
+
+    browser.advance_time(Duration::from_millis(6000));
+    browser.tick();
+
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "PUT"]);
+}
+
+#[test]
+fn non_abnf_max_age_falls_back_to_five_seconds() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+              setTimeout(function () {
+                  fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "two" }, body: "b" });
+              }, 5500);
+          });
+    "#;
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(endpoint, "+60", "PUT", "x-token", false),
+    );
+
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+
+    browser.advance_time(Duration::from_millis(5500));
+    browser.tick();
+
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "OPTIONS"]);
+}
+
+#[test]
+fn duplicate_max_age_fields_fall_back_to_five_seconds() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () {
+              setTimeout(function () {
+                  fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "two" }, body: "b" });
+              }, 5500);
+          });
+    "#;
+    let mut preflight = response(endpoint, "60", "PUT", "x-token", false);
+    preflight.headers.append_raw("access-control-max-age", "60");
+    let (mut browser, transport) = browser_for(script, endpoint, preflight);
+
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+
+    browser.advance_time(Duration::from_millis(5500));
+    browser.tick();
+
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "OPTIONS"]);
+}
+
+#[test]
 fn noncredentialed_entry_does_not_authorize_a_later_credentialed_request() {
     let endpoint = "http://api.test/data";
     let script = r#"
