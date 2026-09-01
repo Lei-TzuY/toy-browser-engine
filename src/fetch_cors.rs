@@ -83,8 +83,19 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
 
 /// Return authored request-header names that make a cross-origin request
 /// non-simple. Browser-owned CORS fields are deliberately ignored.
+///
+/// Fetch first classifies each individual field value against the CORS
+/// safelist, then applies a second aggregate guard: if otherwise-safelisted
+/// values total more than 1024 bytes, every one of their names becomes unsafe.
+/// Keep the potential names separate so one genuinely unsafe field does not
+/// prevent the aggregate accounting for its still-safelisted neighbors.
 pub(crate) fn cors_unsafe_request_header_names(headers: &HeaderMap) -> Vec<String> {
-    let mut names = Vec::new();
+    const CORS_SAFELIST_VALUE_SIZE_LIMIT: usize = 1024;
+
+    let mut unsafe_names = Vec::new();
+    let mut potentially_unsafe_names = Vec::new();
+    let mut safelist_value_size = 0usize;
+
     for (name, value) in headers.iter() {
         if matches!(
             name,
@@ -92,13 +103,22 @@ pub(crate) fn cors_unsafe_request_header_names(headers: &HeaderMap) -> Vec<Strin
         ) {
             continue;
         }
-        if !is_cors_safelisted_request_header(name, value) {
-            names.push(name.to_string());
+
+        if is_cors_safelisted_request_header(name, value) {
+            safelist_value_size = safelist_value_size.saturating_add(value.len());
+            potentially_unsafe_names.push(name.to_string());
+        } else {
+            unsafe_names.push(name.to_string());
         }
     }
-    names.sort();
-    names.dedup();
-    names
+
+    if safelist_value_size > CORS_SAFELIST_VALUE_SIZE_LIMIT {
+        unsafe_names.extend(potentially_unsafe_names);
+    }
+
+    unsafe_names.sort();
+    unsafe_names.dedup();
+    unsafe_names
 }
 
 /// Validate an actual CORS response against the serialized Origin value that
@@ -193,5 +213,41 @@ mod tests {
         assert!(oversized.len() > 128);
         headers.insert_raw("range", &oversized);
         assert_eq!(cors_unsafe_request_header_names(&headers), vec!["range"]);
+    }
+
+    #[test]
+    fn aggregate_safelist_value_size_is_inclusive_at_1024_bytes() {
+        let mut headers = HeaderMap::new();
+        for _ in 0..8 {
+            headers.append_raw("accept", &"a".repeat(128));
+        }
+        assert_eq!(
+            headers.iter().map(|(_, value)| value.len()).sum::<usize>(),
+            1024
+        );
+        assert!(cors_unsafe_request_header_names(&headers).is_empty());
+    }
+
+    #[test]
+    fn aggregate_safelist_value_size_promotes_every_potential_name_over_limit() {
+        let mut headers = HeaderMap::new();
+        for _ in 0..8 {
+            headers.append_raw("accept", &"a".repeat(128));
+        }
+        headers.append_raw("content-language", "e");
+
+        assert_eq!(
+            cors_unsafe_request_header_names(&headers),
+            vec!["accept", "content-language"]
+        );
+    }
+
+    #[test]
+    fn aggregate_accounting_ignores_individually_unsafe_values() {
+        let mut headers = HeaderMap::new();
+        headers.append_raw("x-custom", &"x".repeat(2048));
+        headers.append_raw("accept", "text/plain");
+
+        assert_eq!(cors_unsafe_request_header_names(&headers), vec!["x-custom"]);
     }
 }
