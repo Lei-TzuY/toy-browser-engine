@@ -14,7 +14,7 @@ impl JsRuntime {
         host_value(HostObject::Request(RequestData {
             url: request.url.clone(),
             method: request.method,
-            headers: headers_ref(request.headers.borrow().clone()),
+            headers: request.headers.clone_detached(),
             body: if request.body.present() {
                 Body::new(request.body.peek().unwrap_or_default())
             } else {

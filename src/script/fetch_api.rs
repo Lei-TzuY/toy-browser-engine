@@ -30,10 +30,10 @@ use crate::net::Url;
 use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 
 use super::host::{
-    decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
-    IntersectionObserverEntryData, IntersectionObserverTarget, RequestCredentials, RequestData,
-    RequestMode, RequestReferrer, ResizeObserverData, ResizeObserverEntryData, ResponseData,
-    ResponseType, UrlData, UrlSearchParamsData,
+    decode_text, headers_ref, request_headers_ref, AbortState, Body, HeadersRef, HostObject,
+    IntersectionObserverData, IntersectionObserverEntryData, IntersectionObserverTarget,
+    RequestCredentials, RequestData, RequestMode, RequestReferrer, ResizeObserverData,
+    ResizeObserverEntryData, ResponseData, ResponseType, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
@@ -450,22 +450,12 @@ impl JsRuntime {
                 )));
             }
 
-            // A request-no-cors header guard only permits CORS-safelisted
-            // request headers. This engine does not attach guard metadata to
-            // Headers objects yet, so enforce the equivalent wire invariant at
-            // fetch preparation time by dropping unsafe authored fields.
+            // Request construction and script mutations already enforce the
+            // request-no-cors guard. Re-apply it here as a wire-boundary defense
+            // for embedders that may construct RequestData directly in Rust.
             {
                 let mut headers = request.headers.borrow_mut();
-                headers.delete("origin");
-                headers.delete("access-control-request-method");
-                headers.delete("access-control-request-headers");
-            }
-            let unsafe_names = cors_unsafe_request_header_names(&request);
-            if !unsafe_names.is_empty() {
-                let mut headers = request.headers.borrow_mut();
-                for name in unsafe_names {
-                    headers.delete(&name);
-                }
+                retain_request_headers_for_mode(&mut headers, RequestMode::NoCors);
             }
         }
 
@@ -487,9 +477,7 @@ impl JsRuntime {
                 // into a CORS-filtered response.
                 {
                     let mut headers = request.headers.borrow_mut();
-                    headers.delete("origin");
-                    headers.delete("access-control-request-method");
-                    headers.delete("access-control-request-headers");
+                    retain_request_headers_for_mode(&mut headers, RequestMode::Cors);
                 }
 
                 let requested_headers = cors_unsafe_request_header_names(&request);
@@ -663,10 +651,15 @@ impl JsRuntime {
             url = self.resolve_fetch_url(&url.to_string())?;
         }
 
+        // RequestInit is processed before the Request header guard is fixed, so
+        // apply the final mode's guard to the complete initial header list. This
+        // also handles `new Request(existing, { mode: "no-cors" })` correctly.
+        retain_request_headers_for_mode(&mut headers, mode);
+
         Ok(RequestData {
             url,
             method,
-            headers: headers_ref(headers),
+            headers: request_headers_ref(headers, mode),
             body: match body {
                 Some(bytes) => Body::new(bytes),
                 None => Body::absent(),
@@ -1837,20 +1830,46 @@ impl JsRuntime {
             },
             "has" => JsValue::Bool(headers.borrow().has(&name)),
             "set" | "append" => {
-                if HeaderMap::is_forbidden(&name) {
+                // Keep the engine's historical script-owned header protection,
+                // then apply the more complete Request-specific forbidden-name
+                // set when this Headers object belongs to a Request.
+                if HeaderMap::is_forbidden(&name)
+                    || headers.is_request_guard() && is_forbidden_request_header_name(&name)
+                {
                     return JsValue::Undefined;
                 }
+
+                // Validate against a detached candidate first. request-no-cors
+                // must judge append using the combined field value, not merely
+                // the newly supplied fragment.
+                let mut candidate = headers.borrow().clone();
                 let outcome = if prop == "set" {
-                    headers.borrow_mut().set(&name, &value)
+                    candidate.set(&name, &value)
                 } else {
-                    headers.borrow_mut().append(&name, &value)
+                    candidate.append(&name, &value)
                 };
                 if let Err(error) = outcome {
                     self.throw_type_error(error.to_string());
+                    return JsValue::Undefined;
                 }
+                if headers.is_request_no_cors() {
+                    let normalized_name = name.to_ascii_lowercase();
+                    let combined = candidate.get(&name).unwrap_or_default();
+                    if !is_cors_safelisted_request_header(&normalized_name, &combined) {
+                        return JsValue::Undefined;
+                    }
+                }
+                *headers.borrow_mut() = candidate;
                 JsValue::Undefined
             }
             "delete" => {
+                if headers.is_request_guard() && is_forbidden_request_header_name(&name) {
+                    return JsValue::Undefined;
+                }
+                if headers.is_request_no_cors() && !is_no_cors_safelisted_request_header_name(&name)
+                {
+                    return JsValue::Undefined;
+                }
                 headers.borrow_mut().delete(&name);
                 JsValue::Undefined
             }
@@ -2107,7 +2126,64 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
                 "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
             )
         }
+        "range" => is_cors_safelisted_range(value),
         _ => false,
+    }
+}
+
+fn is_cors_safelisted_range(value: &str) -> bool {
+    let Some(range) = value.strip_prefix("bytes=") else {
+        return false;
+    };
+    let Some((start, end)) = range.split_once('-') else {
+        return false;
+    };
+    !start.is_empty()
+        && start.bytes().all(|byte| byte.is_ascii_digit())
+        && end.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_no_cors_safelisted_request_header_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "accept" | "accept-language" | "content-language" | "content-type" | "range"
+    )
+}
+
+fn is_forbidden_request_header_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    HeaderMap::is_forbidden(&name)
+        || name.starts_with("proxy-")
+        || name.starts_with("sec-")
+        || matches!(
+            name.as_str(),
+            "accept-charset"
+                | "accept-encoding"
+                | "access-control-request-headers"
+                | "access-control-request-method"
+                | "cookie"
+                | "cookie2"
+                | "date"
+                | "dnt"
+                | "expect"
+                | "origin"
+                | "permissions-policy"
+                | "referer"
+                | "te"
+                | "trailer"
+                | "via"
+        )
+}
+
+fn retain_request_headers_for_mode(headers: &mut HeaderMap, mode: RequestMode) {
+    for name in headers.names() {
+        let value = headers.get(&name).unwrap_or_default();
+        if is_forbidden_request_header_name(&name)
+            || mode == RequestMode::NoCors
+                && !is_cors_safelisted_request_header(&name.to_ascii_lowercase(), &value)
+        {
+            headers.delete(&name);
+        }
     }
 }
 

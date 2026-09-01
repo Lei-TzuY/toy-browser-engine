@@ -29,6 +29,8 @@ use crate::referrer_policy::ReferrerPolicy;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeadersGuard {
     Mutable,
+    Request,
+    RequestNoCors,
     Immutable,
 }
 
@@ -65,6 +67,17 @@ impl HeadersRef {
         self.0.guard == HeadersGuard::Immutable
     }
 
+    pub(crate) fn is_request_guard(&self) -> bool {
+        matches!(
+            self.0.guard,
+            HeadersGuard::Request | HeadersGuard::RequestNoCors
+        )
+    }
+
+    pub(crate) fn is_request_no_cors(&self) -> bool {
+        self.0.guard == HeadersGuard::RequestNoCors
+    }
+
     /// Clone the header list while preserving its Fetch guard. Response.clone()
     /// uses this; constructor copies deliberately go through `headers_ref`.
     pub(crate) fn clone_detached(&self) -> HeadersRef {
@@ -78,6 +91,18 @@ pub fn headers_ref(headers: HeaderMap) -> HeadersRef {
 
 fn immutable_headers_ref(headers: HeaderMap) -> HeadersRef {
     HeadersRef::new(headers, HeadersGuard::Immutable)
+}
+
+/// Build the script-visible header list owned by a Request. Ordinary CORS and
+/// same-origin Requests use the request guard; no-cors Requests use the stricter
+/// request-no-cors guard.
+pub(crate) fn request_headers_ref(headers: HeaderMap, mode: RequestMode) -> HeadersRef {
+    let guard = if mode == RequestMode::NoCors {
+        HeadersGuard::RequestNoCors
+    } else {
+        HeadersGuard::Request
+    };
+    HeadersRef::new(headers, guard)
 }
 
 // ── Bodies ────────────────────────────────────────────────────────────────────
