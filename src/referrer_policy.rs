@@ -3,6 +3,7 @@
 // ============================================================
 
 use crate::net::{FetchRequest, FetchResponse, Url};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// The Referrer Policy values implemented by the browser engine.
 ///
@@ -229,8 +230,47 @@ fn same_origin(a: &Url, b: &Url) -> bool {
         && effective_port(a) == effective_port(b)
 }
 
+/// Secure Contexts' potentially-trustworthy-origin rules that matter for the
+/// HTTP(S)-only referrer computation above.
+///
+/// HTTPS origins are inherently potentially trustworthy. HTTP loopback
+/// addresses and localhost names are also potentially trustworthy, so strict
+/// referrer policies must not treat an HTTPS -> localhost transition as a
+/// downgrade, and must treat localhost -> ordinary HTTP as a downgrade.
+fn is_potentially_trustworthy_http_url(url: &Url) -> bool {
+    if url.scheme() == "https" {
+        return true;
+    }
+    if url.scheme() != "http" {
+        return false;
+    }
+
+    let host = url.host();
+    let host_without_dot = host.strip_suffix('.').unwrap_or(host);
+    if host_without_dot.eq_ignore_ascii_case("localhost")
+        || host_without_dot
+            .to_ascii_lowercase()
+            .ends_with(".localhost")
+    {
+        return true;
+    }
+
+    if let Ok(ipv4) = host.parse::<Ipv4Addr>() {
+        return ipv4.octets()[0] == 127;
+    }
+
+    let ipv6_host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    ipv6_host
+        .parse::<Ipv6Addr>()
+        .map(|address| address.is_loopback())
+        .unwrap_or(false)
+}
+
 fn is_downgrade(source: &Url, target: &Url) -> bool {
-    source.scheme() == "https" && target.scheme() == "http"
+    is_potentially_trustworthy_http_url(source) && !is_potentially_trustworthy_http_url(target)
 }
 
 fn origin_referrer(source: &Url) -> Option<String> {
@@ -407,6 +447,47 @@ mod tests {
             ReferrerPolicy::default().compute(&source, &url("http://example.test/x")),
             None
         );
+    }
+
+    #[test]
+    fn strict_policies_use_potentially_trustworthy_url_transitions() {
+        let secure_source = url("https://secure.test/private?q=1");
+        assert_eq!(
+            ReferrerPolicy::StrictOriginWhenCrossOrigin
+                .compute(&secure_source, &url("http://localhost:8080/resource")),
+            Some("https://secure.test/".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::StrictOriginWhenCrossOrigin
+                .compute(&secure_source, &url("http://127.0.0.42/resource")),
+            Some("https://secure.test/".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::StrictOriginWhenCrossOrigin
+                .compute(&secure_source, &url("http://[::1]/resource")),
+            Some("https://secure.test/".into())
+        );
+
+        let localhost_source = url("http://app.localhost/private?q=1");
+        assert_eq!(
+            ReferrerPolicy::NoReferrerWhenDowngrade
+                .compute(&localhost_source, &url("http://public.test/resource")),
+            None
+        );
+    }
+
+    #[test]
+    fn localhost_name_matching_follows_secure_contexts_rules() {
+        for host in ["localhost", "localhost.", "dev.localhost", "dev.localhost."] {
+            assert!(is_potentially_trustworthy_http_url(&url(&format!(
+                "http://{host}/"
+            ))));
+        }
+        for host in ["notlocalhost", "localhost.example", "127.0.0.0.example"] {
+            assert!(!is_potentially_trustworthy_http_url(&url(&format!(
+                "http://{host}/"
+            ))));
+        }
     }
 
     #[test]
