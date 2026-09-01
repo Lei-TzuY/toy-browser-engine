@@ -81,14 +81,43 @@ fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("authorization")
 }
 
-fn comma_tokens(value: Option<String>) -> Vec<String> {
-    value
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
-        .collect()
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+fn extract_cors_token_list(
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<Option<Vec<String>>, FetchError> {
+    let mut found = false;
+    let mut values = Vec::new();
+
+    for (header_name, raw_value) in headers.iter() {
+        if !header_name.eq_ignore_ascii_case(name) {
+            continue;
+        }
+        found = true;
+
+        // CORS uses HTTP's #rule list extension here. Recipients ignore empty
+        // members, but every non-empty member still has to satisfy token ABNF.
+        for raw_member in raw_value.split(',') {
+            let member = raw_member.trim_matches(|c| c == ' ' || c == '\t');
+            if member.is_empty() {
+                continue;
+            }
+            if !is_http_token(member) {
+                return Err(FetchError::Blocked(format!(
+                    "CORS: malformed {name} header list"
+                )));
+            }
+            values.push(member.to_string());
+        }
+    }
+
+    Ok(found.then_some(values))
 }
 
 fn max_age_seconds(response: &FetchResponse) -> u64 {
@@ -239,8 +268,16 @@ pub(crate) fn store_permissions(
     let now_ms = effective_now_ms(jar, now_ms);
     let target_url = target_cache_key(target);
     let expires_at_ms = now_ms.saturating_add(max_age.saturating_mul(1_000));
-    let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
-    let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
+    let (Ok(allowed_methods), Ok(allowed_headers)) = (
+        extract_cors_token_list(&response.headers, "access-control-allow-methods"),
+        extract_cors_token_list(&response.headers, "access-control-allow-headers"),
+    ) else {
+        // Production callers validate the preflight response before storing it.
+        // Keep this lower-level cache API fail-closed if it is called directly.
+        return;
+    };
+    let allowed_methods = allowed_methods.unwrap_or_default();
+    let allowed_headers = allowed_headers.unwrap_or_default();
 
     with_session_cache(jar, partition_key, |entries| {
         entries.retain(|entry| entry.expires_at_ms > now_ms);
@@ -328,8 +365,15 @@ pub(crate) fn validate_preflight_response(
     }
     validate_cors_response_origin(source_origin, credentialed, response)?;
 
+    // Fetch extracts both lists before checking whether a particular requested
+    // method/header needs them. A malformed member makes the whole extraction
+    // fail even when another member would otherwise grant the request.
+    let methods = extract_cors_token_list(&response.headers, "access-control-allow-methods")?
+        .unwrap_or_default();
+    let allowed = extract_cors_token_list(&response.headers, "access-control-allow-headers")?
+        .unwrap_or_default();
+
     if !is_cors_safelisted_method(requested_method) {
-        let methods = comma_tokens(response.headers.get("access-control-allow-methods"));
         let wildcard = !credentialed && methods.iter().any(|method| method == "*");
         let exact = methods
             .iter()
@@ -343,7 +387,6 @@ pub(crate) fn validate_preflight_response(
     }
 
     if !requested_headers.is_empty() {
-        let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
         let wildcard = !credentialed && allowed.iter().any(|header| header == "*");
         for requested in requested_headers {
             let wildcard_allows = wildcard && !is_cors_non_wildcard_request_header_name(requested);

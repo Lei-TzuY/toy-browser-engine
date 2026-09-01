@@ -157,6 +157,80 @@ fn denied_preflight_never_sends_the_actual_request() {
 }
 
 #[test]
+fn malformed_allow_methods_member_rejects_the_entire_preflight_list() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", {
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        response(endpoint, "*", Some("PUT, PATCH /"), Some("x-token"), false),
+    );
+
+    browser.tick();
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    browser.tick();
+
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+
+#[test]
+fn malformed_allow_headers_member_rejects_the_entire_preflight_list() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", {
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        response(
+            endpoint,
+            "*",
+            Some("PUT"),
+            Some("x-token, bad header"),
+            false,
+        ),
+    );
+
+    browser.tick();
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    browser.tick();
+
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+
+#[test]
+fn empty_allow_list_members_are_ignored_for_http_list_compatibility() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", {
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).then(function () { console.log("ok"); })
+               .catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        response(endpoint, "*", Some(", PUT, ,"), Some(", x-token, ,"), false),
+    );
+
+    browser.tick();
+    complete_preflight_and_send_actual(&mut browser, &transport);
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+
+    assert_eq!(browser.document().runtime.console, vec!["ok"]);
+}
+
+#[test]
 fn credentialed_preflight_omits_cookie_then_actual_request_includes_it() {
     let endpoint = "http://page.test:8080/data";
     let mut allowed = response(
