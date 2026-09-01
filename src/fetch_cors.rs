@@ -16,6 +16,42 @@ fn contains_cors_unsafe_request_header_byte(value: &str) -> bool {
     })
 }
 
+/// Parse Fetch's CORS-safelisted single byte-range form.
+///
+/// The safelist deliberately excludes suffix ranges such as `bytes=-500`, even
+/// though they are valid HTTP Range values, because browsers historically did
+/// not emit that shape from script-authored CORS-safelisted requests.
+fn is_cors_safelisted_range_value(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("bytes=") else {
+        return false;
+    };
+    let Some((start, end)) = rest.split_once('-') else {
+        return false;
+    };
+    if start.is_empty() || !start.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    if !end.is_empty() && !end.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    if end.contains('-') {
+        return false;
+    }
+
+    if end.is_empty() {
+        return true;
+    }
+
+    fn normalized_decimal(value: &str) -> &str {
+        let normalized = value.trim_start_matches('0');
+        if normalized.is_empty() { "0" } else { normalized }
+    }
+
+    let start = normalized_decimal(start);
+    let end = normalized_decimal(end);
+    start.len() < end.len() || (start.len() == end.len() && start <= end)
+}
+
 fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
     if value.len() > 128 {
         return false;
@@ -40,6 +76,7 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
                 "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
             )
         }
+        "range" => is_cors_safelisted_range_value(value),
         _ => false,
     }
 }
@@ -102,5 +139,59 @@ pub(crate) fn validate_cors_response_origin(
         Err(FetchError::Blocked(
             "CORS: cross-origin response did not allow the request origin".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cors_safelisted_range_accepts_single_forward_byte_ranges() {
+        for value in ["bytes=0-0", "bytes=0-99", "bytes=42-"] {
+            assert!(is_cors_safelisted_range_value(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn cors_safelisted_range_handles_positions_larger_than_machine_integers() {
+        let huge = "99999999999999999999999999999999999999999999999999";
+        let same = format!("bytes={huge}-{huge}");
+        assert!(same.len() <= 128);
+        assert!(is_cors_safelisted_range_value(&same));
+
+        let forward = format!("bytes=1-{huge}");
+        assert!(is_cors_safelisted_range_value(&forward));
+
+        let reversed = format!("bytes={huge}-1");
+        assert!(!is_cors_safelisted_range_value(&reversed));
+    }
+
+    #[test]
+    fn cors_safelisted_range_rejects_suffix_multi_and_reversed_ranges() {
+        for value in [
+            "bytes=-500",
+            "bytes=100-99",
+            "bytes=0-1,2-3",
+            "bytes =0-1",
+            "Bytes=0-1",
+            "bytes=0 -1",
+            "bytes=0- 1",
+            "bytes=0-a",
+        ] {
+            assert!(!is_cors_safelisted_range_value(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn range_safelist_respects_the_128_byte_header_value_limit() {
+        let mut headers = HeaderMap::new();
+        headers.insert_raw("range", "bytes=0-99");
+        assert!(cors_unsafe_request_header_names(&headers).is_empty());
+
+        let oversized = format!("bytes=1-{}", "9".repeat(121));
+        assert!(oversized.len() > 128);
+        headers.insert_raw("range", &oversized);
+        assert_eq!(cors_unsafe_request_header_names(&headers), vec!["range"]);
     }
 }
