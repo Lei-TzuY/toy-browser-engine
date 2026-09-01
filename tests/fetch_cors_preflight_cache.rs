@@ -16,15 +16,15 @@ fn response(
     headers: &str,
     credentialed: bool,
 ) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(endpoint),
-        200,
-        Some("text/plain"),
-        b"ok".to_vec(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url(endpoint), 200, Some("text/plain"), b"ok".to_vec());
     response.headers.append_raw(
         "access-control-allow-origin",
-        if credentialed { "http://page.test" } else { "*" },
+        if credentialed {
+            "http://page.test"
+        } else {
+            "*"
+        },
     );
     response
         .headers
@@ -135,7 +135,10 @@ fn max_age_zero_forces_the_next_request_to_preflight_again() {
 
     drive(&mut browser, &transport);
 
-    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "OPTIONS", "PUT"]);
+    assert_eq!(
+        methods(&transport),
+        vec!["OPTIONS", "PUT", "OPTIONS", "PUT"]
+    );
 }
 
 #[test]
@@ -183,7 +186,10 @@ fn noncredentialed_entry_does_not_authorize_a_later_credentialed_request() {
 
     drive(&mut browser, &transport);
 
-    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "OPTIONS", "PUT"]);
+    assert_eq!(
+        methods(&transport),
+        vec!["OPTIONS", "PUT", "OPTIONS", "PUT"]
+    );
 }
 
 #[test]
@@ -193,13 +199,41 @@ fn authorization_is_not_satisfied_by_allow_headers_wildcard() {
         fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
           .then(function () { return fetch("http://api.test/data", { method: "PUT", headers: { "Authorization": "Bearer x" }, body: "b" }); });
     "#;
-    let (mut browser, transport) = browser_for(
-        script,
-        endpoint,
-        response(endpoint, "60", "*", "*", false),
-    );
+    let (mut browser, transport) =
+        browser_for(script, endpoint, response(endpoint, "60", "*", "*", false));
 
     drive(&mut browser, &transport);
 
     assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "OPTIONS"]);
+}
+
+#[test]
+fn actual_network_failure_invalidates_cached_preflight_permissions() {
+    let endpoint = "http://api.test/data";
+    let script = r#"
+        fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "one" }, body: "a" })
+          .then(function () { return fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "two" }, body: "b" }); })
+          .catch(function () { return fetch("http://api.test/data", { method: "PUT", headers: { "X-Token": "three" }, body: "c" }); });
+    "#;
+    let (mut browser, transport) = browser_for(
+        script,
+        endpoint,
+        response(endpoint, "60", "PUT", "x-token", false),
+    );
+
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(transport.complete_all(), 1);
+
+    transport.fail(endpoint, browser_engine::net::FetchError::Io("boom".into()));
+    browser.tick();
+    assert_eq!(methods(&transport), vec!["OPTIONS", "PUT", "PUT"]);
+    assert_eq!(transport.complete_all(), 1);
+
+    browser.tick();
+    assert_eq!(
+        methods(&transport),
+        vec!["OPTIONS", "PUT", "PUT", "OPTIONS"]
+    );
 }

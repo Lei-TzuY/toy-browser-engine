@@ -29,6 +29,10 @@ struct CorsPreflightCacheEntry {
 #[derive(Debug)]
 struct CorsPreflightSessionCache {
     jar: Weak<RefCell<CookieJar>>,
+    /// Conservative implementation-defined network partition key. The current
+    /// engine has no nested browsing contexts, so the top-level environment
+    /// origin is used as the partition token.
+    partition_key: String,
     entries: Vec<CorsPreflightCacheEntry>,
 }
 
@@ -38,6 +42,7 @@ thread_local! {
 
 fn with_session_cache<R>(
     jar: &CookieJarRef,
+    partition_key: &str,
     operation: impl FnOnce(&mut Vec<CorsPreflightCacheEntry>) -> R,
 ) -> R {
     CORS_PREFLIGHT_CACHES.with(|sessions| {
@@ -50,10 +55,12 @@ fn with_session_cache<R>(
                     .jar
                     .upgrade()
                     .is_some_and(|live| Rc::ptr_eq(&live, jar))
+                    && session.partition_key == partition_key
             })
             .unwrap_or_else(|| {
                 sessions.push(CorsPreflightSessionCache {
                     jar: Rc::downgrade(jar),
+                    partition_key: partition_key.to_string(),
                     entries: Vec::new(),
                 });
                 sessions.len() - 1
@@ -133,6 +140,7 @@ fn header_permission_matches(
 
 pub(crate) fn cache_allows(
     jar: &CookieJarRef,
+    partition_key: &str,
     now_ms: u64,
     source_origin: &str,
     target: &Url,
@@ -143,7 +151,7 @@ pub(crate) fn cache_allows(
     let now_ms = effective_now_ms(jar, now_ms);
     let target_url = target_cache_key(target);
 
-    with_session_cache(jar, |entries| {
+    with_session_cache(jar, partition_key, |entries| {
         entries.retain(|entry| entry.expires_at_ms > now_ms);
 
         let method_allowed = is_cors_safelisted_method(requested_method)
@@ -170,12 +178,14 @@ fn permission_matches_grant(
     credentialed: bool,
 ) -> bool {
     match permission {
-        CorsPreflightPermission::Method(method) => Method::parse(method).is_some_and(|parsed| {
-            method_permission_matches(&entry.permission, parsed, credentialed)
-        }) || matches!(
-            &entry.permission,
-            CorsPreflightPermission::Method(existing) if existing == method
-        ),
+        CorsPreflightPermission::Method(method) => {
+            Method::parse(method).is_some_and(|parsed| {
+                method_permission_matches(&entry.permission, parsed, credentialed)
+            }) || matches!(
+                &entry.permission,
+                CorsPreflightPermission::Method(existing) if existing == method
+            )
+        }
         CorsPreflightPermission::HeaderName(header) => {
             header_permission_matches(&entry.permission, header, credentialed)
         }
@@ -218,6 +228,7 @@ fn store_permission(
 
 pub(crate) fn store_permissions(
     jar: &CookieJarRef,
+    partition_key: &str,
     now_ms: u64,
     source_origin: &str,
     target: &Url,
@@ -231,7 +242,7 @@ pub(crate) fn store_permissions(
     let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
     let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
 
-    with_session_cache(jar, |entries| {
+    with_session_cache(jar, partition_key, |entries| {
         entries.retain(|entry| entry.expires_at_ms > now_ms);
 
         for method in allowed_methods {
@@ -255,6 +266,21 @@ pub(crate) fn store_permissions(
             );
         }
     });
+}
+
+pub(crate) fn clear_permissions(
+    jar: &CookieJarRef,
+    partition_key: &str,
+    source_origin: &str,
+    target: &Url,
+) -> usize {
+    let target_url = target_cache_key(target);
+    with_session_cache(jar, partition_key, |entries| {
+        let before = entries.len();
+        entries
+            .retain(|entry| entry.source_origin != source_origin || entry.target_url != target_url);
+        before - entries.len()
+    })
 }
 
 pub(crate) fn build_preflight_request(
@@ -362,15 +388,11 @@ mod tests {
         response
     }
 
-    fn allows(
-        jar: &CookieJarRef,
-        now_ms: u64,
-        method: Method,
-        headers: &[&str],
-    ) -> bool {
+    fn allows(jar: &CookieJarRef, now_ms: u64, method: Method, headers: &[&str]) -> bool {
         let headers: Vec<String> = headers.iter().map(|name| (*name).to_string()).collect();
         cache_allows(
             jar,
+            "partition-a",
             now_ms,
             "http://page.test",
             &target(),
@@ -385,6 +407,7 @@ mod tests {
         let jar = jar();
         store_permissions(
             &jar,
+            "partition-a",
             0,
             "http://page.test",
             &target(),
@@ -393,6 +416,7 @@ mod tests {
         );
         store_permissions(
             &jar,
+            "partition-a",
             100,
             "http://page.test",
             &target(),
@@ -410,6 +434,7 @@ mod tests {
         let jar = jar();
         store_permissions(
             &jar,
+            "partition-a",
             0,
             "http://page.test",
             &target(),
@@ -418,6 +443,7 @@ mod tests {
         );
         store_permissions(
             &jar,
+            "partition-a",
             500,
             "http://page.test",
             &target(),
@@ -434,6 +460,7 @@ mod tests {
         let jar = jar();
         store_permissions(
             &jar,
+            "partition-a",
             0,
             "http://page.test",
             &target(),
@@ -445,6 +472,7 @@ mod tests {
 
         store_permissions(
             &jar,
+            "partition-a",
             100,
             "http://page.test",
             &target(),
@@ -457,10 +485,87 @@ mod tests {
     }
 
     #[test]
+    fn network_partition_key_isolates_permissions_inside_one_browser_session() {
+        let jar = jar();
+        store_permissions(
+            &jar,
+            "top-level-a",
+            0,
+            "http://page.test",
+            &target(),
+            false,
+            &permissions_response("60", "PUT", "x-token"),
+        );
+        let headers = vec!["x-token".to_string()];
+        assert!(cache_allows(
+            &jar,
+            "top-level-a",
+            1,
+            "http://page.test",
+            &target(),
+            false,
+            Method::Put,
+            &headers,
+        ));
+        assert!(!cache_allows(
+            &jar,
+            "top-level-b",
+            1,
+            "http://page.test",
+            &target(),
+            false,
+            Method::Put,
+            &headers,
+        ));
+    }
+
+    #[test]
+    fn clearing_one_partition_origin_and_url_keeps_unrelated_permissions() {
+        let jar = jar();
+        for partition in ["top-level-a", "top-level-b"] {
+            store_permissions(
+                &jar,
+                partition,
+                0,
+                "http://page.test",
+                &target(),
+                false,
+                &permissions_response("60", "PUT", "x-token"),
+            );
+        }
+        assert_eq!(
+            clear_permissions(&jar, "top-level-a", "http://page.test", &target()),
+            2
+        );
+        let headers = vec!["x-token".to_string()];
+        assert!(!cache_allows(
+            &jar,
+            "top-level-a",
+            1,
+            "http://page.test",
+            &target(),
+            false,
+            Method::Put,
+            &headers,
+        ));
+        assert!(cache_allows(
+            &jar,
+            "top-level-b",
+            1,
+            "http://page.test",
+            &target(),
+            false,
+            Method::Put,
+            &headers,
+        ));
+    }
+
+    #[test]
     fn wildcard_header_permission_never_covers_authorization() {
         let jar = jar();
         store_permissions(
             &jar,
+            "partition-a",
             0,
             "http://page.test",
             &target(),

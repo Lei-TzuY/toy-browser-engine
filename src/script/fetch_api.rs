@@ -46,6 +46,8 @@ const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
 #[derive(Debug, Clone)]
 struct CorsFetchState {
     source_origin: Origin,
+    /// Network partition token captured from the top-level environment.
+    partition_key: String,
     credentialed: bool,
     requested_method: Method,
     requested_headers: Vec<String>,
@@ -57,6 +59,7 @@ struct CorsFetchState {
 #[derive(Debug)]
 enum PendingFetchStage {
     Actual {
+        request: RequestData,
         cors: Option<CorsFetchState>,
         opaque: bool,
         integrity: String,
@@ -148,6 +151,7 @@ impl JsRuntime {
                             redirect,
                             redirect_context,
                             stage: PendingFetchStage::Actual {
+                                request,
                                 cors,
                                 opaque,
                                 integrity,
@@ -188,6 +192,7 @@ impl JsRuntime {
 
         match stage {
             PendingFetchStage::Actual {
+                request,
                 cors,
                 opaque,
                 integrity,
@@ -236,6 +241,9 @@ impl JsRuntime {
                                 cors.credentialed,
                                 &response,
                             ) {
+                                if cors.needs_preflight {
+                                    self.clear_cors_preflight_permissions(&request, cors);
+                                }
                                 self.reject_with(&promise, &error);
                                 return;
                             }
@@ -278,7 +286,12 @@ impl JsRuntime {
                     let value = host_value(HostObject::Response(response_data));
                     self.settle_resolve(&promise, value);
                 }
-                Err(error) => self.reject_with(&promise, &error),
+                Err(error) => {
+                    if let Some(cors) = cors.as_ref().filter(|state| state.needs_preflight) {
+                        self.clear_cors_preflight_permissions(&request, cors);
+                    }
+                    self.reject_with(&promise, &error);
+                }
             },
             PendingFetchStage::Preflight {
                 request,
@@ -288,11 +301,13 @@ impl JsRuntime {
                 let response = match result {
                     Ok(response) => response,
                     Err(error) => {
+                        self.clear_cors_preflight_permissions(&request, &cors);
                         self.reject_with(&promise, &error);
                         return;
                     }
                 };
                 if let Err(error) = validate_cors_preflight_response(&cors, &response) {
+                    self.clear_cors_preflight_permissions(&request, &cors);
                     self.reject_with(&promise, &error);
                     return;
                 }
@@ -308,6 +323,7 @@ impl JsRuntime {
                     redirect,
                     redirect_context,
                     stage: PendingFetchStage::Actual {
+                        request,
                         cors: Some(cors),
                         opaque: false,
                         integrity,
@@ -324,6 +340,7 @@ impl JsRuntime {
     fn cors_preflight_cache_allows(&self, request: &RequestData, cors: &CorsFetchState) -> bool {
         crate::fetch_cors_preflight::cache_allows(
             &self.cookie_jar,
+            &cors.partition_key,
             self.now_ms.max(0.0) as u64,
             &cors.source_origin.header_value(),
             &request.url,
@@ -341,11 +358,21 @@ impl JsRuntime {
     ) {
         crate::fetch_cors_preflight::store_permissions(
             &self.cookie_jar,
+            &cors.partition_key,
             self.now_ms.max(0.0) as u64,
             &cors.source_origin.header_value(),
             &request.url,
             cors.credentialed,
             response,
+        );
+    }
+
+    fn clear_cors_preflight_permissions(&self, request: &RequestData, cors: &CorsFetchState) {
+        crate::fetch_cors_preflight::clear_permissions(
+            &self.cookie_jar,
+            &cors.partition_key,
+            &cors.source_origin.header_value(),
+            &request.url,
         );
     }
 
@@ -492,6 +519,10 @@ impl JsRuntime {
                 }
                 Some(CorsFetchState {
                     source_origin: source_origin.clone(),
+                    // There are no nested browsing contexts yet; using the
+                    // environment origin deliberately over-partitions rather
+                    // than leaking preflight grants across top-level contexts.
+                    partition_key: source_origin.header_value(),
                     credentialed: request.credentials == RequestCredentials::Include,
                     requested_method: request.method,
                     requested_headers,
