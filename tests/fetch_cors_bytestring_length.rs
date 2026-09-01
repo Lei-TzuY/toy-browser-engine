@@ -10,8 +10,10 @@ fn url(input: &str) -> Url {
 
 fn browser_for(script: &str, endpoint: &str) -> (Browser, Rc<ManualNetwork>) {
     let page = "http://page.test/index.html";
+    let script_url = "http://page.test/app.js";
     let mut loader = MemoryLoader::new();
-    loader.insert(page, format!("<script>{script}</script>"));
+    loader.insert(page, "<script src=\"/app.js\"></script>");
+    loader.insert(script_url, script);
     let transport = Rc::new(ManualNetwork::new());
     let mut response =
         FetchResponse::synthetic(url(endpoint), 200, Some("text/plain"), b"ok".to_vec());
@@ -29,17 +31,12 @@ fn browser_for(script: &str, endpoint: &str) -> (Browser, Rc<ManualNetwork>) {
     (browser, transport)
 }
 
-fn js_latin1_escape(count: usize) -> String {
-    "\\u00e9".repeat(count)
-}
-
 #[test]
 fn latin1_accept_value_uses_bytestring_length_at_128_byte_boundary() {
     let endpoint = "http://api.test/data";
     let value = "é".repeat(128);
-    let js_value = js_latin1_escape(128);
     let script = format!(
-        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{js_value}\" }} }});"
+        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{value}\" }} }});"
     );
     let (mut browser, transport) = browser_for(&script, endpoint);
 
@@ -53,9 +50,9 @@ fn latin1_accept_value_uses_bytestring_length_at_128_byte_boundary() {
 #[test]
 fn latin1_accept_value_over_128_bytes_requires_preflight() {
     let endpoint = "http://api.test/data";
-    let js_value = js_latin1_escape(129);
+    let value = "é".repeat(129);
     let script = format!(
-        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{js_value}\" }} }});"
+        "fetch(\"{endpoint}\", {{ headers: {{ Accept: \"{value}\" }} }});"
     );
     let (mut browser, transport) = browser_for(&script, endpoint);
 
