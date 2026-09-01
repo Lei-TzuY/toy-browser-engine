@@ -334,9 +334,11 @@ fn parse_response(raw: &[u8]) -> Option<RawResponse> {
     let mut headers = HeaderMap::new();
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
-            // Straight from the wire: a server's own headers are not subject to
-            // the checks that protect us from a script.
-            headers.append_raw(name, value);
+            // Response field values use HTTP optional whitespace (SP / HTAB),
+            // not Rust's broader Unicode whitespace set. Reuse the validated
+            // HeaderMap path here so an edge NBSP/EM SPACE remains data instead
+            // of being silently erased by the older raw helper.
+            headers.append(name, value).ok()?;
         }
     }
 
@@ -408,6 +410,23 @@ mod tests {
             Some("text/css; charset=utf-8")
         );
         assert_eq!(response.body, b"body { color: red }");
+    }
+
+    #[test]
+    fn response_field_values_trim_http_ows_but_preserve_unicode_whitespace() {
+        let raw = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "X-Ascii:\t value \t\r\n",
+            "X-Unicode: \u{00a0}value\u{2003} \r\n",
+            "\r\n"
+        )
+        .as_bytes();
+        let response = parse_response(raw).expect("parsed");
+        assert_eq!(response.headers.get("x-ascii").as_deref(), Some("value"));
+        assert_eq!(
+            response.headers.get("x-unicode").as_deref(),
+            Some("\u{00a0}value\u{2003}")
+        );
     }
 
     #[test]
