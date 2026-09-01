@@ -71,7 +71,7 @@ fn is_cors_safelisted_range_value(value: &str) -> bool {
     start.len() < end.len() || (start.len() == end.len() && start <= end)
 }
 
-fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+pub(crate) fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
     let Some(value_len) = byte_string_len(value) else {
         return false;
     };
