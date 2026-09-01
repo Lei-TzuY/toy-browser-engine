@@ -60,10 +60,7 @@ impl HstsPolicy {
                     .strip_prefix('"')
                     .and_then(|v| v.strip_suffix('"'))
                     .unwrap_or(value);
-                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                max_age = digits.parse::<u64>().ok();
+                max_age = parse_delta_seconds_saturating(digits);
                 if max_age.is_none() {
                     return None;
                 }
@@ -80,6 +77,18 @@ impl HstsPolicy {
             include_subdomains,
         })
     }
+}
+
+fn parse_delta_seconds_saturating(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    let mut parsed = 0_u64;
+    for digit in value.bytes().map(|byte| u64::from(byte - b'0')) {
+        parsed = parsed.saturating_mul(10).saturating_add(digit);
+    }
+    Some(parsed)
 }
 
 fn trim_http_lws(value: &str) -> &str {
@@ -317,6 +326,22 @@ mod tests {
     }
 
     #[test]
+    fn oversized_delta_seconds_remains_valid_and_saturates() {
+        assert_eq!(parse_delta_seconds_saturating("18446744073709551615"), Some(u64::MAX));
+        assert_eq!(parse_delta_seconds_saturating("18446744073709551616"), Some(u64::MAX));
+        assert_eq!(parse_delta_seconds_saturating(&"9".repeat(256)), Some(u64::MAX));
+        assert_eq!(parse_delta_seconds_saturating(""), None);
+        assert_eq!(parse_delta_seconds_saturating("123x"), None);
+        assert_eq!(
+            HstsPolicy::parse("max-age=18446744073709551616"),
+            Some(HstsPolicy {
+                max_age_seconds: u64::MAX,
+                include_subdomains: false,
+            })
+        );
+    }
+
+    #[test]
     fn rejects_malformed_or_duplicated_standard_directives() {
         assert_eq!(HstsPolicy::parse("includeSubDomains"), None);
         assert_eq!(HstsPolicy::parse("max-age=abc"), None);
@@ -362,6 +387,19 @@ mod tests {
         assert!(cache.is_known_host("example.test", 5_000));
         assert!(cache.observe_response(&source, "max-age=0; includeSubDomains", 6_000));
         assert!(!cache.is_known_host("example.test", 6_000));
+    }
+
+    #[test]
+    fn oversized_max_age_keeps_policy_live_at_u64_clock_boundary() {
+        let mut cache = HstsCache::new();
+        let source = url("https://example.test/");
+        assert!(cache.observe_response(
+            &source,
+            "max-age=18446744073709551616; includeSubDomains",
+            1_000,
+        ));
+        assert!(cache.is_known_host("example.test", u64::MAX - 1));
+        assert!(cache.is_known_host("api.example.test", u64::MAX - 1));
     }
 
     #[test]
