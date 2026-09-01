@@ -105,14 +105,14 @@ fn malformed_allow_headers_member_rejects_even_when_requested_name_is_present() 
 }
 
 #[test]
-fn unicode_whitespace_cannot_authorize_a_method_member() {
+fn unicode_whitespace_cannot_hide_an_invalid_method_list_member() {
     let endpoint = "http://api.test/data";
     let (mut browser, transport) = browser_for(
         r#"fetch("http://api.test/data", { method: "PUT" })
              .then(function () { console.log("ok"); })
              .catch(function () { console.log("blocked"); });"#,
         endpoint,
-        preflight_response(endpoint, Some("\u{00a0}PUT"), None),
+        preflight_response(endpoint, Some("PUT,\u{00a0}PATCH"), None),
     );
 
     let first = browser.tick();
@@ -125,14 +125,14 @@ fn unicode_whitespace_cannot_authorize_a_method_member() {
 }
 
 #[test]
-fn unicode_whitespace_cannot_authorize_a_header_member() {
+fn unicode_whitespace_cannot_hide_an_invalid_header_list_member() {
     let endpoint = "http://api.test/data";
     let (mut browser, transport) = browser_for(
         r#"fetch("http://api.test/data", { headers: { "X-Token": "secret" } })
              .then(function () { console.log("ok"); })
              .catch(function () { console.log("blocked"); });"#,
         endpoint,
-        preflight_response(endpoint, None, Some("\u{2003}x-token")),
+        preflight_response(endpoint, None, Some("x-token,\u{2003}x-other")),
     );
 
     let first = browser.tick();
