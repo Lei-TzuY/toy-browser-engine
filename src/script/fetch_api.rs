@@ -2118,54 +2118,11 @@ fn conservative_same_site(source: &Url, target: &Url) -> bool {
 }
 
 fn is_cors_safelisted_method(method: Method) -> bool {
-    matches!(method, Method::Get | Method::Head | Method::Post)
-}
-
-fn contains_cors_unsafe_request_header_byte(value: &str) -> bool {
-    value.bytes().any(|byte| {
-        (byte < 0x20 && byte != b'\t') || byte == 0x7f || b"\"():<>?@[\\]{}".contains(&byte)
-    })
+    crate::fetch_cors::is_cors_safelisted_method(method)
 }
 
 fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
-    if value.len() > 128 {
-        return false;
-    }
-    match name {
-        "accept" => !contains_cors_unsafe_request_header_byte(value),
-        "accept-language" | "content-language" => value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b" *,-.;=".contains(&byte)),
-        "content-type" => {
-            if contains_cors_unsafe_request_header_byte(value) {
-                return false;
-            }
-            let mime = value
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
-            matches!(
-                mime.as_str(),
-                "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
-            )
-        }
-        "range" => is_cors_safelisted_range(value),
-        _ => false,
-    }
-}
-
-fn is_cors_safelisted_range(value: &str) -> bool {
-    let Some(range) = value.strip_prefix("bytes=") else {
-        return false;
-    };
-    let Some((start, end)) = range.split_once('-') else {
-        return false;
-    };
-    !start.is_empty()
-        && start.bytes().all(|byte| byte.is_ascii_digit())
-        && end.bytes().all(|byte| byte.is_ascii_digit())
+    crate::fetch_cors::is_cors_safelisted_request_header(name, value)
 }
 
 fn is_no_cors_safelisted_request_header_name(name: &str) -> bool {
@@ -2277,39 +2234,8 @@ fn retain_request_headers_for_mode(
     }
 }
 
-const CORS_SAFELIST_VALUE_SIZE_LIMIT: usize = 1024;
-
 fn cors_unsafe_request_header_names(request: &RequestData) -> Vec<String> {
-    let headers = request.headers.borrow();
-    let mut unsafe_names = Vec::new();
-    let mut potentially_unsafe_names = Vec::new();
-    let mut safelist_value_size = 0usize;
-
-    for (name, value) in headers.iter() {
-        // Origin is browser-owned and is inserted after this calculation for
-        // ordinary CORS requests. Keep the exclusion as defense-in-depth for
-        // internally constructed requests that already carry one.
-        if name == "origin" {
-            continue;
-        }
-
-        if is_cors_safelisted_request_header(name, value) {
-            potentially_unsafe_names.push(name.to_ascii_lowercase());
-            safelist_value_size = safelist_value_size.saturating_add(value.len());
-        } else {
-            unsafe_names.push(name.to_ascii_lowercase());
-        }
-    }
-
-    // Fetch promotes every otherwise-safelisted header name when the sum of
-    // their individual header-value byte lengths exceeds 1024 bytes.
-    if safelist_value_size > CORS_SAFELIST_VALUE_SIZE_LIMIT {
-        unsafe_names.extend(potentially_unsafe_names);
-    }
-
-    unsafe_names.sort();
-    unsafe_names.dedup();
-    unsafe_names
+    crate::fetch_cors::cors_unsafe_request_header_names(&request.headers.borrow())
 }
 
 fn build_cors_preflight_request(request: &RequestData, cors: &CorsFetchState) -> FetchRequest {
