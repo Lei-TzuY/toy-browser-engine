@@ -74,14 +74,29 @@ fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("authorization")
 }
 
-fn comma_tokens(value: Option<String>) -> Vec<String> {
-    value
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
-        .collect()
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+        })
+}
+
+fn comma_tokens(value: Option<String>) -> Result<Vec<String>, ()> {
+    let mut tokens = Vec::new();
+    for item in value.unwrap_or_default().split(',') {
+        let token = item.trim();
+        // HTTP list syntax permits empty list members around commas. Actual
+        // Access-Control-Allow-* members still have to satisfy method/field-name,
+        // both of which use the HTTP token grammar.
+        if token.is_empty() {
+            continue;
+        }
+        if !is_http_token(token) {
+            return Err(());
+        }
+        tokens.push(token.to_string());
+    }
+    Ok(tokens)
 }
 
 fn parse_max_age_seconds(value: &str) -> Option<u64> {
@@ -249,8 +264,14 @@ pub(crate) fn store_permissions(
     let target_url = target_cache_key(target);
     let expires_at_ms = now_ms.saturating_add(max_age.saturating_mul(1_000));
     let insert_new = max_age > 0;
-    let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
-    let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
+    // This function is called after validate_preflight_response(). Keep the
+    // cache fail-closed if an embedder calls it directly with malformed lists.
+    let Ok(allowed_methods) = comma_tokens(response.headers.get("access-control-allow-methods")) else {
+        return;
+    };
+    let Ok(allowed_headers) = comma_tokens(response.headers.get("access-control-allow-headers")) else {
+        return;
+    };
 
     with_session_cache(jar, |entries| {
         entries.retain(|entry| entry.expires_at_ms > now_ms);
@@ -325,8 +346,15 @@ pub(crate) fn validate_preflight_response(
     }
     validate_cors_response_origin(source_origin, credentialed, response)?;
 
+    let methods = comma_tokens(response.headers.get("access-control-allow-methods")).map_err(|_| {
+        FetchError::Blocked("CORS: malformed Access-Control-Allow-Methods header".into())
+    })?;
+    let allowed_headers =
+        comma_tokens(response.headers.get("access-control-allow-headers")).map_err(|_| {
+            FetchError::Blocked("CORS: malformed Access-Control-Allow-Headers header".into())
+        })?;
+
     if !is_cors_safelisted_method(requested_method) {
-        let methods = comma_tokens(response.headers.get("access-control-allow-methods"));
         let wildcard = !credentialed && methods.iter().any(|method| method == "*");
         let exact = methods
             .iter()
@@ -340,12 +368,11 @@ pub(crate) fn validate_preflight_response(
     }
 
     if !requested_headers.is_empty() {
-        let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
-        let wildcard = !credentialed && allowed.iter().any(|header| header == "*");
+        let wildcard = !credentialed && allowed_headers.iter().any(|header| header == "*");
         for requested in requested_headers {
             let wildcard_allows = wildcard && !is_cors_non_wildcard_request_header_name(requested);
             if !wildcard_allows
-                && !allowed
+                && !allowed_headers
                     .iter()
                     .any(|header| header.eq_ignore_ascii_case(requested))
             {
@@ -401,6 +428,37 @@ mod tests {
             method,
             &headers,
         )
+    }
+
+    #[test]
+    fn http_token_accepts_method_and_field_name_characters() {
+        for token in ["PUT", "x-token", "*", "x!#$%&'*+-.^_`|~"] {
+            assert!(is_http_token(token), "expected valid token: {token:?}");
+        }
+    }
+
+    #[test]
+    fn http_token_rejects_separators_whitespace_and_controls() {
+        for token in [
+            "",
+            "bad name",
+            "bad/name",
+            "\"quoted\"",
+            "bad\tname",
+            "bad\nname",
+        ] {
+            assert!(!is_http_token(token), "expected invalid token: {token:?}");
+        }
+    }
+
+    #[test]
+    fn comma_token_lists_tolerate_empty_members_but_reject_invalid_members() {
+        assert_eq!(
+            comma_tokens(Some("PUT, ,PATCH,,x-token".into())).unwrap(),
+            vec!["PUT", "PATCH", "x-token"]
+        );
+        assert!(comma_tokens(Some("PUT, bad method".into())).is_err());
+        assert!(comma_tokens(Some("x-token, bad/name".into())).is_err());
     }
 
     #[test]
