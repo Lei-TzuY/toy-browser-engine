@@ -213,6 +213,14 @@ fn effective_port(url: &Url) -> Option<u16> {
     })
 }
 
+fn default_http_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    }
+}
+
 fn same_origin(a: &Url, b: &Url) -> bool {
     is_http_family(a)
         && is_http_family(b)
@@ -227,11 +235,7 @@ fn is_downgrade(source: &Url, target: &Url) -> bool {
 
 fn origin_referrer(source: &Url) -> Option<String> {
     let port = effective_port(source)?;
-    let default = match source.scheme() {
-        "http" => 80,
-        "https" => 443,
-        _ => return None,
-    };
+    let default = default_http_port(source.scheme())?;
     let authority = if port == default {
         source.host().to_string()
     } else {
@@ -240,11 +244,46 @@ fn origin_referrer(source: &Url) -> Option<String> {
     Some(format!("{}://{authority}/", source.scheme()))
 }
 
+/// Serialize the stripped HTTP(S) URL using WHATWG default-port semantics.
+///
+/// The engine's general-purpose `Url` type intentionally preserves an explicit
+/// `:80`/`:443` in `port()`. A standards URL record instead stores a special
+/// scheme's default port as null, so its serializer omits that port. Referrer
+/// Policy consumes the URL record after stripping credentials/fragment, hence
+/// normalize the default port here rather than leaking the engine's internal
+/// preservation detail onto the wire.
+fn serialized_full_referrer(source: &Url) -> Option<String> {
+    let default = default_http_port(source.scheme())?;
+    if source.host().is_empty() {
+        return None;
+    }
+
+    let mut serialized = format!("{}://{}", source.scheme(), source.host());
+    if let Some(port) = source.port() {
+        if port != default {
+            serialized.push(':');
+            serialized.push_str(&port.to_string());
+        }
+    }
+
+    let path = source.path();
+    if path.is_empty() {
+        serialized.push('/');
+    } else {
+        serialized.push_str(path);
+    }
+    if let Some(query) = source.query() {
+        serialized.push('?');
+        serialized.push_str(query);
+    }
+    Some(serialized)
+}
+
 fn full_referrer(source: &Url) -> Option<String> {
     if !is_http_family(source) || source.host().is_empty() {
         return None;
     }
-    let serialized = source.without_fragment().to_string();
+    let serialized = serialized_full_referrer(source)?;
     if serialized.chars().count() > 4096 {
         origin_referrer(source)
     } else {
@@ -371,15 +410,32 @@ mod tests {
     }
 
     #[test]
-    fn default_ports_are_same_origin_but_nondefault_ports_are_not() {
-        let source = url("https://example.test:443/path");
+    fn default_ports_are_same_origin_and_omitted_from_referrers() {
+        let source = url("https://example.test:443/path?q=1#secret");
         assert_eq!(
             ReferrerPolicy::SameOrigin.compute(&source, &url("https://example.test/next")),
-            Some("https://example.test:443/path".into())
+            Some("https://example.test/path?q=1".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::Origin.compute(&source, &url("https://other.test/next")),
+            Some("https://example.test/".into())
         );
         assert_eq!(
             ReferrerPolicy::SameOrigin.compute(&source, &url("https://example.test:444/next")),
             None
+        );
+    }
+
+    #[test]
+    fn nondefault_ports_remain_in_full_and_origin_referrers() {
+        let source = url("https://example.test:8443/path?q=1#secret");
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.compute(&source, &url("https://other.test/next")),
+            Some("https://example.test:8443/path?q=1".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::Origin.compute(&source, &url("https://other.test/next")),
+            Some("https://example.test:8443/".into())
         );
     }
 
