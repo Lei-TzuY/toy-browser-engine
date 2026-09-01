@@ -455,7 +455,7 @@ impl JsRuntime {
             // for embedders that may construct RequestData directly in Rust.
             {
                 let mut headers = request.headers.borrow_mut();
-                retain_request_headers_for_mode(&mut headers, RequestMode::NoCors);
+                retain_request_headers_for_mode(&mut headers, RequestMode::NoCors, true);
             }
         }
 
@@ -477,7 +477,7 @@ impl JsRuntime {
                 // into a CORS-filtered response.
                 {
                     let mut headers = request.headers.borrow_mut();
-                    retain_request_headers_for_mode(&mut headers, RequestMode::Cors);
+                    retain_request_headers_for_mode(&mut headers, RequestMode::Cors, false);
                 }
 
                 let requested_headers = cors_unsafe_request_header_names(&request);
@@ -544,6 +544,11 @@ impl JsRuntime {
 
     /// The `Request` constructor, shared with `fetch`'s first argument.
     fn build_request(&mut self, input: JsValue, init: JsValue) -> Result<RequestData, FetchError> {
+        let inherited_request =
+            matches!(&input, JsValue::Host(host) if host.as_request().is_some());
+        let init_has_members =
+            matches!(&init, JsValue::Object(props) if !props.borrow().is_empty());
+
         let (
             mut url,
             mut method,
@@ -651,10 +656,12 @@ impl JsRuntime {
             url = self.resolve_fetch_url(&url.to_string())?;
         }
 
-        // RequestInit is processed before the Request header guard is fixed, so
-        // apply the final mode's guard to the complete initial header list. This
-        // also handles `new Request(existing, { mode: "no-cors" })` correctly.
-        retain_request_headers_for_mode(&mut headers, mode);
+        // RequestInit is processed before the Request header guard is fixed. An
+        // unmodified Request copy is special: privileged no-CORS headers seeded
+        // by browser code survive it. Any non-empty RequestInit instead runs the
+        // headers back through the unprivileged guard and strips privileged Range.
+        let preserve_privileged_no_cors = inherited_request && !init_has_members;
+        retain_request_headers_for_mode(&mut headers, mode, preserve_privileged_no_cors);
 
         Ok(RequestData {
             url,
@@ -1857,9 +1864,12 @@ impl JsRuntime {
                 }
                 if headers.is_request_no_cors() {
                     let normalized_name = name.trim().to_ascii_lowercase();
-                    if !is_cors_safelisted_request_header(&normalized_name, &combined) {
+                    if !is_no_cors_safelisted_request_header(&normalized_name, &combined) {
                         return JsValue::Undefined;
                     }
+                    // A successful unprivileged mutation invalidates every
+                    // browser-owned privileged no-CORS header, including Range.
+                    remove_privileged_no_cors_request_headers(&mut candidate);
                 }
                 *headers.borrow_mut() = candidate;
                 JsValue::Undefined
@@ -1868,8 +1878,21 @@ impl JsRuntime {
                 if headers.is_request_guard() && is_forbidden_request_header_name(&name) {
                     return JsValue::Undefined;
                 }
-                if headers.is_request_no_cors() && !is_no_cors_safelisted_request_header_name(&name)
-                {
+                if headers.is_request_no_cors() {
+                    if !is_no_cors_safelisted_request_header_name(&name)
+                        && !is_privileged_no_cors_request_header_name(&name)
+                    {
+                        return JsValue::Undefined;
+                    }
+                    // Fetch returns before privileged-header cleanup when the
+                    // requested field is absent. A successful deletion does the
+                    // cleanup, even when a different safelisted field was named.
+                    if !headers.borrow().has(&name) {
+                        return JsValue::Undefined;
+                    }
+                    let mut map = headers.borrow_mut();
+                    map.delete(&name);
+                    remove_privileged_no_cors_request_headers(&mut map);
                     return JsValue::Undefined;
                 }
                 headers.borrow_mut().delete(&name);
@@ -2148,8 +2171,21 @@ fn is_cors_safelisted_range(value: &str) -> bool {
 fn is_no_cors_safelisted_request_header_name(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "accept" | "accept-language" | "content-language" | "content-type" | "range"
+        "accept" | "accept-language" | "content-language" | "content-type"
     )
+}
+
+fn is_no_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+    is_no_cors_safelisted_request_header_name(name)
+        && is_cors_safelisted_request_header(&name.trim().to_ascii_lowercase(), value)
+}
+
+fn is_privileged_no_cors_request_header_name(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("range")
+}
+
+fn remove_privileged_no_cors_request_headers(headers: &mut HeaderMap) {
+    headers.delete("range");
 }
 
 fn is_forbidden_request_header_name(name: &str) -> bool {
@@ -2224,12 +2260,17 @@ fn contains_forbidden_override_method(value: &str) -> bool {
     false
 }
 
-fn retain_request_headers_for_mode(headers: &mut HeaderMap, mode: RequestMode) {
+fn retain_request_headers_for_mode(
+    headers: &mut HeaderMap,
+    mode: RequestMode,
+    preserve_privileged_no_cors: bool,
+) {
     for name in headers.names() {
         let value = headers.get(&name).unwrap_or_default();
+        let allowed_no_cors = is_no_cors_safelisted_request_header(&name, &value)
+            || preserve_privileged_no_cors && is_privileged_no_cors_request_header_name(&name);
         if is_forbidden_request_header(&name, &value)
-            || mode == RequestMode::NoCors
-                && !is_cors_safelisted_request_header(&name.to_ascii_lowercase(), &value)
+            || mode == RequestMode::NoCors && !allowed_no_cors
         {
             headers.delete(&name);
         }
@@ -2322,3 +2363,176 @@ fn validate_cors_preflight_response(
 }
 
 include!("fetch_body_clone_ext.rs");
+
+#[cfg(test)]
+mod privileged_range_tests {
+    use super::*;
+
+    fn runtime() -> JsRuntime {
+        let mut runtime = JsRuntime::new();
+        runtime.url = Url::parse("http://page.test/index.html").expect("valid page URL");
+        runtime
+    }
+
+    fn privileged_request() -> RequestData {
+        let mut headers = HeaderMap::new();
+        headers.append_raw("accept", "text/plain");
+        let request = RequestData {
+            url: Url::parse("http://page.test/data").expect("valid request URL"),
+            method: Method::Get,
+            headers: request_headers_ref(headers, RequestMode::NoCors),
+            body: Body::absent(),
+            signal: None,
+            mode: RequestMode::NoCors,
+            credentials: RequestCredentials::SameOrigin,
+            redirect: FetchRedirectMode::Follow,
+            referrer: RequestReferrer::Client,
+            referrer_policy: None,
+            integrity: String::new(),
+        };
+        request.add_range_header(0, Some(99));
+        request
+    }
+
+    fn request_value(request: RequestData) -> JsValue {
+        host_value(HostObject::Request(request))
+    }
+
+    #[test]
+    fn unmodified_no_cors_request_copy_preserves_privileged_range() {
+        let mut runtime = runtime();
+        let copy = runtime
+            .build_request(request_value(privileged_request()), JsValue::Undefined)
+            .expect("unmodified copy succeeds");
+        assert_eq!(
+            copy.headers.borrow().get("range").as_deref(),
+            Some("bytes=0-99")
+        );
+
+        let empty_init = JsValue::Object(Rc::new(RefCell::new(Vec::new())));
+        let empty_copy = runtime
+            .build_request(request_value(privileged_request()), empty_init)
+            .expect("empty init is still unmodified");
+        assert_eq!(
+            empty_copy.headers.borrow().get("range").as_deref(),
+            Some("bytes=0-99")
+        );
+    }
+
+    #[test]
+    fn nonempty_request_init_strips_inherited_privileged_range() {
+        let mut runtime = runtime();
+        let init = JsValue::Object(Rc::new(RefCell::new(vec![(
+            "credentials".to_string(),
+            JsValue::Str("omit".to_string()),
+        )])));
+        let copy = runtime
+            .build_request(request_value(privileged_request()), init)
+            .expect("modified copy succeeds");
+        assert!(!copy.headers.borrow().has("range"));
+        assert_eq!(
+            copy.headers.borrow().get("accept").as_deref(),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
+    fn successful_no_cors_mutation_removes_privileged_range() {
+        let mut runtime = runtime();
+        let request = privileged_request();
+        runtime.headers_method(
+            &request.headers,
+            "set",
+            &[
+                JsValue::Str("accept".to_string()),
+                JsValue::Str("text/html".to_string()),
+            ],
+        );
+        assert_eq!(
+            request.headers.borrow().get("accept").as_deref(),
+            Some("text/html")
+        );
+        assert!(!request.headers.borrow().has("range"));
+    }
+
+    #[test]
+    fn rejected_no_cors_mutations_leave_privileged_range_untouched() {
+        let mut runtime = runtime();
+        let request = privileged_request();
+        runtime.headers_method(
+            &request.headers,
+            "set",
+            &[
+                JsValue::Str("x-secret".to_string()),
+                JsValue::Str("blocked".to_string()),
+            ],
+        );
+        runtime.headers_method(
+            &request.headers,
+            "set",
+            &[
+                JsValue::Str("range".to_string()),
+                JsValue::Str("bytes=200-299".to_string()),
+            ],
+        );
+        assert_eq!(
+            request.headers.borrow().get("range").as_deref(),
+            Some("bytes=0-99")
+        );
+        assert!(!request.headers.borrow().has("x-secret"));
+    }
+
+    #[test]
+    fn no_cors_delete_only_purges_privileged_range_after_real_deletion() {
+        let mut runtime = runtime();
+        let request = privileged_request();
+        runtime.headers_method(
+            &request.headers,
+            "delete",
+            &[JsValue::Str("content-language".to_string())],
+        );
+        assert!(request.headers.borrow().has("range"));
+
+        runtime.headers_method(
+            &request.headers,
+            "delete",
+            &[JsValue::Str("accept".to_string())],
+        );
+        assert!(!request.headers.borrow().has("accept"));
+        assert!(!request.headers.borrow().has("range"));
+    }
+
+    #[test]
+    fn fetch_wire_boundary_preserves_browser_owned_no_cors_range() {
+        let mut runtime = runtime();
+        let (request, _, _, _) = runtime
+            .prepare_request(&[request_value(privileged_request())])
+            .expect("privileged request prepares");
+        let wire = request.to_wire();
+        assert_eq!(wire.headers.get("range").as_deref(), Some("bytes=0-99"));
+    }
+
+    #[test]
+    fn browser_range_helper_serializes_open_and_closed_ranges() {
+        let request = privileged_request();
+        request.headers.borrow_mut().delete("range");
+        request.add_range_header(25, None);
+        assert_eq!(
+            request.headers.borrow().get("range").as_deref(),
+            Some("bytes=25-")
+        );
+
+        request.headers.borrow_mut().delete("range");
+        request.add_range_header(25, Some(50));
+        assert_eq!(
+            request.headers.borrow().get("range").as_deref(),
+            Some("bytes=25-50")
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Range end must not precede its start")]
+    fn browser_range_helper_rejects_reversed_bounds() {
+        privileged_request().add_range_header(100, Some(99));
+    }
+}

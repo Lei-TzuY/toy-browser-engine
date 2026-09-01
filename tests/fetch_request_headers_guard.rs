@@ -68,19 +68,26 @@ fn no_cors_constructor_immediately_exposes_only_safelisted_headers() {
                 headers: {
                     'X-Token': 'secret',
                     'Content-Type': 'application/json',
-                    'Accept': 'text/html'
+                    'Accept': 'text/html',
+                    'Range': 'bytes=0-99'
                 },
                 body: 'payload'
             });
             console.log(request.headers.get('x-token') === null ? 'unsafe-filtered' : 'unsafe-leak');
             console.log(request.headers.get('content-type') === null ? 'type-filtered' : 'type-leak');
             console.log('accept:' + request.headers.get('accept'));
+            console.log(request.headers.get('range') === null ? 'range-filtered' : 'range-leak');
         "#,
     );
 
     assert_eq!(
         browser.document().runtime.console,
-        vec!["unsafe-filtered", "type-filtered", "accept:text/html"]
+        vec![
+            "unsafe-filtered",
+            "type-filtered",
+            "accept:text/html",
+            "range-filtered",
+        ]
     );
 }
 
@@ -133,21 +140,48 @@ fn no_cors_append_checks_the_combined_value_limit() {
 }
 
 #[test]
-fn no_cors_range_allows_one_simple_range_but_rejects_combined_ranges() {
+fn no_cors_script_cannot_create_privileged_range_header() {
     let (browser, _) = browser_for(
         r#"
             var request = new Request('/data', { mode: 'no-cors' });
             request.headers.set('range', 'bytes=0-99');
-            console.log('range:' + request.headers.get('range'));
+            console.log(request.headers.get('range') === null ? 'set-blocked' : 'set-leak');
             request.headers.append('range', 'bytes=200-299');
-            console.log('after:' + request.headers.get('range'));
+            console.log(request.headers.get('range') === null ? 'append-blocked' : 'append-leak');
         "#,
     );
 
     assert_eq!(
         browser.document().runtime.console,
-        vec!["range:bytes=0-99", "after:bytes=0-99"]
+        vec!["set-blocked", "append-blocked"]
     );
+}
+
+#[test]
+fn cors_range_remains_safelisted_for_cross_origin_preflight_classification() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"
+            fetch('http://api.test/data', {
+                headers: { 'Range': 'bytes=0-99' }
+            }).then(function (response) { console.log(response.status); });
+        "#,
+    );
+    let mut response =
+        FetchResponse::synthetic(url(endpoint), 200, Some("text/plain"), b"ok".to_vec());
+    response
+        .headers
+        .append_raw("access-control-allow-origin", "*");
+    transport.respond(endpoint, response);
+
+    assert_eq!(browser.tick().requests_sent, 1);
+    let sent = transport.requests();
+    assert_eq!(sent.len(), 1, "a safelisted Range must not trigger OPTIONS");
+    assert_eq!(sent[0].headers.get("range").as_deref(), Some("bytes=0-99"));
+
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(browser.document().runtime.console, vec!["200"]);
 }
 
 #[test]

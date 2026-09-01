@@ -309,6 +309,24 @@ pub struct RequestData {
 }
 
 impl RequestData {
+    /// Add a browser-owned HTTP `Range` header.
+    ///
+    /// Fetch treats `Range` as a privileged no-CORS request header: web
+    /// content cannot create it through a request-no-cors Headers object, but
+    /// browser features such as media/download fetches may seed it internally.
+    /// Such state survives an unmodified Request copy and is removed once
+    /// unprivileged code successfully modifies that no-CORS header list.
+    pub fn add_range_header(&self, first: u64, last: Option<u64>) {
+        if let Some(last) = last {
+            assert!(first <= last, "Range end must not precede its start");
+        }
+        let value = match last {
+            Some(last) => format!("bytes={first}-{last}"),
+            None => format!("bytes={first}-"),
+        };
+        self.headers.borrow_mut().append_raw("range", &value);
+    }
+
     /// The wire request this describes.
     ///
     /// Reads this internal request copy without consuming it. Script-visible
