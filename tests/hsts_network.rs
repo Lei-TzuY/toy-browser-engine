@@ -45,6 +45,40 @@ fn secure_response_learns_hsts_and_later_http_request_is_upgraded() {
 }
 
 #[test]
+fn oversized_max_age_is_learned_instead_of_treated_as_malformed() {
+    let clock = Rc::new(ManualClock::new());
+    let transport = Rc::new(ManualNetwork::new());
+    transport.set_auto_complete(true);
+
+    let mut learned = FetchResponse::synthetic(
+        url("https://overflow.test/bootstrap"),
+        200,
+        Some("text/plain"),
+        Vec::new(),
+    );
+    learned.headers.append_raw(
+        "strict-transport-security",
+        "max-age=184467440737095516160000000000000000000; includeSubDomains",
+    );
+    transport.respond("https://overflow.test/bootstrap", learned);
+    transport.respond_text("https://api.overflow.test/data", "upgraded");
+
+    let network = HstsNetwork::with_new_cache(transport.clone(), clock.clone());
+    network.start(1, FetchRequest::get(url("https://overflow.test/bootstrap")));
+    let first = network.poll();
+    assert_eq!(first.len(), 1);
+    assert!(network.cache().borrow().is_known_host("overflow.test", 0));
+
+    clock.set(9_000_000_000_000.0);
+    network.start(2, FetchRequest::get(url("http://api.overflow.test/data")));
+    assert_eq!(
+        transport.requests().last().unwrap().url.to_string(),
+        "https://api.overflow.test/data"
+    );
+    assert_eq!(network.poll().len(), 1);
+}
+
+#[test]
 fn upgrade_applies_port_mapping_before_transport_sees_request() {
     let clock = Rc::new(ManualClock::new());
     let transport = Rc::new(ManualNetwork::new());
