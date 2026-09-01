@@ -2,7 +2,7 @@
 //  hsts.rs — HTTP Strict Transport Security policy/cache
 // ============================================================
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use crate::net::Url;
@@ -18,28 +18,48 @@ impl HstsPolicy {
     /// Parse the RFC 6797 directives needed by a user agent.
     ///
     /// `max-age` is mandatory and may be quoted. Directive names are
-    /// case-insensitive; unknown extension directives are ignored. Repeating
-    /// either standardized directive invalidates the field rather than making
-    /// the result depend on ordering.
+    /// case-insensitive; unknown extension directives are ignored only after
+    /// they have passed the field grammar. Repeating any directive invalidates
+    /// the field, matching RFC 6797's all-directives uniqueness requirement.
     pub fn parse(header: &str) -> Option<HstsPolicy> {
         let mut max_age = None;
         let mut include_subdomains = false;
-        let mut saw_include_subdomains = false;
+        let mut seen = HashSet::new();
 
         for raw in header.split(';') {
-            let directive = raw.trim();
+            let directive = trim_http_ows(raw);
             if directive.is_empty() {
                 continue;
             }
+
             let (name, value) = match directive.split_once('=') {
-                Some((name, value)) => (name.trim(), Some(value.trim())),
+                Some((name, value)) => {
+                    // RFC 6797's directive grammar does not permit whitespace
+                    // around '='. Only OWS surrounding the whole directive is
+                    // tolerated by the enclosing HTTP field parsing.
+                    if name != trim_http_ows(name) || value != trim_http_ows(value) {
+                        return None;
+                    }
+                    (name, Some(value))
+                }
                 None => (directive, None),
             };
 
-            if name.eq_ignore_ascii_case("max-age") {
-                if max_age.is_some() {
+            if !is_http_token(name) {
+                return None;
+            }
+            let normalized_name = name.to_ascii_lowercase();
+            if !seen.insert(normalized_name.clone()) {
+                return None;
+            }
+
+            if let Some(value) = value {
+                if !is_directive_value(value) {
                     return None;
                 }
+            }
+
+            if normalized_name == "max-age" {
                 let value = value?;
                 let digits = value
                     .strip_prefix('"')
@@ -52,11 +72,10 @@ impl HstsPolicy {
                 if max_age.is_none() {
                     return None;
                 }
-            } else if name.eq_ignore_ascii_case("includesubdomains") {
-                if saw_include_subdomains || value.is_some() {
+            } else if normalized_name == "includesubdomains" {
+                if value.is_some() {
                     return None;
                 }
-                saw_include_subdomains = true;
                 include_subdomains = true;
             }
         }
@@ -66,6 +85,50 @@ impl HstsPolicy {
             include_subdomains,
         })
     }
+}
+
+fn trim_http_ows(value: &str) -> &str {
+    value.trim_matches([' ', '\t'])
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            matches!(
+                byte,
+                b'!' | b'#'..=b'\'' | b'*' | b'+' | b'-' | b'.' | b'0'..=b'9'
+                    | b'A'..=b'Z' | b'^' | b'_' | b'`' | b'a'..=b'z' | b'|'
+                    | b'~'
+            )
+        })
+}
+
+fn is_directive_value(value: &str) -> bool {
+    is_http_token(value) || is_http_quoted_string(value)
+}
+
+fn is_http_quoted_string(value: &str) -> bool {
+    let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+        return false;
+    };
+    let mut escaped = false;
+    for byte in inner.bytes() {
+        if escaped {
+            // RFC 2616 quoted-pair accepts an escaped CHAR; reject controls
+            // that cannot appear safely in this engine's HeaderMap model.
+            if byte < 0x20 || byte == 0x7f {
+                return false;
+            }
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' || byte < 0x20 || byte == 0x7f {
+            return false;
+        }
+    }
+    !escaped
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,6 +334,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_and_duplicate_extension_directives() {
+        for header in [
+            "max-age=60; bad directive",
+            "max-age=60; preload=bad value",
+            "max-age=60; preload=\"unterminated",
+            "max-age=60; preload=\"bad\\\"tail\"oops",
+            "max-age=60; preload; PRELOAD",
+        ] {
+            assert_eq!(HstsPolicy::parse(header), None, "header {header:?}");
+        }
+
+        assert!(HstsPolicy::parse("max-age=60; preload=token").is_some());
+        assert!(HstsPolicy::parse("max-age=60; ext=\"quoted value\"").is_some());
+    }
+
+    #[test]
+    fn directive_grammar_uses_http_ows_not_unicode_whitespace() {
+        assert!(HstsPolicy::parse("\tmax-age=60\t;\tincludeSubDomains\t").is_some());
+        assert_eq!(HstsPolicy::parse("max-age =60"), None);
+        assert_eq!(HstsPolicy::parse("max-age= 60"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60;\u{00a0}preload"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60;preload\u{2003}"), None);
+    }
+
+    #[test]
     fn secure_response_adds_and_zero_age_removes_policy() {
         let mut cache = HstsCache::new();
         let source = url("https://example.test/");
@@ -278,6 +366,14 @@ mod tests {
         assert!(cache.is_known_host("example.test", 5_000));
         assert!(cache.observe_response(&source, "max-age=0; includeSubDomains", 6_000));
         assert!(!cache.is_known_host("example.test", 6_000));
+    }
+
+    #[test]
+    fn malformed_extension_directive_does_not_poison_hsts_cache() {
+        let mut cache = HstsCache::new();
+        let source = url("https://example.test/");
+        assert!(!cache.observe_response(&source, "max-age=60; bad directive", 0));
+        assert!(!cache.is_known_host("example.test", 1));
     }
 
     #[test]
