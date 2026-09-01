@@ -225,6 +225,15 @@ fn is_downgrade(source: &Url, target: &Url) -> bool {
     source.scheme() == "https" && target.scheme() == "http"
 }
 
+fn serialized_host_for_authority(source: &Url) -> String {
+    let host = source.host();
+    if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
 fn origin_referrer(source: &Url) -> Option<String> {
     let port = effective_port(source)?;
     let default = match source.scheme() {
@@ -232,10 +241,11 @@ fn origin_referrer(source: &Url) -> Option<String> {
         "https" => 443,
         _ => return None,
     };
+    let host = serialized_host_for_authority(source);
     let authority = if port == default {
-        source.host().to_string()
+        host
     } else {
-        format!("{}:{port}", source.host())
+        format!("{host}:{port}")
     };
     Some(format!("{}://{authority}/", source.scheme()))
 }
@@ -380,6 +390,29 @@ mod tests {
         assert_eq!(
             ReferrerPolicy::SameOrigin.compute(&source, &url("https://example.test:444/next")),
             None
+        );
+    }
+
+    #[test]
+    fn ipv6_origins_are_serialized_with_brackets() {
+        let source = url("https://[2001:db8::1]/private?q=1");
+        assert_eq!(
+            ReferrerPolicy::Origin.compute(&source, &url("https://example.test/")),
+            Some("https://[2001:db8::1]/".into())
+        );
+        assert_eq!(
+            ReferrerPolicy::StrictOriginWhenCrossOrigin
+                .compute(&source, &url("https://[2001:db8::2]/next")),
+            Some("https://[2001:db8::1]/".into())
+        );
+    }
+
+    #[test]
+    fn ipv6_origin_keeps_nondefault_port_after_bracketed_host() {
+        let source = url("https://[2001:db8::1]:8443/private");
+        assert_eq!(
+            ReferrerPolicy::Origin.compute(&source, &url("https://example.test/")),
+            Some("https://[2001:db8::1]:8443/".into())
         );
     }
 
