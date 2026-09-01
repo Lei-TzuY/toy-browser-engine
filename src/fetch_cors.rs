@@ -16,6 +16,10 @@ fn contains_cors_unsafe_request_header_byte(value: &str) -> bool {
     })
 }
 
+fn trim_http_whitespace(value: &str) -> &str {
+    value.trim_matches(|ch| matches!(ch, '\t' | '\n' | '\r' | ' '))
+}
+
 /// Parse Fetch's CORS-safelisted single byte-range form.
 ///
 /// The safelist deliberately excludes suffix ranges such as `bytes=-500`, even
@@ -65,11 +69,7 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
             if contains_cors_unsafe_request_header_byte(value) {
                 return false;
             }
-            let mime = value
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
+            let mime = trim_http_whitespace(value.split(';').next().unwrap_or(""))
                 .to_ascii_lowercase();
             matches!(
                 mime.as_str(),
@@ -165,6 +165,17 @@ pub(crate) fn validate_cors_response_origin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cors_safelisted_content_type_trims_only_http_whitespace() {
+        for value in ["text/plain", " text/plain ", "\ttext/plain\t"] {
+            assert!(is_cors_safelisted_request_header("content-type", value), "{value:?}");
+        }
+
+        for value in ["\u{00a0}text/plain", "text/plain\u{00a0}", "\u{2003}text/plain"] {
+            assert!(!is_cors_safelisted_request_header("content-type", value), "{value:?}");
+        }
+    }
 
     #[test]
     fn cors_safelisted_range_accepts_single_forward_byte_ranges() {
