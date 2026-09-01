@@ -12,15 +12,30 @@ pub enum CorsSettingsAttribute {
     UseCredentials,
 }
 
-/// Credential mode selected when a CORS settings attribute enables CORS.
-///
-/// This intentionally models the HTML attribute's effect without tying it to
-/// one particular network backend. A later fetch integration can translate
-/// these values to its own request representation.
+/// Fetch request mode selected by an HTML CORS settings attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorsRequestMode {
+    NoCors,
+    Cors,
+}
+
+/// Credential mode selected when fetching an HTML subresource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CorsCredentialsMode {
     SameOrigin,
     Include,
+}
+
+/// Complete Fetch-facing request settings implied by an HTML `crossorigin`
+/// attribute.
+///
+/// The missing-attribute case matters: ordinary element loads are `no-cors`
+/// requests with credentials included, while anonymous CORS switches to
+/// `cors` + `same-origin` credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CorsRequestSettings {
+    pub mode: CorsRequestMode,
+    pub credentials_mode: CorsCredentialsMode,
 }
 
 impl CorsSettingsAttribute {
@@ -65,13 +80,35 @@ pub fn parse_cors_settings_attribute(value: Option<&str>) -> Option<CorsSettings
     }
 }
 
+/// Resolve the complete Fetch request semantics for an HTML CORS settings
+/// attribute.
+///
+/// HTML's potentially-CORS-enabled fetch behavior distinguishes the absent
+/// attribute from the anonymous state:
+///
+/// - missing: `no-cors` + `include`
+/// - anonymous / empty / invalid: `cors` + `same-origin`
+/// - use-credentials: `cors` + `include`
+pub fn cors_request_settings(value: Option<&str>) -> CorsRequestSettings {
+    match parse_cors_settings_attribute(value) {
+        None => CorsRequestSettings {
+            mode: CorsRequestMode::NoCors,
+            credentials_mode: CorsCredentialsMode::Include,
+        },
+        Some(setting) => CorsRequestSettings {
+            mode: CorsRequestMode::Cors,
+            credentials_mode: setting.credentials_mode(),
+        },
+    }
+}
+
 /// Whether the presence/value of `crossorigin` enables a CORS-mode request.
 ///
 /// Any present value enables CORS because invalid and empty values resolve to
 /// the Anonymous state. Only a missing attribute leaves the element in its
 /// non-CORS request mode.
 pub fn cors_enabled(value: Option<&str>) -> bool {
-    parse_cors_settings_attribute(value).is_some()
+    matches!(cors_request_settings(value).mode, CorsRequestMode::Cors)
 }
 
 #[cfg(test)]
@@ -82,6 +119,13 @@ mod tests {
     fn missing_attribute_means_no_cors() {
         assert_eq!(parse_cors_settings_attribute(None), None);
         assert!(!cors_enabled(None));
+        assert_eq!(
+            cors_request_settings(None),
+            CorsRequestSettings {
+                mode: CorsRequestMode::NoCors,
+                credentials_mode: CorsCredentialsMode::Include,
+            }
+        );
     }
 
     #[test]
@@ -94,6 +138,15 @@ mod tests {
             parse_cors_settings_attribute(Some("")),
             Some(CorsSettingsAttribute::Anonymous)
         );
+        for value in [Some("anonymous"), Some("")] {
+            assert_eq!(
+                cors_request_settings(value),
+                CorsRequestSettings {
+                    mode: CorsRequestMode::Cors,
+                    credentials_mode: CorsCredentialsMode::SameOrigin,
+                }
+            );
+        }
     }
 
     #[test]
@@ -106,6 +159,13 @@ mod tests {
             CorsSettingsAttribute::UseCredentials.credentials_mode(),
             CorsCredentialsMode::Include
         );
+        assert_eq!(
+            cors_request_settings(Some("USE-CREDENTIALS")),
+            CorsRequestSettings {
+                mode: CorsRequestMode::Cors,
+                credentials_mode: CorsCredentialsMode::Include,
+            }
+        );
     }
 
     #[test]
@@ -115,6 +175,13 @@ mod tests {
                 parse_cors_settings_attribute(Some(value)),
                 Some(CorsSettingsAttribute::Anonymous),
                 "unexpected parse for {value:?}"
+            );
+            assert_eq!(
+                cors_request_settings(Some(value)),
+                CorsRequestSettings {
+                    mode: CorsRequestMode::Cors,
+                    credentials_mode: CorsCredentialsMode::SameOrigin,
+                }
             );
         }
     }
