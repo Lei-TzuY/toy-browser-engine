@@ -316,6 +316,17 @@ impl ImageCache {
         self.entries
             .insert(url.without_fragment().to_string(), Ok(Rc::new(image)));
     }
+
+    /// Record a failed policy fetch or decode without bypassing the cache.
+    ///
+    /// Policy-aware document loaders do their network work above ImageCache,
+    /// but broken images must retain the same negative-cache semantics as the
+    /// legacy `fetch()` path so layout/paint and future refreshes do not retry
+    /// a known failure forever.
+    pub fn insert_error(&mut self, url: &Url, message: impl Into<String>) {
+        self.entries
+            .insert(url.without_fragment().to_string(), Err(message.into()));
+    }
 }
 
 fn load_and_decode(url: &Url, loader: &dyn ResourceLoader) -> Result<Rc<RasterImage>, String> {

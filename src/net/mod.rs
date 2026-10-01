@@ -8,7 +8,26 @@
 //  [`MemoryLoader`], the CLI hands it a [`DefaultLoader`], and an embedder
 //  could add caching or a TLS transport without touching the pipeline.
 
-pub mod fetch;
+#[path = "fetch.rs"]
+mod fetch_core;
+mod readiness;
+
+/// Public Fetch/network surface.
+///
+/// The protocol/runtime vocabulary comes directly from the private core, while
+/// the worker-backed network types are exported through completion-aware
+/// wrappers. Keeping the raw worker implementation private prevents callers of
+/// either `net::ThreadedNetwork` or `net::fetch::ThreadedNetwork` from bypassing
+/// the readiness invariant.
+pub mod fetch {
+    pub use super::fetch_core::{
+        reason_phrase, FetchCompletion, FetchError, FetchId, FetchRegistry, FetchRequest,
+        FetchResponse, HeaderError, HeaderMap, LocalNetwork, ManualNetwork, Method,
+        NetworkBackend, OfflineNetwork, Origin, MAX_IN_FLIGHT_FETCHES,
+    };
+    pub use super::readiness::{DefaultNetwork, ThreadedNetwork};
+}
+
 pub mod http;
 pub mod url;
 
@@ -113,6 +132,41 @@ impl Resource {
 pub trait ResourceLoader: Send + Sync {
     fn load(&self, url: &Url) -> Result<Resource, LoadError>;
 
+    /// Load one document-like resource while retaining response metadata when
+    /// the source can provide it.
+    ///
+    /// The default deliberately goes through `load()`, not `fetch()`. Existing
+    /// embedders therefore keep their exact load/error/side-effect semantics
+    /// without implementing anything new. Protocol loaders may override this
+    /// to preserve response headers such as Set-Cookie and STS for browser
+    /// navigation policy while still reporting non-success statuses as the same
+    /// `LoadError` variants that `load()` exposes.
+    fn load_response(&self, url: &Url) -> Result<FetchResponse, LoadError> {
+        Ok(response_from_resource(self.load(url)?))
+    }
+
+    /// Optionally perform one document-style request/response exchange without
+    /// following redirects inside the loader.
+    ///
+    /// `Ok(None)` means this loader does not advertise a trustworthy one-hop
+    /// document primitive. Callers must then keep using `load_response()` and
+    /// its established compatibility/error semantics. This fail-closed default
+    /// is deliberate: an arbitrary custom loader may follow redirects inside
+    /// `load()` or `load_response()`, and treating that as one hop would skip
+    /// browser Cookie/HSTS policy between responses.
+    ///
+    /// The full request is supplied so redirect policy can regenerate
+    /// browser-owned Cookie/Referer headers and have those values reach the next
+    /// wire hop. `Ok(Some(response))` means exactly one exchange was performed;
+    /// a 3xx or non-success status remains response metadata so the higher
+    /// navigation layer can process policy before deciding what to do next.
+    fn load_response_once(
+        &self,
+        _request: &FetchRequest,
+    ) -> Result<Option<FetchResponse>, LoadError> {
+        Ok(None)
+    }
+
     /// Perform a full request, the way `fetch()` needs it.
     ///
     /// The default serves `GET` and `HEAD` from [`load`](ResourceLoader::load)
@@ -122,6 +176,58 @@ pub trait ResourceLoader: Send + Sync {
     /// override this to send the method and body themselves.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         static_fetch(|url| self.load(url), request)
+    }
+
+    /// Perform exactly one transport request when the source can expose that
+    /// distinction. Redirect orchestration layers use this to observe a 3xx
+    /// response before deciding whether and how to issue the next hop.
+    ///
+    /// The default deliberately delegates to `fetch()`. Existing custom
+    /// loaders therefore preserve their current request semantics and are not
+    /// required to implement a new method merely because the trait grew an
+    /// additive capability. Protocol loaders with internal redirect handling
+    /// can override this to expose their true single-hop primitive.
+    fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        self.fetch(request)
+    }
+}
+
+fn response_from_resource(resource: Resource) -> FetchResponse {
+    let mime = resource.effective_mime().to_string();
+    FetchResponse::synthetic(resource.url, 200, Some(&mime), resource.bytes)
+}
+
+fn load_error_from_fetch(requested_url: &Url, error: FetchError) -> LoadError {
+    match error {
+        FetchError::InvalidUrl(text) => LoadError::InvalidUrl(text),
+        FetchError::UnsupportedScheme(scheme) => LoadError::UnsupportedScheme(scheme),
+        FetchError::TooManyRedirects(target) => LoadError::TooManyRedirects(target),
+        other => LoadError::Io {
+            url: requested_url.to_string(),
+            message: other.to_string(),
+        },
+    }
+}
+
+fn single_hop_load_response_from_fetch(
+    requested_url: &Url,
+    result: Result<FetchResponse, FetchError>,
+) -> Result<FetchResponse, LoadError> {
+    result.map_err(|error| load_error_from_fetch(requested_url, error))
+}
+
+fn load_response_from_fetch(
+    requested_url: &Url,
+    result: Result<FetchResponse, FetchError>,
+) -> Result<FetchResponse, LoadError> {
+    let response = single_hop_load_response_from_fetch(requested_url, result)?;
+    if response.ok() {
+        Ok(response)
+    } else {
+        Err(LoadError::HttpStatus {
+            url: response.url.to_string(),
+            status: response.status,
+        })
     }
 }
 
@@ -309,11 +415,42 @@ impl ResourceLoader for HttpLoader {
         }
     }
 
+    fn load_response(&self, url: &Url) -> Result<FetchResponse, LoadError> {
+        match url.scheme() {
+            "http" => load_response_from_fetch(
+                url,
+                http::send(&FetchRequest::get(url.clone()), &self.config),
+            ),
+            other => Err(LoadError::UnsupportedScheme(other.to_string())),
+        }
+    }
+
+    fn load_response_once(
+        &self,
+        request: &FetchRequest,
+    ) -> Result<Option<FetchResponse>, LoadError> {
+        match request.url.scheme() {
+            "http" => single_hop_load_response_from_fetch(
+                &request.url,
+                http::send_once(request, &self.config),
+            )
+            .map(Some),
+            other => Err(LoadError::UnsupportedScheme(other.to_string())),
+        }
+    }
+
     /// A real protocol, so every method and a request body go on the wire, and
     /// an error status comes back as a response.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         match request.url.scheme() {
             "http" => http::send(request, &self.config),
+            other => Err(FetchError::UnsupportedScheme(other.to_string())),
+        }
+    }
+
+    fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        match request.url.scheme() {
+            "http" => http::send_once(request, &self.config),
             other => Err(FetchError::UnsupportedScheme(other.to_string())),
         }
     }
@@ -371,6 +508,34 @@ impl ResourceLoader for DefaultLoader {
         }
     }
 
+    fn load_response(&self, url: &Url) -> Result<FetchResponse, LoadError> {
+        if self.memory.contains(url) {
+            return self.memory.load_response(url);
+        }
+        match url.scheme() {
+            "file" => self.file.load_response(url),
+            "http" | "https" => self.http.load_response(url),
+            _ => self.memory.load_response(url),
+        }
+    }
+
+    fn load_response_once(
+        &self,
+        request: &FetchRequest,
+    ) -> Result<Option<FetchResponse>, LoadError> {
+        let requested_url = &request.url;
+        let result = if self.memory.contains(requested_url) {
+            self.memory.fetch_once(request)
+        } else {
+            match requested_url.scheme() {
+                "file" => self.file.fetch_once(request),
+                "http" | "https" => return self.http.load_response_once(request),
+                _ => self.memory.fetch_once(request),
+            }
+        };
+        single_hop_load_response_from_fetch(requested_url, result).map(Some)
+    }
+
     /// Route the same way `load` does, so a `fetch()` and a navigation to one
     /// URL always reach the same source.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
@@ -381,6 +546,17 @@ impl ResourceLoader for DefaultLoader {
             "file" => self.file.fetch(request),
             "http" | "https" => self.http.fetch(request),
             _ => self.memory.fetch(request),
+        }
+    }
+
+    fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        if self.memory.contains(&request.url) {
+            return self.memory.fetch_once(request);
+        }
+        match request.url.scheme() {
+            "file" => self.file.fetch_once(request),
+            "http" | "https" => self.http.fetch_once(request),
+            _ => self.memory.fetch_once(request),
         }
     }
 }
