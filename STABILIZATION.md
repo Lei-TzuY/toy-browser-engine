@@ -35,9 +35,9 @@ This lane represents the current cumulative Fetch-oriented stack and is the firs
 - request/response Headers guards and forbidden header rules;
 - body cloning, disturbance, BodyInit, null-body status and HEAD behavior;
 - Fetch Subresource Integrity verification;
-- CORS safelist, Range, ByteString-length, token-list, HTTP-OWS and Max-Age parsing boundaries.
+- Tested CORS/preflight foundation, including per-permission session cache entries, conservative partition isolation, independent expiry, credential grant rules, failure invalidation, Allow-Methods/Allow-Headers token-list parsing with SP/HTAB trimming, and Max-Age delta-seconds parsing and clamping.
 
-The lane deliberately does **not** claim a complete Fetch implementation, full streaming body semantics, a browser-global standards-complete network partition key, complete web-platform URL parsing, or broader preflight cache partitioning beyond the tested per-permission foundation (freezing the per-permission preflight partition, expiry, credential, and invalidation design for later batches).
+The lane deliberately does **not** claim a complete Fetch implementation, full streaming body semantics, a browser-global standards-complete network partition key, complete web-platform URL parsing, or broader preflight cache partitioning beyond the tested per-permission foundation (freezing the per-permission preflight partition, expiry, credential, and invalidation design for later batches). Complete Range validation, ByteString-length handling and general HTTP-OWS/list hardening remain deferred. Existing safelist and parsing tests cover specific implemented cases rather than complete standards compliance.
 
 ### Lane B — Integrity-Policy / Reporting API
 
