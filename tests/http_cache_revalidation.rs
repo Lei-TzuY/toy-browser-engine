@@ -1,8 +1,8 @@
+use browser_engine::net::fetch::HeaderMap;
 use browser_engine::{
     cache_revalidation_headers, response_cache_validators, response_confirms_not_modified,
     HttpCacheValidators,
 };
-use browser_engine::net::fetch::HeaderMap;
 
 #[test]
 fn cached_etag_and_last_modified_become_conditional_request_fields() {
@@ -65,4 +65,42 @@ fn only_status_304_marks_cached_representation_not_modified() {
     assert!(response_confirms_not_modified(304));
     assert!(!response_confirms_not_modified(200));
     assert!(!response_confirms_not_modified(412));
+}
+
+#[test]
+fn expired_age_drives_conditional_revalidation_at_deadline() {
+    use browser_engine::{
+        cached_response_is_fresh, current_age_secs, response_cache_policy, HttpCacheAgeInput,
+    };
+
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert_raw("cache-control", "max-age=60, must-revalidate");
+    response_headers.insert_raw("age", "40");
+    response_headers.insert_raw("etag", "W/\"asset-42\"");
+    let policy = response_cache_policy(&response_headers);
+    let mut timing = HttpCacheAgeInput {
+        date_value_secs: Some(100),
+        request_time_secs: 100,
+        response_time_secs: 110,
+        now_secs: 119,
+    };
+    assert_eq!(current_age_secs(&response_headers, timing), 59);
+    assert!(cached_response_is_fresh(
+        policy,
+        current_age_secs(&response_headers, timing),
+    ));
+
+    timing.now_secs = 120;
+    assert_eq!(current_age_secs(&response_headers, timing), 60);
+    assert!(
+        !cached_response_is_fresh(policy, current_age_secs(&response_headers, timing)),
+        "computed age at the freshness deadline must require validation",
+    );
+    assert!(policy.must_revalidate);
+    let conditional = cache_revalidation_headers(&response_cache_validators(&response_headers));
+    assert_eq!(
+        conditional.get("if-none-match").as_deref(),
+        Some("W/\"asset-42\"")
+    );
+    assert!(conditional.get("if-modified-since").is_none());
 }

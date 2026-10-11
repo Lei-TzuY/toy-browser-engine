@@ -82,18 +82,16 @@ pub fn response_cache_policy(headers: &HeaderMap) -> HttpResponseCachePolicy {
 
 /// Return whether a stored response is still fresh at `current_age_secs`.
 ///
+/// Equality with the freshness lifetime is already stale (RFC 9111 section 4.2).
 /// A response carrying `no-cache` is never reusable without validation even if
 /// its explicit freshness lifetime has not elapsed.
-pub fn cached_response_is_fresh(
-    policy: HttpResponseCachePolicy,
-    current_age_secs: u64,
-) -> bool {
+pub fn cached_response_is_fresh(policy: HttpResponseCachePolicy, current_age_secs: u64) -> bool {
     if !policy.storable || policy.requires_revalidation {
         return false;
     }
     policy
         .freshness_lifetime_secs
-        .is_some_and(|lifetime| current_age_secs <= lifetime)
+        .is_some_and(|lifetime| current_age_secs < lifetime)
 }
 
 fn split_cache_control_directives(value: &str) -> Vec<&str> {
@@ -172,8 +170,10 @@ mod tests {
     fn max_age_drives_freshness_boundary() {
         let policy = response_cache_policy(&headers("max-age=60"));
         assert!(cached_response_is_fresh(policy, 59));
-        assert!(cached_response_is_fresh(policy, 60));
+        assert!(!cached_response_is_fresh(policy, 60));
         assert!(!cached_response_is_fresh(policy, 61));
+        let zero_lifetime = response_cache_policy(&headers("max-age=0"));
+        assert!(!cached_response_is_fresh(zero_lifetime, 0));
     }
 
     #[test]
@@ -209,7 +209,8 @@ mod tests {
     fn private_is_cacheable_for_a_user_agent_cache() {
         let policy = response_cache_policy(&headers("private, max-age=30"));
         assert!(policy.storable);
-        assert!(cached_response_is_fresh(policy, 30));
+        assert!(cached_response_is_fresh(policy, 29));
+        assert!(!cached_response_is_fresh(policy, 30));
     }
 
     #[test]
@@ -228,9 +229,7 @@ mod tests {
 
     #[test]
     fn quoted_extension_commas_do_not_split_directives() {
-        let policy = response_cache_policy(&headers(
-            "example=\"one,two\", max-age=45, private",
-        ));
+        let policy = response_cache_policy(&headers("example=\"one,two\", max-age=45, private"));
         assert_eq!(policy.freshness_lifetime_secs, Some(45));
     }
 

@@ -23,6 +23,7 @@ png = "0.18.1"
 # Default features pull in rayon; a toy engine decodes one small image at a
 # time, so the single-threaded build keeps the dependency tree small.
 jpeg-decoder = { version = "0.3.2", default-features = false }
+sha2 = "0.10.9"
 
 [profile.dev]
 opt-level = 0

@@ -5,38 +5,8 @@
 //! encountered. Keeping it separate from the wire backend lets Request/Fetch
 //! plumbing reuse one standards-focused decision point.
 
-/// Fetch's request redirect mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FetchRedirectMode {
-    /// Follow redirect responses. This is Fetch's default.
-    #[default]
-    Follow,
-    /// Turn a redirect response into a network error.
-    Error,
-    /// Expose an opaque-redirect filtered response instead of following it.
-    Manual,
-}
-
-impl FetchRedirectMode {
-    /// Parse the Web IDL string value accepted by `RequestInit.redirect`.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "follow" => Some(Self::Follow),
-            "error" => Some(Self::Error),
-            "manual" => Some(Self::Manual),
-            _ => None,
-        }
-    }
-
-    /// Return the script-visible string value.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Follow => "follow",
-            Self::Error => "error",
-            Self::Manual => "manual",
-        }
-    }
-}
+/// The same redirect mode used by RequestData and the live Fetch registry.
+pub use crate::fetch_redirect_policy::FetchRedirectMode;
 
 /// The action Fetch takes when a redirect response is encountered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,9 +57,18 @@ mod tests {
 
     #[test]
     fn parses_only_exact_web_idl_values() {
-        assert_eq!(FetchRedirectMode::parse("follow"), Some(FetchRedirectMode::Follow));
-        assert_eq!(FetchRedirectMode::parse("error"), Some(FetchRedirectMode::Error));
-        assert_eq!(FetchRedirectMode::parse("manual"), Some(FetchRedirectMode::Manual));
+        assert_eq!(
+            FetchRedirectMode::parse("follow"),
+            Some(FetchRedirectMode::Follow)
+        );
+        assert_eq!(
+            FetchRedirectMode::parse("error"),
+            Some(FetchRedirectMode::Error)
+        );
+        assert_eq!(
+            FetchRedirectMode::parse("manual"),
+            Some(FetchRedirectMode::Manual)
+        );
         assert_eq!(FetchRedirectMode::parse("FOLLOW"), None);
         assert_eq!(FetchRedirectMode::parse(" manual "), None);
         assert_eq!(FetchRedirectMode::parse(""), None);

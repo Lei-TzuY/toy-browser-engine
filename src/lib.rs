@@ -9,11 +9,11 @@
 
 pub mod animation;
 pub mod audio;
+#[path = "browser_cookie_session_final.rs"]
+pub mod browser;
 #[allow(dead_code)]
 #[path = "browser.rs"]
 mod browser_prev;
-#[path = "browser_cookie_session_final.rs"]
-pub mod browser;
 pub mod canvas;
 pub mod cookie;
 pub mod cookie_network;
@@ -26,8 +26,13 @@ pub mod dom;
 pub mod editing;
 pub mod eventloop;
 pub mod fetch_cache_mode;
+pub(crate) mod fetch_cors;
+pub(crate) mod fetch_cors_preflight;
+pub(crate) mod fetch_cors_redirect;
+pub(crate) mod fetch_integrity;
 pub mod fetch_metadata;
 pub mod fetch_redirect_mode;
+pub mod fetch_redirect_policy;
 pub mod form_state;
 pub mod forms;
 pub mod hsts;
@@ -50,8 +55,8 @@ pub mod referrer_meta;
 pub mod referrer_policy;
 pub mod script;
 pub mod select_state;
-mod session_redirect;
 pub mod session_network;
+mod session_redirect;
 pub mod style;
 pub mod subresource_cors;
 pub mod subresource_cors_credentials;
@@ -79,8 +84,9 @@ pub use fetch_metadata::{
 };
 pub use fetch_redirect_mode::{
     is_fetch_redirect_status, no_cors_redirect_mode_is_valid, redirect_response_disposition,
-    FetchRedirectMode, RedirectResponseDisposition,
+    RedirectResponseDisposition,
 };
+pub use fetch_redirect_policy::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;

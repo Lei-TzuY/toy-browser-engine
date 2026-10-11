@@ -1,5 +1,5 @@
-use browser_engine::{cached_response_is_fresh, response_cache_policy};
 use browser_engine::net::fetch::HeaderMap;
+use browser_engine::{cached_response_is_fresh, response_cache_policy};
 
 fn headers(value: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -8,11 +8,12 @@ fn headers(value: &str) -> HeaderMap {
 }
 
 #[test]
-fn response_max_age_is_reusable_until_its_freshness_boundary() {
+fn response_max_age_is_stale_at_its_freshness_boundary() {
     let policy = response_cache_policy(&headers("public, max-age=120"));
     assert!(policy.storable);
     assert_eq!(policy.freshness_lifetime_secs, Some(120));
-    assert!(cached_response_is_fresh(policy, 120));
+    assert!(cached_response_is_fresh(policy, 119));
+    assert!(!cached_response_is_fresh(policy, 120));
     assert!(!cached_response_is_fresh(policy, 121));
 }
 

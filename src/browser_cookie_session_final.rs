@@ -110,8 +110,8 @@ impl Browser {
         clock: Rc<dyn Clock>,
     ) -> Result<Browser, LoadError> {
         let loader: Arc<dyn ResourceLoader> = Arc::from(loader);
-        let network = Rc::new(DefaultNetwork::new(loader.clone()));
-        Browser::open_with(loader, network, url, clock)
+        let network = Rc::new(DefaultNetwork::new_single_hop(loader.clone()));
+        Browser::open_with_single_hop(loader, network, url, clock)
     }
 
     /// Load `url` with a caller-supplied clock *and* transport backend.
@@ -126,6 +126,22 @@ impl Browser {
         clock: Rc<dyn Clock>,
     ) -> Result<Browser, LoadError> {
         Browser::open_with(Arc::from(loader), network, url, clock)
+    }
+
+    /// Load `url` with a caller-supplied clock and a transport that exposes
+    /// exactly one response hop for each request.
+    ///
+    /// Unlike [`Browser::open_with_network`], this constructor enables the
+    /// session redirect orchestrator. Cookie/HSTS policy therefore runs between
+    /// every accepted redirect hop instead of relying on the transport to have
+    /// followed redirects internally.
+    pub fn open_with_single_hop_network(
+        loader: Box<dyn ResourceLoader>,
+        network: Rc<dyn NetworkBackend>,
+        url: &Url,
+        clock: Rc<dyn Clock>,
+    ) -> Result<Browser, LoadError> {
+        Browser::open_with_single_hop(Arc::from(loader), network, url, clock)
     }
 
     fn storage_for_url(&self, url: &Url) -> StorageRef {
@@ -143,12 +159,35 @@ impl Browser {
         url: &Url,
         clock: Rc<dyn Clock>,
     ) -> Result<Browser, LoadError> {
+        Browser::open_with_session(loader, transport, url, clock, false)
+    }
+
+    fn open_with_single_hop(
+        loader: Arc<dyn ResourceLoader>,
+        transport: Rc<dyn NetworkBackend>,
+        url: &Url,
+        clock: Rc<dyn Clock>,
+    ) -> Result<Browser, LoadError> {
+        Browser::open_with_session(loader, transport, url, clock, true)
+    }
+
+    fn open_with_session(
+        loader: Arc<dyn ResourceLoader>,
+        transport: Rc<dyn NetworkBackend>,
+        url: &Url,
+        clock: Rc<dyn Clock>,
+        redirecting_fetch: bool,
+    ) -> Result<Browser, LoadError> {
         let pool: Rc<RefCell<HashMap<String, StorageRef>>> =
             Rc::new(RefCell::new(HashMap::new()));
 
         // Session policy must exist before the first HTTP response arrives so
         // Set-Cookie/HSTS are visible to bootstrap scripts on the first page.
-        let session_network = SessionNetwork::with_new_state(transport, clock.clone());
+        let session_network = if redirecting_fetch {
+            SessionNetwork::with_new_state_redirecting(transport, clock.clone())
+        } else {
+            SessionNetwork::with_new_state(transport, clock.clone())
+        };
         let cookie_jar = session_network.cookie_jar();
         let hsts_cache = session_network.hsts_cache();
         let navigation = NavigationNetwork::new(
