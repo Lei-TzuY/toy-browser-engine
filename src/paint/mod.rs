@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{Color, ColorStop, ConicGradient, LinearGradient, RadialGradient, Unit, Value};
+use crate::css::parser::{BlendMode, ClipPath, Color, ColorStop, ConicGradient, FilterFunction, LinearGradient, RadialGradient, Unit, Value};
 use crate::dom::NodeType;
 use crate::image::RasterImage;
 use crate::layout::{BoxType, LayoutBox, ObjectFit, Rect, TextFragment};
@@ -32,12 +32,22 @@ pub enum DisplayCommand {
     PushClip(Rect),
     /// Restore the previous clip rectangle.
     PopClip,
+    /// Push a CSS clip-path mask: (clip-path spec, bounding rect).
+    PushClipPath(ClipPath, Rect),
+    /// Restore the previous clip-path mask.
+    PopClipPath,
+    /// Push a CSS mix-blend-mode.
+    PushBlendMode(BlendMode),
+    /// Restore the previous blend-mode.
+    PopBlendMode,
     /// Linear gradient background: (gradient spec, rect, opacity).
     LinearGradient(LinearGradient, Rect, f32),
     /// Radial gradient background: (gradient spec, rect, opacity).
     RadialGradient(RadialGradient, Rect, f32),
     /// Conic gradient background: (gradient spec, rect, opacity).
     ConicGradient(ConicGradient, Rect, f32),
+    /// Backdrop filter: (filters, rect).
+    BackdropFilter(Vec<FilterFunction>, Rect),
     /// A decoded bitmap: `source` (in image pixels) is scaled onto `dest`.
     Image {
         image: Rc<RasterImage>,
@@ -88,10 +98,20 @@ impl DisplayCommand {
                 rect.x += dx;
                 rect.y += dy;
             }
+            DisplayCommand::BackdropFilter(_, rect) => {
+                rect.x += dx;
+                rect.y += dy;
+            }
             DisplayCommand::Image { dest, .. } => {
                 dest.x += dx;
                 dest.y += dy;
             }
+            DisplayCommand::PushClipPath(_, rect) => {
+                rect.x += dx;
+                rect.y += dy;
+            }
+            DisplayCommand::PopClipPath => {}
+            DisplayCommand::PushBlendMode(_) | DisplayCommand::PopBlendMode => {}
             DisplayCommand::BoxShadow { rect, .. } => {
                 rect.x += dx;
                 rect.y += dy;
@@ -160,6 +180,17 @@ fn render_stacking_context_with_opacity(list: &mut DisplayList, root: &LayoutBox
         .positive
         .sort_by_key(|(z_index, order, _)| (*z_index, *order));
 
+    let clip_path = styled_node(root).and_then(|s| s.clip_path());
+    if let Some(ref cp) = clip_path {
+        list.push(DisplayCommand::PushClipPath(cp.clone(), root.dimensions.border_box()));
+    }
+
+    let blend_mode = styled_node(root).map(|s| s.mix_blend_mode()).unwrap_or(BlendMode::Normal);
+    let has_blend = blend_mode != BlendMode::Normal;
+    if has_blend {
+        list.push(DisplayCommand::PushBlendMode(blend_mode));
+    }
+
     render_box_decorations_with_opacity(list, root, opacity);
 
     for (_, _, context) in layers.negative {
@@ -185,6 +216,14 @@ fn render_stacking_context_with_opacity(list: &mut DisplayList, root: &LayoutBox
     for (_, _, context) in layers.positive {
         let child_opacity = opacity * node_opacity(context);
         render_stacking_context_with_opacity(list, context, child_opacity);
+    }
+
+    if has_blend {
+        list.push(DisplayCommand::PopBlendMode);
+    }
+
+    if clip_path.is_some() {
+        list.push(DisplayCommand::PopClipPath);
     }
 }
 
@@ -242,6 +281,18 @@ fn render_in_flow_subtree_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
     if establishes_stacking_context(lb) || is_positioned(lb) {
         return;
     }
+
+    let clip_path = styled_node(lb).and_then(|s| s.clip_path());
+    if let Some(ref cp) = clip_path {
+        list.push(DisplayCommand::PushClipPath(cp.clone(), lb.dimensions.border_box()));
+    }
+
+    let blend_mode = styled_node(lb).map(|s| s.mix_blend_mode()).unwrap_or(BlendMode::Normal);
+    let has_blend = blend_mode != BlendMode::Normal;
+    if has_blend {
+        list.push(DisplayCommand::PushBlendMode(blend_mode));
+    }
+
     render_box_decorations_with_opacity(list, lb, opacity);
     render_list_marker(list, lb, opacity);
 
@@ -257,6 +308,14 @@ fn render_in_flow_subtree_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
 
     if clip {
         list.push(DisplayCommand::PopClip);
+    }
+
+    if has_blend {
+        list.push(DisplayCommand::PopBlendMode);
+    }
+
+    if clip_path.is_some() {
+        list.push(DisplayCommand::PopClipPath);
     }
 }
 
@@ -317,6 +376,7 @@ fn render_list_marker(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
         font_size,
         underline: false,
         strikethrough: false,
+        text_shadow: None,
     };
     list.push(DisplayCommand::Text(frag));
 }
@@ -329,6 +389,18 @@ fn render_subtree_without_contexts_with_opacity(
     if establishes_stacking_context(lb) {
         return;
     }
+
+    let clip_path = styled_node(lb).and_then(|s| s.clip_path());
+    if let Some(ref cp) = clip_path {
+        list.push(DisplayCommand::PushClipPath(cp.clone(), lb.dimensions.border_box()));
+    }
+
+    let blend_mode = styled_node(lb).map(|s| s.mix_blend_mode()).unwrap_or(BlendMode::Normal);
+    let has_blend = blend_mode != BlendMode::Normal;
+    if has_blend {
+        list.push(DisplayCommand::PushBlendMode(blend_mode));
+    }
+
     render_box_decorations_with_opacity(list, lb, opacity);
     render_list_marker(list, lb, opacity);
 
@@ -345,6 +417,14 @@ fn render_subtree_without_contexts_with_opacity(
     if clip {
         list.push(DisplayCommand::PopClip);
     }
+
+    if has_blend {
+        list.push(DisplayCommand::PopBlendMode);
+    }
+
+    if clip_path.is_some() {
+        list.push(DisplayCommand::PopClipPath);
+    }
 }
 
 fn render_box_decorations_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
@@ -352,6 +432,67 @@ fn render_box_decorations_with_opacity(list: &mut DisplayList, lb: &LayoutBox, o
     render_image_with_opacity(list, lb, opacity);
     render_form_control(list, lb, opacity);
     render_borders_with_opacity(list, lb, opacity);
+    render_outline_with_opacity(list, lb, opacity);
+}
+
+fn render_outline_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    let style = match styled_node(lb) {
+        Some(s) => s,
+        None => return,
+    };
+    let width = style.outline_width();
+    if width <= 0.0 || style.outline_style().is_none() {
+        return;
+    }
+    let color = apply_opacity(style.outline_color(), opacity);
+    let offset = style.outline_offset();
+    let border_box = lb.dimensions.border_box();
+
+    let out_x = border_box.x - offset - width;
+    let out_y = border_box.y - offset - width;
+    let out_w = (border_box.width + 2.0 * (offset + width)).max(0.0);
+    let out_h = (border_box.height + 2.0 * (offset + width)).max(0.0);
+
+    // Top
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x,
+            y: out_y,
+            width: out_w,
+            height: width,
+        },
+    ));
+    // Bottom
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x,
+            y: out_y + out_h - width,
+            width: out_w,
+            height: width,
+        },
+    ));
+    // Left
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x,
+            y: out_y + width,
+            width,
+            height: (out_h - 2.0 * width).max(0.0),
+        },
+    ));
+    // Right
+    list.push(DisplayCommand::SolidColor(
+        color,
+        Rect {
+            x: out_x + out_w - width,
+            y: out_y + width,
+            width,
+            height: (out_h - 2.0 * width).max(0.0),
+        },
+    ));
 }
 
 // ── Form controls ─────────────────────────────────────────────────────────────
@@ -487,6 +628,7 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
             font_size,
             underline: false,
             strikethrough: false,
+            text_shadow: None,
         }));
     }
 
@@ -503,11 +645,12 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
             .collect();
         let x = content.x + measure_text(&line_text, font_size);
         let y = content.y + line as f32 * metrics.new_line_size;
+        let caret_color = styled.caret_color().unwrap_or(CONTROL_TEXT);
         list.push(DisplayCommand::SolidColor(
-            apply_opacity(CONTROL_TEXT, opacity),
+            apply_opacity(caret_color, opacity),
             Rect {
                 x,
-                y: y + 1.0,
+                y,
                 width: 1.0,
                 height: metrics.new_line_size - 2.0,
             },
@@ -657,6 +800,7 @@ fn render_image_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f3
         font_size,
         underline: false,
         strikethrough: false,
+        text_shadow: None,
     }));
 }
 
@@ -735,8 +879,19 @@ fn contain_rect(image: &RasterImage, dest: Rect) -> Rect {
 }
 
 fn render_text_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    let box_shadow = styled_node(lb).and_then(|s| s.text_shadow());
     for line in &lb.line_boxes {
         for fragment in &line.fragments {
+            let shadow = fragment.text_shadow.as_ref().or(box_shadow.as_ref());
+            if let Some(sh) = shadow {
+                let mut sf = fragment.clone();
+                sf.rect.x += sh.offset_x;
+                sf.rect.y += sh.offset_y;
+                sf.baseline += sh.offset_y;
+                sf.color = apply_opacity(sh.color, opacity);
+                sf.text_shadow = None;
+                list.push(DisplayCommand::Text(sf));
+            }
             let mut f = fragment.clone();
             f.color = apply_opacity(f.color, opacity);
             list.push(DisplayCommand::Text(f));
@@ -757,6 +912,11 @@ fn get_border_radius(lb: &LayoutBox) -> f32 {
 }
 
 fn render_background_with_opacity(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
+    // Backdrop filter (filters pixels behind this element's border-box)
+    if let Some(Value::Filter(filters)) = styled_node(lb).and_then(|s| s.value("backdrop-filter")) {
+        list.push(DisplayCommand::BackdropFilter(filters.clone(), lb.dimensions.border_box()));
+    }
+
     // Box shadow rendered first underneath background
     if let Some(Value::BoxShadow(bs)) = styled_node(lb).and_then(|s| s.value("box-shadow")) {
         list.push(DisplayCommand::BoxShadow {
@@ -901,6 +1061,10 @@ pub struct Canvas {
     pub height: usize,
     /// Each entry is the effective (intersected) clip rect as (x0,y0,x1,y1).
     clip_stack: Vec<(i32, i32, i32, i32)>,
+    /// Active clip-path masks.
+    clip_path_stack: Vec<(ClipPath, Rect)>,
+    /// Active mix-blend-mode stack.
+    blend_mode_stack: Vec<BlendMode>,
 }
 
 impl Canvas {
@@ -916,6 +1080,8 @@ impl Canvas {
             width,
             height,
             clip_stack: Vec::new(),
+            clip_path_stack: Vec::new(),
+            blend_mode_stack: Vec::new(),
         }
     }
 
@@ -974,6 +1140,21 @@ impl Canvas {
             }
             DisplayCommand::ConicGradient(grad, rect, opacity) => {
                 self.paint_conic_gradient(grad, *rect, *opacity);
+            }
+            DisplayCommand::BackdropFilter(filters, rect) => {
+                self.apply_backdrop_filter(filters, *rect);
+            }
+            DisplayCommand::PushClipPath(cp, rect) => {
+                self.clip_path_stack.push((cp.clone(), *rect));
+            }
+            DisplayCommand::PopClipPath => {
+                self.clip_path_stack.pop();
+            }
+            DisplayCommand::PushBlendMode(bm) => {
+                self.blend_mode_stack.push(*bm);
+            }
+            DisplayCommand::PopBlendMode => {
+                self.blend_mode_stack.pop();
             }
             DisplayCommand::BoxShadow {
                 rect,
@@ -1221,6 +1402,111 @@ impl Canvas {
         }
     }
 
+    fn apply_backdrop_filter(&mut self, filters: &[FilterFunction], rect: Rect) {
+        if filters.is_empty() {
+            return;
+        }
+        let x0 = clamp(rect.x as i32, 0, self.width as i32);
+        let y0 = clamp(rect.y as i32, 0, self.height as i32);
+        let x1 = clamp((rect.x + rect.width) as i32, 0, self.width as i32);
+        let y1 = clamp((rect.y + rect.height) as i32, 0, self.height as i32);
+
+        for filter in filters {
+            match filter {
+                FilterFunction::Grayscale(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            let r = self.pixels[idx] as f32;
+                            let g = self.pixels[idx + 1] as f32;
+                            let b = self.pixels[idx + 2] as f32;
+                            let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                            self.pixels[idx] = (r + (lum - r) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = (g + (lum - g) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = (b + (lum - b) * amt).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Brightness(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            self.pixels[idx] = (self.pixels[idx] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = (self.pixels[idx + 1] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = (self.pixels[idx + 2] as f32 * amt).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Contrast(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            let r = self.pixels[idx] as f32;
+                            let g = self.pixels[idx + 1] as f32;
+                            let b = self.pixels[idx + 2] as f32;
+                            self.pixels[idx] = ((r - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = ((g - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = ((b - 128.0) * amt + 128.0).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Invert(amt) => {
+                    let amt = *amt;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let idx = (y as usize * self.width + x as usize) * 3;
+                            let r = self.pixels[idx] as f32;
+                            let g = self.pixels[idx + 1] as f32;
+                            let b = self.pixels[idx + 2] as f32;
+                            self.pixels[idx] = (r + (255.0 - 2.0 * r) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 1] = (g + (255.0 - 2.0 * g) * amt).round().clamp(0.0, 255.0) as u8;
+                            self.pixels[idx + 2] = (b + (255.0 - 2.0 * b) * amt).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                FilterFunction::Blur(px) => {
+                    let radius = (*px).round() as i32;
+                    if radius > 0 {
+                        let w = self.width as i32;
+                        let h = self.height as i32;
+                        let temp = self.pixels.clone();
+                        for y in y0..y1 {
+                            for x in x0..x1 {
+                                let mut r_sum = 0u32;
+                                let mut g_sum = 0u32;
+                                let mut b_sum = 0u32;
+                                let mut count = 0u32;
+                                for dy in -radius..=radius {
+                                    for dx in -radius..=radius {
+                                        let nx = x + dx;
+                                        let ny = y + dy;
+                                        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+                                            let idx = (ny as usize * self.width + nx as usize) * 3;
+                                            r_sum += temp[idx] as u32;
+                                            g_sum += temp[idx + 1] as u32;
+                                            b_sum += temp[idx + 2] as u32;
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                                if count > 0 {
+                                    let out_idx = (y as usize * self.width + x as usize) * 3;
+                                    self.pixels[out_idx] = (r_sum / count) as u8;
+                                    self.pixels[out_idx + 1] = (g_sum / count) as u8;
+                                    self.pixels[out_idx + 2] = (b_sum / count) as u8;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn paint_text(&mut self, fragment: &TextFragment) {
         let mut pen_x = fragment.rect.x;
         for character in fragment.text.chars() {
@@ -1279,14 +1565,85 @@ impl Canvas {
                 return;
             }
         }
+        // Respect active clip-path masks.
+        for (cp, rect) in &self.clip_path_stack {
+            if !point_in_clip_path(cp, *rect, x as f32 + 0.5, y as f32 + 0.5) {
+                return;
+            }
+        }
         let idx = (y as usize * self.width + x as usize) * 3;
         let alpha = color.a as f32 / 255.0 * coverage as f32 / 255.0;
         let ia = 1.0 - alpha;
-        self.pixels[idx] = (color.r as f32 * alpha + self.pixels[idx] as f32 * ia) as u8;
-        self.pixels[idx + 1] = (color.g as f32 * alpha + self.pixels[idx + 1] as f32 * ia) as u8;
-        self.pixels[idx + 2] = (color.b as f32 * alpha + self.pixels[idx + 2] as f32 * ia) as u8;
-    }
 
+        let mode = self.blend_mode_stack.last().copied().unwrap_or(BlendMode::Normal);
+        let blended_r = blend_channel(mode, color.r as f32, self.pixels[idx] as f32);
+        let blended_g = blend_channel(mode, color.g as f32, self.pixels[idx + 1] as f32);
+        let blended_b = blend_channel(mode, color.b as f32, self.pixels[idx + 2] as f32);
+
+        self.pixels[idx] = (blended_r * alpha + self.pixels[idx] as f32 * ia).round().clamp(0.0, 255.0) as u8;
+        self.pixels[idx + 1] = (blended_g * alpha + self.pixels[idx + 1] as f32 * ia).round().clamp(0.0, 255.0) as u8;
+        self.pixels[idx + 2] = (blended_b * alpha + self.pixels[idx + 2] as f32 * ia).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_channel(mode: BlendMode, src: f32, dst: f32) -> f32 {
+    match mode {
+        BlendMode::Normal => src,
+        BlendMode::Multiply => (src * dst) / 255.0,
+        BlendMode::Screen => 255.0 - ((255.0 - src) * (255.0 - dst)) / 255.0,
+        BlendMode::Darken => src.min(dst),
+        BlendMode::Lighten => src.max(dst),
+        BlendMode::Difference => (src - dst).abs(),
+        BlendMode::Exclusion => src + dst - 2.0 * src * dst / 255.0,
+        BlendMode::Overlay => {
+            if dst < 128.0 {
+                (2.0 * src * dst) / 255.0
+            } else {
+                255.0 - (2.0 * (255.0 - src) * (255.0 - dst)) / 255.0
+            }
+        }
+    }
+}
+
+pub fn point_in_clip_path(cp: &ClipPath, rect: Rect, px: f32, py: f32) -> bool {
+    match cp {
+        ClipPath::Polygon(points) => {
+            if points.len() < 3 {
+                return true;
+            }
+            let mut inside = false;
+            let n = points.len();
+            for i in 0..n {
+                let j = if i == 0 { n - 1 } else { i - 1 };
+                let xi = rect.x + points[i].0 * rect.width;
+                let yi = rect.y + points[i].1 * rect.height;
+                let xj = rect.x + points[j].0 * rect.width;
+                let yj = rect.y + points[j].1 * rect.height;
+
+                if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                    inside = !inside;
+                }
+            }
+            inside
+        }
+        ClipPath::Circle { cx, cy, radius } => {
+            let center_x = rect.x + cx * rect.width;
+            let center_y = rect.y + cy * rect.height;
+            let r = radius * rect.width.min(rect.height);
+            let dx = px - center_x;
+            let dy = py - center_y;
+            (dx * dx + dy * dy) <= r * r
+        }
+        ClipPath::Inset { top, right, bottom, left } => {
+            px >= rect.x + left
+                && px <= rect.x + rect.width - right
+                && py >= rect.y + top
+                && py <= rect.y + rect.height - bottom
+        }
+    }
+}
+
+impl Canvas {
     pub fn to_u32_buffer(&self) -> Vec<u32> {
         self.pixels
             .chunks_exact(3)

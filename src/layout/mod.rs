@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use crate::css::parser::{CalcExpr, Color, Unit, Value};
+use crate::css::parser::{CalcExpr, Color, TextShadow, Unit, Value};
 use crate::dom::{ElementData, ElementId, NodeType};
 use crate::image::RasterImage;
 use crate::style::{Display, Position, StyledNode};
@@ -104,6 +104,7 @@ pub struct TextFragment {
     pub font_size: f32,
     pub underline: bool,
     pub strikethrough: bool,
+    pub text_shadow: Option<TextShadow>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +152,7 @@ struct TextStyle {
     underline: bool,
     strikethrough: bool,
     text_transform: TextTransform,
+    text_shadow: Option<TextShadow>,
 }
 
 impl Default for TextStyle {
@@ -163,6 +165,7 @@ impl Default for TextStyle {
             underline: false,
             strikethrough: false,
             text_transform: TextTransform::None,
+            text_shadow: None,
         }
     }
 }
@@ -614,6 +617,14 @@ impl<'a> LayoutBox<'a> {
     // ── Children ──────────────────────────────────────────────────────────
 
     fn layout_children(&mut self) {
+        if let Some(col_count) = self.style().and_then(|s| s.column_count()) {
+            if col_count > 1 {
+                let col_gap = self.style().map(|s| s.column_gap()).unwrap_or(16.0);
+                self.layout_multi_column_children(col_count, col_gap);
+                return;
+            }
+        }
+
         // `content.height` doubles as the block-flow cursor below, so it must
         // start at zero — grid and table lay a box out more than once, and a
         // stale cursor would push the children down by the previous height.
@@ -687,6 +698,43 @@ impl<'a> LayoutBox<'a> {
                 }
             }
         }
+    }
+
+    fn layout_multi_column_children(&mut self, col_count: usize, col_gap: f32) {
+        self.dimensions.content.height = 0.0;
+        let vp_w = self.viewport_w;
+        let content_w = self.dimensions.content.width;
+        let total_gaps = (col_count - 1) as f32 * col_gap;
+        let col_w = ((content_w - total_gaps) / (col_count as f32)).max(0.0);
+
+        let mut col_heights = vec![0.0f32; col_count];
+        let mut in_flow_idx = 0;
+
+        for i in 0..self.children.len() {
+            self.children[i].viewport_w = vp_w;
+            let col_idx = in_flow_idx % col_count;
+            let col_x_offset = col_idx as f32 * (col_w + col_gap);
+            let col_y_offset = col_heights[col_idx];
+
+            let containing = Dimensions {
+                content: Rect {
+                    x: self.dimensions.content.x + col_x_offset,
+                    y: self.dimensions.content.y + col_y_offset,
+                    width: col_w,
+                    height: 0.0,
+                },
+                ..Default::default()
+            };
+
+            self.children[i].layout(containing);
+            let child_h = self.children[i].dimensions.margin_box().height;
+            if child_h > 0.0 || self.children[i].styled_node().is_some() {
+                col_heights[col_idx] += child_h;
+                in_flow_idx += 1;
+            }
+        }
+
+        self.dimensions.content.height = col_heights.into_iter().fold(0.0f32, f32::max);
     }
 
     /// Lay out an absolutely positioned box relative to `containing` (its containing block).
@@ -2094,15 +2142,21 @@ impl<'a> LayoutBox<'a> {
         self.calc_position(containing);
 
         let table_w = self.dimensions.content.width;
+        let spacing = if self.style().map(|s| s.border_collapse()).unwrap_or("separate") == "collapse" {
+            0.0
+        } else {
+            self.style().map(|s| s.border_spacing()).unwrap_or(0.0)
+        };
 
-        // 1. Preferred column widths: the widest max-content cell in each column.
-        //    Laying cells out to measure them would be wrong here — an auto-width
-        //    cell fills its containing block, which would make every column as
-        //    wide as the whole table.
+        // 1. Preferred column widths: specified width or widest max-content cell.
         let mut col_widths = Vec::<f32>::new();
         for row in &self.children {
             for (col_idx, cell) in row.children.iter().enumerate() {
-                let w = cell.max_content_width();
+                let w = if let Some(Value::Length(px, Unit::Px)) = cell.style().and_then(|s| s.value("width")) {
+                    *px
+                } else {
+                    cell.max_content_width()
+                };
                 if col_idx >= col_widths.len() {
                     col_widths.push(w);
                 } else {
@@ -2111,10 +2165,18 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
+        let num_cols = col_widths.len();
+        let total_col_spacing = if num_cols > 1 {
+            (num_cols - 1) as f32 * spacing
+        } else {
+            0.0
+        };
+
         // 2. Scale the columns to the table's width, keeping their proportions.
         let preferred_total: f32 = col_widths.iter().sum();
-        if preferred_total > 0.0 && table_w > 0.0 {
-            let scale = table_w / preferred_total;
+        let available_for_cols = (table_w - total_col_spacing).max(0.0);
+        if preferred_total > 0.0 && available_for_cols > 0.0 {
+            let scale = available_for_cols / preferred_total;
             for w in &mut col_widths {
                 *w *= scale;
             }
@@ -2124,7 +2186,8 @@ impl<'a> LayoutBox<'a> {
         let mut cursor_y = self.dimensions.content.y;
         let mut total_table_h = 0.0f32;
 
-        for row in &mut self.children {
+        let num_rows = self.children.len();
+        for (row_idx, row) in self.children.iter_mut().enumerate() {
             row.dimensions.content.x = table_x;
             row.dimensions.content.y = cursor_y;
             row.dimensions.content.width = self.dimensions.content.width;
@@ -2146,7 +2209,7 @@ impl<'a> LayoutBox<'a> {
                 cell.layout(cell_containing);
                 let h = cell.dimensions.margin_box().height;
                 row_h = row_h.max(h);
-                cell_x += cell_w;
+                cell_x += cell_w + spacing;
             }
 
             // Cells stretch to the tallest cell in the row, so their backgrounds
@@ -2164,7 +2227,12 @@ impl<'a> LayoutBox<'a> {
 
             row.dimensions.content.height = row_h;
             cursor_y += row_h;
-            total_table_h += row_h;
+            if row_idx + 1 < num_rows {
+                cursor_y += spacing;
+                total_table_h += row_h + spacing;
+            } else {
+                total_table_h += row_h;
+            }
         }
 
         self.dimensions.content.height = total_table_h;
@@ -2615,6 +2683,10 @@ fn text_style_for_node(node: &StyledNode, inherited: TextStyle) -> TextStyle {
         },
         _ => inherited.text_transform,
     };
+    let text_shadow = match node.value("text-shadow") {
+        Some(Value::TextShadow(ts)) => Some(*ts),
+        _ => inherited.text_shadow,
+    };
     TextStyle {
         color,
         font_size,
@@ -2623,6 +2695,7 @@ fn text_style_for_node(node: &StyledNode, inherited: TextStyle) -> TextStyle {
         underline,
         strikethrough,
         text_transform,
+        text_shadow,
     }
 }
 
@@ -2814,6 +2887,7 @@ fn add_fragment(line: &mut OpenLine, text: String, style: TextStyle, x: f32) {
             && previous.color == style.color
             && previous.underline == style.underline
             && previous.strikethrough == style.strikethrough
+            && previous.text_shadow == style.text_shadow
             && gap >= -0.5
             && gap <= space_width + 0.5;
         if continues_run {
@@ -2844,6 +2918,7 @@ fn add_fragment(line: &mut OpenLine, text: String, style: TextStyle, x: f32) {
         font_size: style.font_size,
         underline: style.underline,
         strikethrough: style.strikethrough,
+        text_shadow: style.text_shadow,
     });
     line.width += width;
     line.ascent = line.ascent.max(ascent);
@@ -3007,10 +3082,13 @@ fn number_value(value: &Value) -> f32 {
         Value::RadialGradient(_) => 0.0,
         Value::ConicGradient(_) => 0.0,
         Value::BoxShadow(_) => 0.0,
+        Value::TextShadow(_) => 0.0,
         Value::Transform(_) => 0.0,
         Value::Transition(_) => 0.0,
         Value::Animation(_) => 0.0,
         Value::Filter(_) => 0.0,
+        Value::ClipPath(_) => 0.0,
+        Value::BlendMode(_) => 0.0,
         Value::Var { .. } => 0.0,
         Value::Calc(expr) => eval_calc(expr, 0.0, 16.0),
     }

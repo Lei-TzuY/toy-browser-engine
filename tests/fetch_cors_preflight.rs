@@ -15,12 +15,8 @@ fn response(
     allow_headers: Option<&str>,
     allow_credentials: bool,
 ) -> FetchResponse {
-    let mut response = FetchResponse::synthetic(
-        url(endpoint),
-        200,
-        Some("text/plain"),
-        b"ok".to_vec(),
-    );
+    let mut response =
+        FetchResponse::synthetic(url(endpoint), 200, Some("text/plain"), b"ok".to_vec());
     response
         .headers
         .append_raw("access-control-allow-origin", allow_origin);
@@ -62,10 +58,7 @@ fn browser_for(
     (browser, transport)
 }
 
-fn complete_preflight_and_send_actual(
-    browser: &mut Browser,
-    transport: &Rc<ManualNetwork>,
-) {
+fn complete_preflight_and_send_actual(browser: &mut Browser, transport: &Rc<ManualNetwork>) {
     assert_eq!(transport.complete_all(), 1, "preflight should complete");
     let completion = browser.tick();
     assert_eq!(completion.network_completions, 1);
@@ -164,6 +157,80 @@ fn denied_preflight_never_sends_the_actual_request() {
 }
 
 #[test]
+fn malformed_allow_methods_member_rejects_the_entire_preflight_list() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", {
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        response(endpoint, "*", Some("PUT, PATCH /"), Some("x-token"), false),
+    );
+
+    browser.tick();
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    browser.tick();
+
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+
+#[test]
+fn malformed_allow_headers_member_rejects_the_entire_preflight_list() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", {
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        response(
+            endpoint,
+            "*",
+            Some("PUT"),
+            Some("x-token, bad header"),
+            false,
+        ),
+    );
+
+    browser.tick();
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    browser.tick();
+
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+
+#[test]
+fn empty_allow_list_members_are_ignored_for_http_list_compatibility() {
+    let endpoint = "http://api.test/data";
+    let (mut browser, transport) = browser_for(
+        r#"fetch("http://api.test/data", {
+               method: "PUT",
+               headers: { "X-Token": "secret" },
+               body: "payload"
+             }).then(function () { console.log("ok"); })
+               .catch(function () { console.log("blocked"); });"#,
+        endpoint,
+        response(endpoint, "*", Some(", PUT, ,"), Some(", x-token, ,"), false),
+    );
+
+    browser.tick();
+    complete_preflight_and_send_actual(&mut browser, &transport);
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+
+    assert_eq!(browser.document().runtime.console, vec!["ok"]);
+}
+
+#[test]
 fn credentialed_preflight_omits_cookie_then_actual_request_includes_it() {
     let endpoint = "http://page.test:8080/data";
     let mut allowed = response(
@@ -259,13 +326,7 @@ fn credentialed_preflight_does_not_treat_method_or_header_wildcards_as_permissio
                credentials: "include"
              }).catch(function () { console.log("blocked"); });"#,
         endpoint,
-        response(
-            endpoint,
-            "http://page.test",
-            Some("*"),
-            Some("*"),
-            true,
-        ),
+        response(endpoint, "http://page.test", Some("*"), Some("*"), true),
     );
 
     browser.tick();
@@ -275,4 +336,102 @@ fn credentialed_preflight_does_not_treat_method_or_header_wildcards_as_permissio
 
     assert_eq!(transport.requests().len(), 1);
     assert_eq!(browser.document().runtime.console, vec!["blocked"]);
+}
+
+#[test]
+fn exactly_1024_safelisted_header_bytes_do_not_preflight() {
+    let endpoint = "http://api.test/data";
+    let value = "a".repeat(128);
+    let mut script = String::from("const h = new Headers();");
+    for _ in 0..8 {
+        script.push_str(&format!("h.append(\"Accept\", \"{value}\");"));
+    }
+    script.push_str(
+        r#"fetch("http://api.test/data", { headers: h })
+             .then(function () { console.log("ok"); })
+             .catch(function () { console.log("blocked"); });"#,
+    );
+
+    let (mut browser, transport) = browser_for(
+        &script,
+        endpoint,
+        response(endpoint, "*", None, None, false),
+    );
+
+    let first = browser.tick();
+    assert_eq!(first.requests_sent, 1);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method.as_str(), "GET");
+    assert!(requests[0]
+        .headers
+        .get("access-control-request-headers")
+        .is_none());
+    assert_eq!(
+        requests[0]
+            .headers
+            .iter()
+            .filter(|(name, _)| *name == "accept")
+            .count(),
+        8
+    );
+
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(browser.document().runtime.console, vec!["ok"]);
+}
+
+#[test]
+fn over_1024_safelisted_header_bytes_preflight_every_potential_name() {
+    let endpoint = "http://api.test/data";
+    let value = "a".repeat(128);
+    let mut script = String::from("const h = new Headers();");
+    for _ in 0..8 {
+        script.push_str(&format!("h.append(\"Accept\", \"{value}\");"));
+    }
+    script.push_str("h.append(\"Content-Language\", \"en\");");
+    script.push_str(
+        r#"fetch("http://api.test/data", { headers: h })
+             .then(function () { console.log("ok"); })
+             .catch(function () { console.log("blocked"); });"#,
+    );
+
+    let (mut browser, transport) = browser_for(
+        &script,
+        endpoint,
+        response(endpoint, "*", None, Some("accept, content-language"), false),
+    );
+
+    let first = browser.tick();
+    assert_eq!(first.requests_sent, 1);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method.as_str(), "OPTIONS");
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("access-control-request-headers")
+            .as_deref(),
+        Some("accept,content-language")
+    );
+
+    complete_preflight_and_send_actual(&mut browser, &transport);
+    let requests = transport.requests();
+    assert_eq!(requests[1].method.as_str(), "GET");
+    assert_eq!(
+        requests[1]
+            .headers
+            .iter()
+            .filter(|(name, _)| *name == "accept")
+            .count(),
+        8
+    );
+    assert_eq!(
+        requests[1].headers.get("content-language").as_deref(),
+        Some("en")
+    );
+
+    assert_eq!(transport.complete_all(), 1);
+    browser.tick();
+    assert_eq!(browser.document().runtime.console, vec!["ok"]);
 }

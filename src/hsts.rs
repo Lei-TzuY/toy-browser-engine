@@ -20,8 +20,22 @@ fn is_token_char(byte: u8) -> bool {
         && byte != 0x7f
         && !matches!(
             byte,
-            b'(' | b')' | b'<' | b'>' | b'@' | b',' | b';' | b':' | b'\\' | b'"' | b'/'
-                | b'[' | b']' | b'?' | b'=' | b'{' | b'}'
+            b'(' | b')'
+                | b'<'
+                | b'>'
+                | b'@'
+                | b','
+                | b';'
+                | b':'
+                | b'\\'
+                | b'"'
+                | b'/'
+                | b'['
+                | b']'
+                | b'?'
+                | b'='
+                | b'{'
+                | b'}'
         )
 }
 
@@ -45,9 +59,7 @@ fn split_directives(header: &str) -> Option<Vec<&str>> {
             match byte {
                 b'\\' => escaped = true,
                 b'"' => in_quotes = false,
-                b'\r' | b'\n' | 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f => {
-                    return None
-                }
+                b'\r' | b'\n' | 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f => return None,
                 _ => {}
             }
         } else {
@@ -101,6 +113,21 @@ fn parse_directive_value(input: &str) -> Option<String> {
     }
 }
 
+fn trim_http_lws(value: &str) -> &str {
+    value.trim_matches(|ch| matches!(ch, ' ' | '\t'))
+}
+
+fn parse_delta_seconds_saturating(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let mut parsed = 0_u64;
+    for digit in value.bytes().map(|byte| u64::from(byte - b'0')) {
+        parsed = parsed.saturating_mul(10).saturating_add(digit);
+    }
+    Some(parsed)
+}
+
 impl HstsPolicy {
     /// Parse the RFC 6797 directives needed by a user agent.
     ///
@@ -115,12 +142,12 @@ impl HstsPolicy {
         let mut seen_directives = HashSet::new();
 
         for raw in split_directives(header)? {
-            let directive = raw.trim();
+            let directive = trim_http_lws(raw);
             if directive.is_empty() {
                 continue;
             }
             let (name, value) = match directive.split_once('=') {
-                Some((name, value)) => (name.trim(), Some(value.trim())),
+                Some((name, value)) => (trim_http_lws(name), Some(trim_http_lws(value))),
                 None => (directive, None),
             };
 
@@ -141,13 +168,7 @@ impl HstsPolicy {
                     return None;
                 }
                 let digits = parsed_value.as_deref()?;
-                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                max_age = digits.parse::<u64>().ok();
-                if max_age.is_none() {
-                    return None;
-                }
+                max_age = Some(parse_delta_seconds_saturating(digits)?);
             } else if name.eq_ignore_ascii_case("includesubdomains") {
                 if saw_include_subdomains || parsed_value.is_some() {
                     return None;
@@ -227,8 +248,7 @@ impl HstsCache {
 
     /// Remove expired learned state.
     pub fn purge_expired(&mut self, now_ms: u64) {
-        self.entries
-            .retain(|_, entry| entry.expires_at_ms > now_ms);
+        self.entries.retain(|_, entry| entry.expires_at_ms > now_ms);
     }
 
     /// Whether `host` is a Known HSTS Host at `now_ms`.
@@ -251,9 +271,11 @@ impl HstsCache {
         let mut remainder = host.as_str();
         while let Some(dot) = remainder.find('.') {
             remainder = &remainder[dot + 1..];
-            if self.entries.get(remainder).is_some_and(|entry| {
-                entry.expires_at_ms > now_ms && entry.include_subdomains
-            }) {
+            if self
+                .entries
+                .get(remainder)
+                .is_some_and(|entry| entry.expires_at_ms > now_ms && entry.include_subdomains)
+            {
                 return true;
             }
         }
@@ -416,8 +438,14 @@ mod tests {
 
     #[test]
     fn canonicalizes_dns_case_and_one_terminal_root_dot() {
-        assert_eq!(canonical_dns_host("Example.TEST."), Some("example.test".into()));
-        assert_eq!(canonical_dns_host("XN--BCHER-KVA.Example"), Some("xn--bcher-kva.example".into()));
+        assert_eq!(
+            canonical_dns_host("Example.TEST."),
+            Some("example.test".into())
+        );
+        assert_eq!(
+            canonical_dns_host("XN--BCHER-KVA.Example"),
+            Some("xn--bcher-kva.example".into())
+        );
         assert_eq!(canonical_dns_host("example.test.."), None);
     }
 
@@ -428,8 +456,14 @@ mod tests {
         assert_eq!(canonical_dns_host("bad-.example"), None);
         assert_eq!(canonical_dns_host("bad_name.example"), None);
         assert_eq!(canonical_dns_host("bücher.example"), None);
-        assert_eq!(canonical_dns_host(&format!("{}.example", "a".repeat(64))), None);
-        assert_eq!(canonical_dns_host(&format!("{}.test", "a".repeat(249))), None);
+        assert_eq!(
+            canonical_dns_host(&format!("{}.example", "a".repeat(64))),
+            None
+        );
+        assert_eq!(
+            canonical_dns_host(&format!("{}.test", "a".repeat(249))),
+            None
+        );
     }
 
     #[test]
@@ -498,6 +532,53 @@ mod tests {
                 .upgrade_url(&url("https://example.test/a"), 1)
                 .to_string(),
             "https://example.test/a"
+        );
+    }
+    #[test]
+    fn directive_grammar_honors_implied_http_lws_only() {
+        assert!(HstsPolicy::parse("\tmax-age=60\t;\tincludeSubDomains\t").is_some());
+        assert!(HstsPolicy::parse("max-age = 60; ext = \"quoted value\"").is_some());
+        assert_eq!(HstsPolicy::parse("max-age=60;\u{00a0}preload"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60;preload\u{2003}"), None);
+        assert_eq!(HstsPolicy::parse("max-age\u{00a0}=60"), None);
+        assert_eq!(HstsPolicy::parse("max-age=\u{00a0}60"), None);
+    }
+
+    #[test]
+    fn oversized_max_age_keeps_policy_live_at_u64_clock_boundary() {
+        let mut cache = HstsCache::new();
+        let source = url("https://example.test/");
+        assert!(cache.observe_response(
+            &source,
+            "max-age=18446744073709551616; includeSubDomains",
+            1_000,
+        ));
+        assert!(cache.is_known_host("example.test", u64::MAX - 1));
+        assert!(cache.is_known_host("api.example.test", u64::MAX - 1));
+    }
+
+    #[test]
+    fn oversized_delta_seconds_remains_valid_and_saturates() {
+        assert_eq!(
+            parse_delta_seconds_saturating("18446744073709551615"),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            parse_delta_seconds_saturating("18446744073709551616"),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            parse_delta_seconds_saturating(&"9".repeat(256)),
+            Some(u64::MAX)
+        );
+        assert_eq!(parse_delta_seconds_saturating(""), None);
+        assert_eq!(parse_delta_seconds_saturating("123x"), None);
+        assert_eq!(
+            HstsPolicy::parse("max-age=18446744073709551616"),
+            Some(HstsPolicy {
+                max_age_seconds: u64::MAX,
+                include_subdomains: false,
+            })
         );
     }
 }

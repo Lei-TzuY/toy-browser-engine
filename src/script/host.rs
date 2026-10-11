@@ -13,7 +13,7 @@
 //  adds exactly what JavaScript needs — shared mutable headers, single-use
 //  bodies, and an abort flag two objects can see at once.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 use crate::fetch_redirect_policy::FetchRedirectMode;
@@ -21,15 +21,88 @@ use crate::net::fetch::{FetchRequest, FetchResponse, HeaderMap, Method};
 use crate::net::Url;
 use crate::referrer_policy::ReferrerPolicy;
 
-/// A shared, mutable header list.
+/// The mutation policy attached to one script-visible header list.
 ///
-/// `response.headers` hands back a new wrapper each time, but every wrapper
-/// points at the same map — so a `set` through one is visible through another,
-/// the way a single JavaScript object would behave.
-pub type HeadersRef = Rc<RefCell<HeaderMap>>;
+/// Constructor-created Headers/Request/Response objects remain mutable. Header
+/// lists exposed by a network Response are immutable, matching Fetch's response
+/// header guard without pushing script-only state into the wire HeaderMap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadersGuard {
+    Mutable,
+    Request,
+    RequestNoCors,
+    Immutable,
+}
+
+#[derive(Debug)]
+struct HeadersData {
+    map: RefCell<HeaderMap>,
+    guard: HeadersGuard,
+}
+
+/// A shared script-visible header list plus its Fetch mutation guard.
+///
+/// Multiple wrappers for the same Headers object share both the map and guard.
+/// Copying through `new Headers(existing)` creates a fresh mutable list instead.
+#[derive(Debug, Clone)]
+pub struct HeadersRef(Rc<HeadersData>);
+
+impl HeadersRef {
+    fn new(headers: HeaderMap, guard: HeadersGuard) -> Self {
+        Self(Rc::new(HeadersData {
+            map: RefCell::new(headers),
+            guard,
+        }))
+    }
+
+    pub fn borrow(&self) -> Ref<'_, HeaderMap> {
+        self.0.map.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<'_, HeaderMap> {
+        self.0.map.borrow_mut()
+    }
+
+    pub(crate) fn is_immutable(&self) -> bool {
+        self.0.guard == HeadersGuard::Immutable
+    }
+
+    pub(crate) fn is_request_guard(&self) -> bool {
+        matches!(
+            self.0.guard,
+            HeadersGuard::Request | HeadersGuard::RequestNoCors
+        )
+    }
+
+    pub(crate) fn is_request_no_cors(&self) -> bool {
+        self.0.guard == HeadersGuard::RequestNoCors
+    }
+
+    /// Clone the header list while preserving its Fetch guard. Response.clone()
+    /// uses this; constructor copies deliberately go through `headers_ref`.
+    pub(crate) fn clone_detached(&self) -> HeadersRef {
+        HeadersRef::new(self.borrow().clone(), self.0.guard)
+    }
+}
 
 pub fn headers_ref(headers: HeaderMap) -> HeadersRef {
-    Rc::new(RefCell::new(headers))
+    HeadersRef::new(headers, HeadersGuard::Mutable)
+}
+
+fn immutable_headers_ref(headers: HeaderMap) -> HeadersRef {
+    HeadersRef::new(headers, HeadersGuard::Immutable)
+}
+
+/// Build the script-visible header list owned by a Request. Ordinary CORS and
+/// same-origin Requests use the request guard; no-cors Requests use the stricter
+/// request-no-cors guard.
+pub(crate) fn request_headers_ref(headers: HeaderMap, mode: RequestMode) -> HeadersRef {
+    let guard = if mode == RequestMode::NoCors {
+        HeadersGuard::RequestNoCors
+    } else {
+        HeadersGuard::Request
+    };
+    HeadersRef::new(headers, guard)
 }
 
 // ── Bodies ────────────────────────────────────────────────────────────────────
@@ -43,6 +116,7 @@ pub fn headers_ref(headers: HeaderMap) -> HeadersRef {
 pub struct Body {
     bytes: RefCell<Option<Vec<u8>>>,
     used: Cell<bool>,
+    present: bool,
 }
 
 impl Body {
@@ -50,11 +124,28 @@ impl Body {
         Body {
             bytes: RefCell::new(Some(bytes)),
             used: Cell::new(false),
+            present: true,
         }
     }
 
     pub fn empty() -> Body {
         Body::new(Vec::new())
+    }
+
+    /// A genuinely body-less value. Reading it yields empty bytes without
+    /// disturbing a stream because no body stream exists.
+    pub fn absent() -> Body {
+        Body {
+            bytes: RefCell::new(Some(Vec::new())),
+            used: Cell::new(false),
+            present: false,
+        }
+    }
+
+    /// Whether this wrapper represents a real body, including an authored
+    /// zero-length body.
+    pub fn present(&self) -> bool {
+        self.present
     }
 
     /// True once the body has been consumed.
@@ -64,6 +155,9 @@ impl Body {
 
     /// Take the bytes, or explain why they are no longer there.
     pub fn take(&self) -> Result<Vec<u8>, String> {
+        if !self.present {
+            return Ok(Vec::new());
+        }
         if self.used.get() {
             return Err("TypeError: body stream already read".to_string());
         }
@@ -105,11 +199,60 @@ pub fn decode_text(bytes: &[u8]) -> String {
 #[derive(Debug, Default)]
 pub struct AbortState {
     aborted: Cell<bool>,
+    timeout_at: Cell<Option<f64>>,
+    sources: Vec<Rc<AbortState>>,
 }
 
 impl AbortState {
     pub fn new() -> Rc<AbortState> {
         Rc::new(AbortState::default())
+    }
+
+    pub fn with_timeout(timeout_ms: f64, now_ms: f64) -> Rc<AbortState> {
+        let state = AbortState::default();
+        if timeout_ms <= 0.0 {
+            state.aborted.set(true);
+        } else {
+            state.timeout_at.set(Some(now_ms + timeout_ms));
+        }
+        Rc::new(state)
+    }
+
+    pub fn any(sources: Vec<Rc<AbortState>>, now_ms: f64) -> Rc<AbortState> {
+        let state = Rc::new(AbortState {
+            sources,
+            ..AbortState::default()
+        });
+        state.check_timeout(now_ms);
+        state
+    }
+
+    pub fn check_timeout(&self, now_ms: f64) {
+        if self.aborted.get() {
+            return;
+        }
+        // Composed signals retain their sources. Walk the graph iteratively:
+        // nested/repeated any() inputs must not recurse or revisit shared nodes.
+        let mut pending = vec![self];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(state) = pending.pop() {
+            if !visited.insert(state as *const AbortState) {
+                continue;
+            }
+            if state.timeout_at.get().is_some_and(|time| now_ms >= time) {
+                state.aborted.set(true);
+            }
+            if state.aborted.get() {
+                self.aborted.set(true);
+                return;
+            }
+            pending.extend(state.sources.iter().map(Rc::as_ref));
+        }
+    }
+
+    pub fn aborted_at(&self, now_ms: f64) -> bool {
+        self.check_timeout(now_ms);
+        self.aborted()
     }
 
     pub fn aborted(&self) -> bool {
@@ -215,18 +358,41 @@ pub struct RequestData {
 }
 
 impl RequestData {
+    /// Add a browser-owned HTTP `Range` header.
+    ///
+    /// Fetch treats `Range` as a privileged no-CORS request header: web
+    /// content cannot create it through a request-no-cors Headers object, but
+    /// browser features such as media/download fetches may seed it internally.
+    /// Such state survives an unmodified Request copy and is removed once
+    /// unprivileged code successfully modifies that no-CORS header list.
+    pub fn add_range_header(&self, first: u64, last: Option<u64>) {
+        if let Some(last) = last {
+            assert!(first <= last, "Range end must not precede its start");
+        }
+        let value = match last {
+            Some(last) => format!("bytes={first}-{last}"),
+            None => format!("bytes={first}-"),
+        };
+        self.headers.borrow_mut().append_raw("range", &value);
+    }
+
     /// The wire request this describes.
     ///
-    /// Reads the body without consuming it, so `fetch(request)` still leaves
-    /// `request.bodyUsed` false until the script itself reads it. Mode and
-    /// credentials remain browser-only metadata and therefore are intentionally
-    /// absent from this transport representation.
+    /// Reads this internal request copy without consuming it. Script-visible
+    /// Request input consumption is handled by `fetch()` when the operation
+    /// successfully starts. A present zero-length body remains distinct from a
+    /// genuinely body-less request on the wire.
     pub fn to_wire(&self) -> FetchRequest {
+        let body = if self.body.present() {
+            Some(self.body.peek().unwrap_or_default())
+        } else {
+            None
+        };
         FetchRequest::new(
             self.url.clone(),
             self.method,
             self.headers.borrow().clone(),
-            self.body.peek(),
+            body,
         )
     }
 }
@@ -261,6 +427,13 @@ impl ResponseType {
     }
 }
 
+/// Fetch statuses whose response body is always null rather than an empty
+/// readable stream. This is shared by network response wrapping and later
+/// request-method-aware handling (HEAD adds another null-body condition).
+pub const fn is_null_body_status(status: u16) -> bool {
+    matches!(status, 101 | 103 | 204 | 205 | 304)
+}
+
 /// A `Response` object.
 #[derive(Debug)]
 pub struct ResponseData {
@@ -274,14 +447,24 @@ pub struct ResponseData {
 }
 
 impl ResponseData {
-    /// Wrap what came back from the network.
-    pub fn from_wire(response: FetchResponse) -> ResponseData {
+    /// Wrap what came back from the network. Null-body statuses remain truly
+    /// body-less even if a malformed backend supplied payload bytes. Forbidden
+    /// response headers are removed only at this script-visible boundary so
+    /// lower cookie/policy layers can still process the original wire fields.
+    pub fn from_wire(mut response: FetchResponse) -> ResponseData {
+        response.headers.delete("set-cookie");
+        response.headers.delete("set-cookie2");
+        let null_body = is_null_body_status(response.status);
         ResponseData {
             url: response.url,
             status: response.status,
             status_text: response.status_text,
-            headers: headers_ref(response.headers),
-            body: Body::new(response.body),
+            headers: immutable_headers_ref(response.headers),
+            body: if null_body {
+                Body::absent()
+            } else {
+                Body::new(response.body)
+            },
             redirected: response.redirected,
             response_type: ResponseType::Basic,
         }
@@ -297,8 +480,8 @@ impl ResponseData {
             url: response.url,
             status: 0,
             status_text: String::new(),
-            headers: headers_ref(HeaderMap::new()),
-            body: Body::empty(),
+            headers: immutable_headers_ref(HeaderMap::new()),
+            body: Body::absent(),
             redirected: false,
             response_type: ResponseType::Opaque,
         }
@@ -318,15 +501,15 @@ impl ResponseData {
             url: response.url,
             status: 0,
             status_text: String::new(),
-            headers: headers_ref(HeaderMap::new()),
-            body: Body::empty(),
+            headers: immutable_headers_ref(HeaderMap::new()),
+            body: Body::absent(),
             redirected: false,
             response_type: ResponseType::OpaqueRedirect,
         }
     }
 
     pub fn script_url(&self) -> String {
-        if self.is_opaque() {
+        if self.is_opaque() || self.response_type == ResponseType::Default {
             String::new()
         } else {
             self.url.to_string()
@@ -549,13 +732,70 @@ impl ResizeObserverData {
     }
 }
 
-/// A ResizeObserverEntry snapshot.
+/// An ResizeObserverEntry snapshot.
 #[derive(Debug, Clone)]
 pub struct ResizeObserverEntryData {
     pub target_id: String,
     pub content_rect: [f32; 4],
     pub border_box_size: (f32, f32),
     pub content_box_size: (f32, f32),
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationObserverTarget {
+    pub target_id: String,
+    pub child_list: bool,
+    pub attributes: bool,
+    pub character_data: bool,
+    pub subtree: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationRecordData {
+    pub type_name: String,
+    pub target_id: String,
+    pub added_nodes: Vec<String>,
+    pub removed_nodes: Vec<String>,
+    pub attribute_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationObserverData {
+    pub targets: Vec<MutationObserverTarget>,
+    pub records: Vec<MutationRecordData>,
+}
+
+impl MutationObserverData {
+    pub fn new() -> Self {
+        Self {
+            targets: Vec::new(),
+            records: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MessagePortData {
+    pub closed: Rc<Cell<bool>>,
+    pub onmessage: Rc<RefCell<Option<crate::script::interp::JsValue>>>,
+    pub peer: Rc<RefCell<Option<Rc<MessagePortData>>>>,
+}
+
+impl MessagePortData {
+    pub fn new_pair() -> (Rc<Self>, Rc<Self>) {
+        let p1 = Rc::new(Self {
+            closed: Rc::new(Cell::new(false)),
+            onmessage: Rc::new(RefCell::new(None)),
+            peer: Rc::new(RefCell::new(None)),
+        });
+        let p2 = Rc::new(Self {
+            closed: Rc::new(Cell::new(false)),
+            onmessage: Rc::new(RefCell::new(None)),
+            peer: Rc::new(RefCell::new(Some(p1.clone()))),
+        });
+        *p1.peer.borrow_mut() = Some(p2.clone());
+        (p1, p2)
+    }
 }
 
 // ── The value the interpreter sees ────────────────────────────────────────────
@@ -582,6 +822,10 @@ pub enum HostObject {
     IntersectionObserverEntry(IntersectionObserverEntryData),
     ResizeObserver(Rc<RefCell<ResizeObserverData>>),
     ResizeObserverEntry(ResizeObserverEntryData),
+    MutationObserver(Rc<RefCell<MutationObserverData>>),
+    MutationRecord(MutationRecordData),
+    MessageChannel(Rc<MessagePortData>, Rc<MessagePortData>),
+    MessagePort(Rc<MessagePortData>),
     JsMap(Rc<RefCell<Vec<(String, crate::script::interp::JsValue)>>>),
     JsSet(Rc<RefCell<Vec<String>>>),
     Crypto,
@@ -606,6 +850,10 @@ impl HostObject {
             HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
             HostObject::ResizeObserver(_) => "ResizeObserver",
             HostObject::ResizeObserverEntry(_) => "ResizeObserverEntry",
+            HostObject::MutationObserver(_) => "MutationObserver",
+            HostObject::MutationRecord(_) => "MutationRecord",
+            HostObject::MessageChannel(_, _) => "MessageChannel",
+            HostObject::MessagePort(_) => "MessagePort",
             HostObject::JsMap(_) => "Map",
             HostObject::JsSet(_) => "Set",
             HostObject::Crypto => "Crypto",
@@ -673,6 +921,16 @@ mod tests {
         assert_eq!(body.peek(), None, "an empty wrapper has no transport body");
         assert_eq!(body.take().unwrap(), Vec::<u8>::new());
         assert!(body.take().is_err(), "even an empty body is single-use");
+    }
+
+    #[test]
+    fn an_absent_body_has_no_stream_to_disturb() {
+        let body = Body::absent();
+        assert!(!body.present());
+        assert_eq!(body.peek(), None);
+        assert_eq!(body.take().unwrap(), Vec::<u8>::new());
+        assert!(!body.used());
+        assert_eq!(body.take().unwrap(), Vec::<u8>::new());
     }
 
     #[test]
@@ -769,6 +1027,34 @@ mod tests {
             ));
             assert_eq!(response.ok(), expected, "status {status}");
         }
+    }
+
+    #[test]
+    fn null_body_statuses_do_not_create_a_readable_stream() {
+        for status in [101, 103, 204, 205, 304] {
+            let response = ResponseData::from_wire(FetchResponse::synthetic(
+                Url::parse("http://x/").unwrap(),
+                status,
+                Some("text/plain"),
+                b"backend payload that must be ignored".to_vec(),
+            ));
+            assert!(!response.body.present(), "status {status}");
+            assert_eq!(response.body.take().unwrap(), Vec::<u8>::new());
+            assert!(!response.body.used(), "status {status}");
+        }
+    }
+
+    #[test]
+    fn opaque_filtered_responses_are_bodyless_internally_too() {
+        let wire = FetchResponse::synthetic(
+            Url::parse("http://cross-origin.test/").unwrap(),
+            200,
+            Some("text/plain"),
+            b"secret".to_vec(),
+        );
+        let opaque = ResponseData::opaque_from_wire(wire);
+        assert!(!opaque.body.present());
+        assert!(!opaque.body.used());
     }
 
     #[test]

@@ -156,6 +156,111 @@ pub struct ConicGradient {
     pub stops: Vec<ColorStop>,
 }
 
+/// A parsed `text-shadow` value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextShadow {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub blur_radius: f32,
+    pub color: Color,
+}
+
+/// A parsed `clip-path` value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClipPath {
+    Polygon(Vec<(f32, f32)>),
+    Circle { cx: f32, cy: f32, radius: f32 },
+    Inset { top: f32, right: f32, bottom: f32, left: f32 },
+}
+
+pub fn parse_clip_path(input: &str) -> Option<ClipPath> {
+    let s = input.trim();
+    if s.starts_with("polygon(") && s.ends_with(')') {
+        let inner = &s[8..s.len() - 1];
+        let mut points = Vec::new();
+        for pair in inner.split(',') {
+            let parts: Vec<&str> = pair.trim().split_whitespace().collect();
+            if parts.len() >= 2 {
+                let parse_coord = |val: &str| -> f32 {
+                    let val = val.trim();
+                    if let Some(pct) = val.strip_suffix('%') {
+                        pct.parse::<f32>().unwrap_or(0.0) / 100.0
+                    } else if let Some(px) = val.strip_suffix("px") {
+                        px.parse::<f32>().unwrap_or(0.0) / 100.0
+                    } else {
+                        val.parse::<f32>().unwrap_or(0.0)
+                    }
+                };
+                let x = parse_coord(parts[0]);
+                let y = parse_coord(parts[1]);
+                points.push((x, y));
+            }
+        }
+        if !points.is_empty() {
+            return Some(ClipPath::Polygon(points));
+        }
+    } else if s.starts_with("circle(") && s.ends_with(')') {
+        let inner = &s[7..s.len() - 1].trim();
+        let (radius_str, at_str) = if let Some((r, at)) = inner.split_once("at") {
+            (r.trim(), Some(at.trim()))
+        } else {
+            (*inner, None)
+        };
+        let radius = if let Some(pct) = radius_str.strip_suffix('%') {
+            pct.parse::<f32>().unwrap_or(50.0) / 100.0
+        } else {
+            0.5
+        };
+        let (cx, cy) = if let Some(at) = at_str {
+            let parts: Vec<&str> = at.split_whitespace().collect();
+            let x = parts.first().and_then(|p| p.strip_suffix('%')).and_then(|p| p.parse().ok()).map(|p: f32| p / 100.0).unwrap_or(0.5);
+            let y = parts.get(1).and_then(|p| p.strip_suffix('%')).and_then(|p| p.parse().ok()).map(|p: f32| p / 100.0).unwrap_or(0.5);
+            (x, y)
+        } else {
+            (0.5, 0.5)
+        };
+        return Some(ClipPath::Circle { cx, cy, radius });
+    } else if s.starts_with("inset(") && s.ends_with(')') {
+        let inner = &s[6..s.len() - 1].trim();
+        let parts: Vec<f32> = inner.split_whitespace().filter_map(|p| {
+            p.trim_end_matches("px").trim_end_matches('%').parse().ok()
+        }).collect();
+        let top = parts.first().copied().unwrap_or(0.0);
+        let right = parts.get(1).copied().unwrap_or(top);
+        let bottom = parts.get(2).copied().unwrap_or(top);
+        let left = parts.get(3).copied().unwrap_or(right);
+        return Some(ClipPath::Inset { top, right, bottom, left });
+    }
+    None
+}
+
+/// A parsed CSS blend-mode value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    Difference,
+    Exclusion,
+}
+
+pub fn parse_blend_mode(input: &str) -> Option<BlendMode> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(BlendMode::Normal),
+        "multiply" => Some(BlendMode::Multiply),
+        "screen" => Some(BlendMode::Screen),
+        "overlay" => Some(BlendMode::Overlay),
+        "darken" => Some(BlendMode::Darken),
+        "lighten" => Some(BlendMode::Lighten),
+        "difference" => Some(BlendMode::Difference),
+        "exclusion" => Some(BlendMode::Exclusion),
+        _ => None,
+    }
+}
+
 // ── Pseudo-class types ────────────────────────────────────────────────────────
 
 /// The `An+B` expression used in `:nth-child(An+B)` and related selectors.
@@ -488,6 +593,9 @@ pub enum Value {
     RadialGradient(RadialGradient),
     ConicGradient(ConicGradient),
     BoxShadow(BoxShadow),
+    TextShadow(TextShadow),
+    ClipPath(ClipPath),
+    BlendMode(BlendMode),
     Transform(Transform),
     Transition(Vec<TransitionSpec>),
     Animation(Vec<AnimationSpec>),
@@ -534,6 +642,9 @@ impl Value {
             Value::RadialGradient(_) => "radial-gradient(...)".to_string(),
             Value::ConicGradient(_) => "conic-gradient(...)".to_string(),
             Value::BoxShadow(_) => "box-shadow(...)".to_string(),
+            Value::TextShadow(_) => "text-shadow(...)".to_string(),
+            Value::ClipPath(_) => "clip-path(...)".to_string(),
+            Value::BlendMode(b) => format!("{:?}", b).to_ascii_lowercase(),
             Value::Transform(_) => "transform(...)".to_string(),
             Value::Transition(_) => "transition(...)".to_string(),
             Value::Animation(_) => "animation(...)".to_string(),
@@ -1286,7 +1397,21 @@ impl Parser {
                 c if c.is_alphabetic() => {
                     let sp = self.pos;
                     let name = self.parse_ident();
-                    if let Some(c) = named_color(&name) {
+                    if name == "rgb" || name == "rgba" {
+                        self.skip_ws_and_comments();
+                        if self.peek() == '(' {
+                            self.consume();
+                            if let Value::Color(c) = self.parse_rgb_inner() {
+                                Some(c)
+                            } else {
+                                self.pos = sp;
+                                None
+                            }
+                        } else {
+                            self.pos = sp;
+                            None
+                        }
+                    } else if let Some(c) = named_color(&name) {
                         Some(c)
                     } else {
                         self.pos = sp;
@@ -1588,6 +1713,10 @@ impl Parser {
                 let values = self.parse_shorthand_values(first_value);
                 expand_border_shorthand(&name, values)
             }
+            "outline" => {
+                let values = self.parse_shorthand_values(first_value);
+                expand_outline_shorthand(values)
+            }
             "flex" => {
                 let values = self.parse_shorthand_values(first_value);
                 expand_flex_shorthand(values)
@@ -1599,6 +1728,30 @@ impl Parser {
             "gap" | "grid-gap" => {
                 let values = self.parse_shorthand_values(first_value);
                 expand_gap_shorthand(values)
+            }
+            "columns" => {
+                let values = self.parse_shorthand_values(first_value);
+                let mut count = None;
+                let mut width = None;
+                for v in values {
+                    match v {
+                        Value::Number(n) => count = Some(n as usize),
+                        Value::Length(n, unit) => width = Some(Value::Length(n, unit)),
+                        Value::Keyword(ref s) if s == "auto" => {}
+                        _ => {}
+                    }
+                }
+                let mut decls = Vec::new();
+                if let Some(c) = count {
+                    decls.push(Declaration::new("column-count", Value::Number(c as f32)));
+                }
+                if let Some(w) = width {
+                    decls.push(Declaration::new("column-width", w));
+                }
+                if decls.is_empty() {
+                    decls.push(Declaration::new("column-count", Value::Keyword("auto".to_string())));
+                }
+                decls
             }
             "grid-column" | "grid-row" => {
                 let mut raw = match &first_value {
@@ -1629,6 +1782,30 @@ impl Parser {
                 vec![Declaration::new(
                     name,
                     Value::BoxShadow(BoxShadow {
+                        offset_x,
+                        offset_y,
+                        blur_radius,
+                        color,
+                    }),
+                )]
+            }
+            "text-shadow" => {
+                let values = self.parse_shorthand_values(first_value);
+                let mut lengths = Vec::new();
+                let mut color = Color::rgba(0, 0, 0, 128);
+                for v in values {
+                    match v {
+                        Value::Length(n, _) | Value::Number(n) => lengths.push(n),
+                        Value::Color(c) => color = c,
+                        _ => {}
+                    }
+                }
+                let offset_x = lengths.first().copied().unwrap_or(0.0);
+                let offset_y = lengths.get(1).copied().unwrap_or(0.0);
+                let blur_radius = lengths.get(2).copied().unwrap_or(0.0);
+                vec![Declaration::new(
+                    name,
+                    Value::TextShadow(TextShadow {
                         offset_x,
                         offset_y,
                         blur_radius,
@@ -1756,7 +1933,7 @@ impl Parser {
                 let time_ms = parse_time_to_ms(&raw).unwrap_or(0.0);
                 vec![Declaration::new(name, Value::Number(time_ms))]
             }
-            "filter" => {
+            "filter" | "backdrop-filter" => {
                 let mut raw = match &first_value {
                     Value::Keyword(s) => s.clone(),
                     Value::Length(n, Unit::Px) => format!("{}px", n),
@@ -1771,6 +1948,48 @@ impl Parser {
                 } else {
                     vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
                 }
+            }
+            "clip-path" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    Value::Length(n, Unit::Px) => format!("{}px", n),
+                    Value::Number(n) => format!("{}", n),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                raw.push(' ');
+                raw.push_str(&rest);
+                if let Some(cp) = parse_clip_path(&raw) {
+                    vec![Declaration::new(name, Value::ClipPath(cp))]
+                } else {
+                    vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
+                }
+            }
+            "mix-blend-mode" | "background-blend-mode" => {
+                let raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    _ => String::new(),
+                };
+                if let Some(bm) = parse_blend_mode(&raw) {
+                    vec![Declaration::new(name, Value::BlendMode(bm))]
+                } else {
+                    vec![Declaration::new(name, first_value)]
+                }
+            }
+            "scroll-snap-type" => {
+                let mut raw = match &first_value {
+                    Value::Keyword(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let rest = self.consume_while(|c| c != ';' && c != '!' && c != '}');
+                if !rest.trim().is_empty() {
+                    raw.push(' ');
+                    raw.push_str(rest.trim());
+                }
+                vec![Declaration::new(name, Value::Keyword(raw.trim().to_string()))]
+            }
+            "mask-image" | "-webkit-mask-image" => {
+                vec![Declaration::new("mask-image", first_value)]
             }
             _ => vec![Declaration::new(name, first_value)],
         };
@@ -2206,6 +2425,34 @@ fn expand_gap_shorthand(values: Vec<Value>) -> Vec<Declaration> {
     ]
 }
 
+fn expand_outline_shorthand(values: Vec<Value>) -> Vec<Declaration> {
+    let mut width = Value::Length(1.0, Unit::Px);
+    let mut style = Value::Keyword("none".to_string());
+    let mut color = Value::Color(Color::rgb(0, 0, 0));
+
+    for val in values {
+        match val {
+            Value::Length(..) | Value::Number(..) => width = val,
+            Value::Color(..) => color = val,
+            Value::Keyword(ref s) => {
+                match s.as_str() {
+                    "none" | "hidden" | "dotted" | "dashed" | "solid" | "double" | "groove" | "ridge" | "inset" | "outset" => {
+                        style = val;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    vec![
+        Declaration::new("outline-width", width),
+        Declaration::new("outline-style", style),
+        Declaration::new("outline-color", color),
+    ]
+}
+
 /// `grid-column: <start> [ / <end> ]` and `grid-row: <start> [ / <end> ]`.
 fn expand_grid_placement_shorthand(name: &str, raw: &str) -> Vec<Declaration> {
     let (start_prop, end_prop) = if name == "grid-column" {
@@ -2389,7 +2636,7 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
     match p.as_str() {
         "display" => matches!(
             v.as_str(),
-            "none" | "block" | "inline" | "inline-block" | "flex" | "grid"
+            "none" | "block" | "inline" | "inline-block" | "flex" | "grid" | "table" | "table-row" | "table-cell" | "table-header-group" | "table-row-group" | "table-footer-group"
         ),
         "flex-direction" => matches!(v.as_str(), "row" | "row-reverse" | "column" | "column-reverse"),
         "flex-wrap" => matches!(v.as_str(), "nowrap" | "wrap" | "wrap-reverse"),
@@ -2400,14 +2647,17 @@ pub fn is_property_supported(prop: &str, val: &str) -> bool {
         "padding" | "padding-top" | "padding-right" | "padding-bottom" | "padding-left" => true,
         "border" | "border-top" | "border-right" | "border-bottom" | "border-left" | "border-width" | "border-color" | "border-style" => true,
         "border-radius" => true,
+        "border-collapse" | "border-spacing" => true,
         "color" | "background" | "background-color" => true,
         "opacity" | "transform" | "transition" | "animation" | "box-shadow" | "filter" => true,
         "grid-template-columns" | "grid-template-rows" | "grid-column" | "grid-row" | "gap" | "row-gap" | "column-gap" => true,
-        "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" => true,
+        "font-size" | "font-weight" | "font-family" | "line-height" | "text-align" | "text-decoration" | "text-shadow" => true,
         "overflow" | "overflow-x" | "overflow-y" => matches!(v.as_str(), "visible" | "hidden" | "scroll" | "auto"),
         "position" => matches!(v.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky"),
         "box-sizing" => matches!(v.as_str(), "border-box" | "content-box"),
-        "aspect-ratio" => true,
+        "aspect-ratio" | "backdrop-filter" | "columns" | "column-count" | "column-width" | "clip-path" | "mix-blend-mode" | "background-blend-mode" | "user-select" | "caret-color" => true,
+        "outline" | "outline-width" | "outline-style" | "outline-color" | "outline-offset" | "mask-image" | "-webkit-mask-image" | "mask-size" | "mask-repeat" => true,
+        "scroll-behavior" | "scroll-snap-type" | "scroll-snap-align" => true,
         "z-index" | "cursor" | "pointer-events" | "visibility" | "white-space" | "text-transform" => true,
         _ => false,
     }

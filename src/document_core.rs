@@ -511,6 +511,9 @@ impl Document {
         // A turn starts by finishing any microtasks left from the last one.
         self.run_microtask_checkpoint();
         self.runtime.now_ms = now_ms;
+        // Observe signal deadlines before completions or preflight follow-ups
+        // can deliver a response or dispatch an already-aborted request.
+        self.runtime.abort_requests();
         let network_completions = self.deliver_network_completions();
         let requests_sent = self.dispatch_network_requests();
         let timers_run = self.run_due_timers(now_ms);
@@ -3395,8 +3398,8 @@ mod tests {
         assert_eq!(sent[0].body.as_deref(), Some(&b"payload"[..]));
         assert_eq!(
             logs(&document),
-            "bodyUsed after fetch false\nsent, got 201",
-            "sending a request does not consume its body"
+            "bodyUsed after fetch true\nsent, got 201",
+            "Fetch synchronously disturbs the Request input body"
         );
     }
 

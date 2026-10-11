@@ -17,7 +17,8 @@ use crate::fetch_cors::{
     CORS_REDIRECT_ORIGIN_HEADER,
 };
 use crate::fetch_cors_preflight::{
-    build_preflight_request, cache_allows as preflight_cache_allows, preflight_cookie_policy,
+    build_preflight_request, cache_allows as preflight_cache_allows,
+    clear_permissions as clear_preflight_permissions, preflight_cookie_policy,
     store_permissions as store_preflight_permissions, validate_preflight_response,
 };
 use crate::fetch_cors_redirect::{
@@ -50,6 +51,9 @@ struct RedirectChain {
     cors_origin: String,
     referrer: RedirectReferrerState,
     pending_preflight: Option<RedirectPreflight>,
+    /// Whether the currently dispatched actual redirect hop is an unsafe CORS
+    /// request whose permission came from (or was eligible for) preflight cache.
+    current_requires_preflight: bool,
     planner: RedirectPlanner,
 }
 
@@ -106,10 +110,7 @@ impl SessionRedirectNetwork {
         source.scheme() == target.scheme() && source.host().eq_ignore_ascii_case(target.host())
     }
 
-    fn credentials_for_target(
-        policy: &FetchCorsRedirectPolicy,
-        target: &Url,
-    ) -> CookieCredentials {
+    fn credentials_for_target(policy: &FetchCorsRedirectPolicy, target: &Url) -> CookieCredentials {
         match policy.credentials {
             FetchCredentialsMode::Omit => CookieCredentials::Omit,
             FetchCredentialsMode::Include => CookieCredentials::Include,
@@ -151,6 +152,28 @@ impl SessionRedirectNetwork {
             RedirectError::UnsupportedScheme(scheme) => FetchError::UnsupportedScheme(scheme),
             RedirectError::TooManyRedirects(url) => FetchError::TooManyRedirects(url),
         }
+    }
+
+    fn preflight_partition_key(chain: &RedirectChain) -> Option<String> {
+        chain
+            .request_policy
+            .as_ref()
+            .map(|policy| Origin::of(&policy.source_url).header_value())
+    }
+
+    fn clear_current_preflight_tuple(&self, chain: &RedirectChain) {
+        if !chain.current_requires_preflight {
+            return;
+        }
+        let Some(partition_key) = Self::preflight_partition_key(chain) else {
+            return;
+        };
+        clear_preflight_permissions(
+            &self.cookie_jar,
+            &partition_key,
+            &chain.cors_origin,
+            &chain.current_request.url,
+        );
     }
 
     fn current_cors_response_must_pass(chain: &RedirectChain) -> bool {
@@ -219,6 +242,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 cors_origin,
                 referrer,
                 pending_preflight: None,
+                current_requires_preflight: false,
                 planner: RedirectPlanner::default(),
             },
         );
@@ -239,6 +263,18 @@ impl NetworkBackend for SessionRedirectNetwork {
             let response_url = match completion.result.as_ref() {
                 Ok(response) => response.url.clone(),
                 Err(_) => {
+                    if let Some(preflight) = chain.pending_preflight.as_ref() {
+                        if let Some(partition_key) = Self::preflight_partition_key(&chain) {
+                            clear_preflight_permissions(
+                                &self.cookie_jar,
+                                &partition_key,
+                                &preflight.serialized_origin,
+                                &preflight.actual_request.url,
+                            );
+                        }
+                    } else {
+                        self.clear_current_preflight_tuple(&chain);
+                    }
                     visible.push(completion);
                     continue;
                 }
@@ -254,13 +290,24 @@ impl NetworkBackend for SessionRedirectNetwork {
                     &preflight.requested_headers,
                     response,
                 ) {
+                    if let Some(partition_key) = Self::preflight_partition_key(&chain) {
+                        clear_preflight_permissions(
+                            &self.cookie_jar,
+                            &partition_key,
+                            &preflight.serialized_origin,
+                            &preflight.actual_request.url,
+                        );
+                    }
                     completion.result = Err(error);
                     visible.push(completion);
                     continue;
                 }
 
+                let partition_key = Self::preflight_partition_key(&chain)
+                    .expect("redirect preflight requires CORS request policy");
                 store_preflight_permissions(
                     &self.cookie_jar,
+                    &partition_key,
                     self.now_ms(),
                     &preflight.serialized_origin,
                     &preflight.actual_request.url,
@@ -270,6 +317,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 self.cookie_policies.set(id, preflight.actual_cookie_policy);
                 chain.current_request = preflight.actual_request.clone();
                 chain.current_request.url = preflight.effective_url;
+                chain.current_requires_preflight = true;
                 self.chains.borrow_mut().insert(id, chain);
                 self.inner.start(id, preflight.actual_request);
                 continue;
@@ -315,16 +363,16 @@ impl NetworkBackend for SessionRedirectNetwork {
                     if chain.redirect_mode == FetchRedirectMode::Follow
                         && Self::current_cors_response_must_pass(&chain)
                     {
-                        let credentialed = chain
-                            .request_policy
-                            .as_ref()
-                            .is_some_and(|policy| policy.credentials == FetchCredentialsMode::Include);
+                        let credentialed = chain.request_policy.as_ref().is_some_and(|policy| {
+                            policy.credentials == FetchCredentialsMode::Include
+                        });
                         let response = completion.result.as_ref().expect("checked above");
                         if let Err(error) = validate_cors_response_origin(
                             &chain.cors_origin,
                             credentialed,
                             response,
                         ) {
+                            self.clear_current_preflight_tuple(&chain);
                             completion.result = Err(error);
                             visible.push(completion);
                             continue;
@@ -390,8 +438,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                                     let next_is_cross_origin =
                                         !source_origin.can_fetch(&effective_next);
                                     if next_is_cross_origin || chain.cors_tainted {
-                                        let current_origin =
-                                            Origin::of(&chain.current_request.url);
+                                        let current_origin = Origin::of(&chain.current_request.url);
                                         if chain.cors_tainted && current_origin != next_origin {
                                             chain.cors_origin = "null".to_string();
                                         } else if !chain.cors_tainted {
@@ -441,14 +488,18 @@ impl NetworkBackend for SessionRedirectNetwork {
                         &effective_next,
                     );
 
+                    let redirect_requires_preflight = redirect_preflight.is_some();
                     if let Some(requested_headers) = redirect_preflight {
                         let credentialed = chain.request_policy.as_ref().is_some_and(|policy| {
                             policy.credentials == FetchCredentialsMode::Include
                         });
                         let serialized_origin = chain.cors_origin.clone();
                         let requested_method = next_request.method;
+                        let partition_key = Self::preflight_partition_key(&chain)
+                            .expect("redirect preflight requires CORS request policy");
                         let cached = preflight_cache_allows(
                             &self.cookie_jar,
+                            &partition_key,
                             self.now_ms(),
                             &serialized_origin,
                             &next_request.url,
@@ -457,6 +508,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                             &requested_headers,
                         );
 
+                        chain.current_requires_preflight = true;
                         if !cached {
                             let mut preflight_request = build_preflight_request(
                                 next_request.url.clone(),
@@ -490,6 +542,9 @@ impl NetworkBackend for SessionRedirectNetwork {
                     }
 
                     self.cookie_policies.set(id, actual_cookie_policy);
+                    if !redirect_requires_preflight {
+                        chain.current_requires_preflight = false;
+                    }
 
                     chain.current_request = next_request.clone();
                     chain.current_request.url = effective_next;
