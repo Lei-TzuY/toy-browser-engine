@@ -199,11 +199,60 @@ pub fn decode_text(bytes: &[u8]) -> String {
 #[derive(Debug, Default)]
 pub struct AbortState {
     aborted: Cell<bool>,
+    timeout_at: Cell<Option<f64>>,
+    sources: Vec<Rc<AbortState>>,
 }
 
 impl AbortState {
     pub fn new() -> Rc<AbortState> {
         Rc::new(AbortState::default())
+    }
+
+    pub fn with_timeout(timeout_ms: f64, now_ms: f64) -> Rc<AbortState> {
+        let state = AbortState::default();
+        if timeout_ms <= 0.0 {
+            state.aborted.set(true);
+        } else {
+            state.timeout_at.set(Some(now_ms + timeout_ms));
+        }
+        Rc::new(state)
+    }
+
+    pub fn any(sources: Vec<Rc<AbortState>>, now_ms: f64) -> Rc<AbortState> {
+        let state = Rc::new(AbortState {
+            sources,
+            ..AbortState::default()
+        });
+        state.check_timeout(now_ms);
+        state
+    }
+
+    pub fn check_timeout(&self, now_ms: f64) {
+        if self.aborted.get() {
+            return;
+        }
+        // Composed signals retain their sources. Walk the graph iteratively:
+        // nested/repeated any() inputs must not recurse or revisit shared nodes.
+        let mut pending = vec![self];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(state) = pending.pop() {
+            if !visited.insert(state as *const AbortState) {
+                continue;
+            }
+            if state.timeout_at.get().is_some_and(|time| now_ms >= time) {
+                state.aborted.set(true);
+            }
+            if state.aborted.get() {
+                self.aborted.set(true);
+                return;
+            }
+            pending.extend(state.sources.iter().map(Rc::as_ref));
+        }
+    }
+
+    pub fn aborted_at(&self, now_ms: f64) -> bool {
+        self.check_timeout(now_ms);
+        self.aborted()
     }
 
     pub fn aborted(&self) -> bool {
@@ -692,6 +741,63 @@ pub struct ResizeObserverEntryData {
     pub content_box_size: (f32, f32),
 }
 
+#[derive(Debug, Clone)]
+pub struct MutationObserverTarget {
+    pub target_id: String,
+    pub child_list: bool,
+    pub attributes: bool,
+    pub character_data: bool,
+    pub subtree: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationRecordData {
+    pub type_name: String,
+    pub target_id: String,
+    pub added_nodes: Vec<String>,
+    pub removed_nodes: Vec<String>,
+    pub attribute_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationObserverData {
+    pub targets: Vec<MutationObserverTarget>,
+    pub records: Vec<MutationRecordData>,
+}
+
+impl MutationObserverData {
+    pub fn new() -> Self {
+        Self {
+            targets: Vec::new(),
+            records: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MessagePortData {
+    pub closed: Rc<Cell<bool>>,
+    pub onmessage: Rc<RefCell<Option<crate::script::interp::JsValue>>>,
+    pub peer: Rc<RefCell<Option<Rc<MessagePortData>>>>,
+}
+
+impl MessagePortData {
+    pub fn new_pair() -> (Rc<Self>, Rc<Self>) {
+        let p1 = Rc::new(Self {
+            closed: Rc::new(Cell::new(false)),
+            onmessage: Rc::new(RefCell::new(None)),
+            peer: Rc::new(RefCell::new(None)),
+        });
+        let p2 = Rc::new(Self {
+            closed: Rc::new(Cell::new(false)),
+            onmessage: Rc::new(RefCell::new(None)),
+            peer: Rc::new(RefCell::new(Some(p1.clone()))),
+        });
+        *p1.peer.borrow_mut() = Some(p2.clone());
+        (p1, p2)
+    }
+}
+
 // ── The value the interpreter sees ────────────────────────────────────────────
 
 /// A Web-platform object.
@@ -716,6 +822,10 @@ pub enum HostObject {
     IntersectionObserverEntry(IntersectionObserverEntryData),
     ResizeObserver(Rc<RefCell<ResizeObserverData>>),
     ResizeObserverEntry(ResizeObserverEntryData),
+    MutationObserver(Rc<RefCell<MutationObserverData>>),
+    MutationRecord(MutationRecordData),
+    MessageChannel(Rc<MessagePortData>, Rc<MessagePortData>),
+    MessagePort(Rc<MessagePortData>),
     JsMap(Rc<RefCell<Vec<(String, crate::script::interp::JsValue)>>>),
     JsSet(Rc<RefCell<Vec<String>>>),
     Crypto,
@@ -740,6 +850,10 @@ impl HostObject {
             HostObject::IntersectionObserverEntry(_) => "IntersectionObserverEntry",
             HostObject::ResizeObserver(_) => "ResizeObserver",
             HostObject::ResizeObserverEntry(_) => "ResizeObserverEntry",
+            HostObject::MutationObserver(_) => "MutationObserver",
+            HostObject::MutationRecord(_) => "MutationRecord",
+            HostObject::MessageChannel(_, _) => "MessageChannel",
+            HostObject::MessagePort(_) => "MessagePort",
             HostObject::JsMap(_) => "Map",
             HostObject::JsSet(_) => "Set",
             HostObject::Crypto => "Crypto",

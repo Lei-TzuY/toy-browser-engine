@@ -25,7 +25,7 @@ use crate::net::fetch::FetchRegistry;
 
 use super::ast::*;
 use super::dom_api::{self, NodePath};
-use super::host::HostObject;
+use super::host::{AbortState, HostObject};
 use super::parser::Parser;
 use super::promise::{self, Microtask, PromiseRef, ReactionKind};
 
@@ -140,6 +140,7 @@ pub enum Builtin {
     RequestCtor,
     ResponseCtor,
     AbortControllerCtor,
+    AbortSignalCtor,
     URLCtor,
     URLSearchParamsCtor,
     AudioContextCtor,
@@ -176,6 +177,9 @@ pub enum Builtin {
     IsNaN,
     IntersectionObserverCtor,
     ResizeObserverCtor,
+    MutationObserverCtor,
+    MessageChannelCtor,
+    MessagePortCtor,
     MapCtor,
     SetCtor,
     Crypto,
@@ -675,11 +679,15 @@ impl JsRuntime {
                 | Builtin::RequestCtor
                 | Builtin::ResponseCtor
                 | Builtin::AbortControllerCtor
+                | Builtin::AbortSignalCtor
                 | Builtin::URLCtor
                 | Builtin::URLSearchParamsCtor
                 | Builtin::AudioContextCtor
                 | Builtin::IntersectionObserverCtor
                 | Builtin::ResizeObserverCtor
+                | Builtin::MutationObserverCtor
+                | Builtin::MessageChannelCtor
+                | Builtin::MessagePortCtor
                 | Builtin::MapCtor
                 | Builtin::SetCtor),
             ) => self.construct_host(*builtin, args),
@@ -2336,8 +2344,14 @@ impl JsRuntime {
                     _ => {}
                 }
             }
-            JsValue::Host(host) => {
-                if let HostObject::CanvasRenderingContext2D(ctx) = host.as_ref() {
+            JsValue::Host(host) => match host.as_ref() {
+                HostObject::MessagePort(port) => match prop {
+                    "onmessage" => {
+                        *port.onmessage.borrow_mut() = Some(value);
+                    }
+                    _ => {}
+                },
+                HostObject::CanvasRenderingContext2D(ctx) => {
                     let mut ctx = ctx.borrow_mut();
                     match prop {
                         "fillStyle" => {
@@ -2350,9 +2364,7 @@ impl JsRuntime {
                                 ctx.stroke_style = color;
                             }
                         }
-                        "lineWidth" => {
-                            ctx.line_width = to_number(&value);
-                        }
+                        "lineWidth" => ctx.line_width = to_number(&value),
                         "font" => {
                             let s = to_string(&value);
                             if let Some(pos) = s.find("px") {
@@ -2379,7 +2391,8 @@ impl JsRuntime {
                         }
                         _ => {}
                     }
-                } else if let HostObject::URL(u_rc) = host.as_ref() {
+                }
+                HostObject::URL(u_rc) => {
                     let mut u = u_rc.borrow_mut();
                     let val_str = to_string(&value);
                     match prop {
@@ -2396,7 +2409,8 @@ impl JsRuntime {
                         "port" => u.url.set_port(val_str.parse().ok()),
                         _ => {}
                     }
-                } else if let HostObject::AudioParam(ctx, node_id, param_name) = host.as_ref() {
+                }
+                HostObject::AudioParam(ctx, node_id, param_name) => {
                     if prop == "value" {
                         let num = to_number(&value);
                         if let Some(node) = ctx.borrow_mut().get_node_mut(*node_id) {
@@ -2411,7 +2425,8 @@ impl JsRuntime {
                             }
                         }
                     }
-                } else if let HostObject::AudioNode(ctx, node_id) = host.as_ref() {
+                }
+                HostObject::AudioNode(ctx, node_id) => {
                     if prop == "type" {
                         let type_str = to_string(&value);
                         if let Some(osc_type) = crate::audio::OscillatorType::from_str(&type_str) {
@@ -2423,7 +2438,8 @@ impl JsRuntime {
                         }
                     }
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -2529,6 +2545,36 @@ impl JsRuntime {
             },
             JsValue::Builtin(Builtin::DateMeta) => match prop {
                 "now" => JsValue::Number(self.now_ms as f32),
+                _ => JsValue::Undefined,
+            },
+            JsValue::Builtin(Builtin::AbortSignalCtor) => match prop {
+                "timeout" => {
+                    let delay = args.first().map(to_number).unwrap_or(0.0) as f64;
+                    let state = AbortState::with_timeout(delay, self.now_ms);
+                    JsValue::Host(Rc::new(HostObject::AbortSignal(state)))
+                }
+                "abort" => {
+                    let state = AbortState::new();
+                    state.abort();
+                    JsValue::Host(Rc::new(HostObject::AbortSignal(state)))
+                }
+                "any" => {
+                    let sources = match args.first() {
+                        Some(JsValue::Array(arr)) => arr
+                            .borrow()
+                            .iter()
+                            .filter_map(|value| match value {
+                                JsValue::Host(host) => host.as_abort_state().cloned(),
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    JsValue::Host(Rc::new(HostObject::AbortSignal(AbortState::any(
+                        sources,
+                        self.now_ms,
+                    ))))
+                }
                 _ => JsValue::Undefined,
             },
             JsValue::Builtin(Builtin::Crypto) => crypto_method(prop, &args),
@@ -2792,7 +2838,36 @@ impl JsRuntime {
                 }
             },
             JsValue::Element(r) => self.element_method(dom, &r.clone(), prop, args),
-            JsValue::Host(host) => self.host_method(&host.clone(), prop, args),
+            JsValue::Host(host) => {
+                if let HostObject::MessagePort(port) = host.as_ref() {
+                    match prop {
+                        "postMessage" => {
+                            if port.closed.get() {
+                                return JsValue::Undefined;
+                            }
+                            let data = args.first().cloned().unwrap_or(JsValue::Undefined);
+                            if let Some(peer) = port.peer.borrow().as_ref() {
+                                if !peer.closed.get() {
+                                    if let Some(onmessage_fn) = peer.onmessage.borrow().clone() {
+                                        let mut msg_obj = Vec::new();
+                                        msg_obj.push(("data".to_string(), data));
+                                        let event = JsValue::Object(Rc::new(RefCell::new(msg_obj)));
+                                        self.call_value(dom, &onmessage_fn, vec![event]);
+                                    }
+                                }
+                            }
+                            return JsValue::Undefined;
+                        }
+                        "close" => {
+                            port.closed.set(true);
+                            return JsValue::Undefined;
+                        }
+                        "start" => return JsValue::Undefined,
+                        _ => {}
+                    }
+                }
+                self.host_method(&host.clone(), prop, args)
+            }
             _ => JsValue::Undefined,
         }
     }
@@ -3731,6 +3806,7 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "Request" => Builtin::RequestCtor,
         "Response" => Builtin::ResponseCtor,
         "AbortController" => Builtin::AbortControllerCtor,
+        "AbortSignal" => Builtin::AbortSignalCtor,
         "URL" => Builtin::URLCtor,
         "URLSearchParams" => Builtin::URLSearchParamsCtor,
         "AudioContext" | "webkitAudioContext" => Builtin::AudioContextCtor,
@@ -3767,6 +3843,9 @@ fn global_builtin(name: &str) -> Option<JsValue> {
         "isNaN" => Builtin::IsNaN,
         "IntersectionObserver" => Builtin::IntersectionObserverCtor,
         "ResizeObserver" => Builtin::ResizeObserverCtor,
+        "MutationObserver" => Builtin::MutationObserverCtor,
+        "MessageChannel" => Builtin::MessageChannelCtor,
+        "MessagePort" => Builtin::MessagePortCtor,
         "Map" => Builtin::MapCtor,
         "Set" => Builtin::SetCtor,
         "crypto" => Builtin::Crypto,

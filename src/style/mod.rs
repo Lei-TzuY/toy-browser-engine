@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 
 use crate::css::parser::{
-    parse_declaration_block, parse_single_value, Combinator, Declaration, PseudoClass, Selector,
-    SelectorPart, Stylesheet, Unit, Value,
+    parse_blend_mode, parse_declaration_block, parse_single_value, BlendMode, ClipPath, Color, Combinator,
+    Declaration, LinearGradient, PseudoClass, Selector, SelectorPart, Stylesheet, TextShadow, Unit, Value,
 };
 use crate::dom::{ElementData, Node, NodeType};
 
@@ -43,6 +43,7 @@ const INHERITED: &[&str] = &[
     "white-space",
     "visibility",
     "cursor",
+    "text-shadow",
     "list-style-type",
     "list-style-position",
 ];
@@ -156,6 +157,140 @@ impl<'a> StyledNode<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    pub fn text_shadow(&self) -> Option<TextShadow> {
+        match self.value("text-shadow") {
+            Some(Value::TextShadow(ts)) => Some(ts.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn column_count(&self) -> Option<usize> {
+        match self.value("column-count") {
+            Some(Value::Number(n)) if *n >= 1.0 => Some(*n as usize),
+            _ => None,
+        }
+    }
+
+    pub fn column_gap(&self) -> f32 {
+        match self.value("column-gap").or_else(|| self.value("gap")) {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            _ => 16.0,
+        }
+    }
+
+    pub fn clip_path(&self) -> Option<ClipPath> {
+        match self.value("clip-path") {
+            Some(Value::ClipPath(cp)) => Some(cp.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn mix_blend_mode(&self) -> BlendMode {
+        match self.value("mix-blend-mode") {
+            Some(Value::BlendMode(bm)) => *bm,
+            Some(Value::Keyword(s)) => parse_blend_mode(s).unwrap_or(BlendMode::Normal),
+            _ => BlendMode::Normal,
+        }
+    }
+
+    pub fn caret_color(&self) -> Option<Color> {
+        match self.value("caret-color") {
+            Some(Value::Color(c)) => Some(*c),
+            _ => None,
+        }
+    }
+
+    pub fn user_select(&self) -> Option<&str> {
+        match self.value("user-select") {
+            Some(Value::Keyword(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn outline_width(&self) -> f32 {
+        match self.value("outline-width") {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            Some(Value::Keyword(s)) => match s.as_str() {
+                "thin" => 1.0,
+                "medium" => 3.0,
+                "thick" => 5.0,
+                _ => 0.0,
+            },
+            _ => 0.0,
+        }
+    }
+
+    pub fn outline_color(&self) -> Color {
+        match self.value("outline-color") {
+            Some(Value::Color(c)) => *c,
+            _ => Color::rgb(0, 0, 0),
+        }
+    }
+
+    pub fn outline_style(&self) -> Option<&str> {
+        match self.value("outline-style") {
+            Some(Value::Keyword(s)) if s != "none" => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn outline_offset(&self) -> f32 {
+        match self.value("outline-offset") {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            _ => 0.0,
+        }
+    }
+
+    pub fn mask_image(&self) -> Option<LinearGradient> {
+        match self.value("mask-image") {
+            Some(Value::LinearGradient(lg)) => Some(lg.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn border_spacing(&self) -> f32 {
+        match self.value("border-spacing") {
+            Some(Value::Length(px, Unit::Px)) => *px,
+            Some(Value::Length(em, Unit::Em)) => em * 16.0,
+            Some(Value::Number(n)) => *n,
+            _ => 0.0,
+        }
+    }
+
+    pub fn border_collapse(&self) -> &str {
+        match self.value("border-collapse") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "separate",
+        }
+    }
+
+    pub fn scroll_behavior(&self) -> &str {
+        match self.value("scroll-behavior") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "auto",
+        }
+    }
+
+    pub fn scroll_snap_type(&self) -> &str {
+        match self.value("scroll-snap-type") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "none",
+        }
+    }
+
+    pub fn scroll_snap_align(&self) -> &str {
+        match self.value("scroll-snap-align") {
+            Some(Value::Keyword(s)) => s.as_str(),
+            _ => "none",
         }
     }
 }

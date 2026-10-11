@@ -511,6 +511,9 @@ impl Document {
         // A turn starts by finishing any microtasks left from the last one.
         self.run_microtask_checkpoint();
         self.runtime.now_ms = now_ms;
+        // Observe signal deadlines before completions or preflight follow-ups
+        // can deliver a response or dispatch an already-aborted request.
+        self.runtime.abort_requests();
         let network_completions = self.deliver_network_completions();
         let requests_sent = self.dispatch_network_requests();
         let timers_run = self.run_due_timers(now_ms);
