@@ -28,10 +28,13 @@ pub mod document_referrer;
 pub mod dom;
 pub mod editing;
 pub mod eventloop;
+pub mod fetch_cache_mode;
 pub(crate) mod fetch_cors;
 pub(crate) mod fetch_cors_preflight;
 pub(crate) mod fetch_cors_redirect;
 pub(crate) mod fetch_integrity;
+pub mod fetch_metadata;
+pub mod fetch_redirect_mode;
 pub mod fetch_redirect_policy;
 pub mod form_state;
 pub mod forms;
@@ -39,6 +42,10 @@ pub mod hsts;
 pub mod hsts_network;
 pub mod html;
 pub mod html_subresource_integrity;
+pub mod http_cache_age;
+pub mod http_cache_policy;
+pub mod http_cache_revalidation;
+pub mod http_cache_vary;
 pub(crate) mod http_structured_field;
 pub mod hyperlink_referrer;
 pub mod image;
@@ -97,6 +104,17 @@ pub use cross_origin_resource_policy::{
 pub use document::{Document, PointerState};
 pub use document_policy_container::{DocumentPolicyContainer, NoCorsResponsePolicyResult};
 pub use document_referrer::DocumentReferrerContext;
+pub use fetch_cache_mode::{
+    cache_mode_is_valid_for_request_mode, effective_cache_mode_for_headers, FetchCacheMode,
+};
+pub use fetch_metadata::{
+    apply_fetch_metadata_headers, classify_fetch_metadata_site, FetchMetadataDestination,
+    FetchMetadataMode, FetchMetadataSite,
+};
+pub use fetch_redirect_mode::{
+    is_fetch_redirect_status, no_cors_redirect_mode_is_valid, redirect_response_disposition,
+    RedirectResponseDisposition,
+};
 pub use fetch_redirect_policy::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
@@ -105,6 +123,17 @@ pub use html_subresource_integrity::{
     fetch_html_subresource_with_integrity, fetch_html_subresource_with_integrity_reporting,
     HtmlSubresourceIntegrityError, HtmlSubresourceIntegrityResult,
 };
+pub use http_cache_age::{
+    corrected_initial_age_secs, current_age_secs, response_age_value_secs, HttpCacheAgeInput,
+};
+pub use http_cache_policy::{
+    cached_response_is_fresh, response_cache_policy, HttpResponseCachePolicy,
+};
+pub use http_cache_revalidation::{
+    cache_revalidation_headers, response_cache_validators, response_confirms_not_modified,
+    HttpCacheValidators,
+};
+pub use http_cache_vary::{parse_vary, vary_matches, HttpVary};
 pub use hyperlink_referrer::{
     hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
 };
