@@ -17,13 +17,13 @@ fn test_mutation_observer_observe_and_take_records() {
         let target = document.getElementById("target");
         let observer = new MutationObserver(function(mutations) {});
         observer.observe(target, { childList: true, attributes: true });
-        
+
         let records = observer.takeRecords();
         console.log("records_len:" + records.length);
         if (records.length > 0) {
             console.log("record_type:" + records[0].type);
         }
-        
+
         observer.disconnect();
         console.log("records_after_disconnect:" + observer.takeRecords().length);
     "#);
