@@ -6,6 +6,9 @@
 //! is absent or malformed.
 
 use crate::cross_origin_resource_policy::CrossOriginEmbedderPolicy;
+use crate::http_structured_field::{
+    parse_quoted_string as parse_structured_string, structured_bare_item_len,
+};
 use crate::net::HeaderMap;
 
 /// Parsed enforced or report-only COEP response policy.
@@ -25,9 +28,7 @@ impl Default for ParsedCrossOriginEmbedderPolicy {
 }
 
 /// Parse the enforced `Cross-Origin-Embedder-Policy` response field.
-pub fn parse_cross_origin_embedder_policy(
-    headers: &HeaderMap,
-) -> ParsedCrossOriginEmbedderPolicy {
+pub fn parse_cross_origin_embedder_policy(headers: &HeaderMap) -> ParsedCrossOriginEmbedderPolicy {
     parse_named_coep_header(headers, "cross-origin-embedder-policy")
 }
 
@@ -73,24 +74,28 @@ fn parse_coep_item(value: &str) -> Option<ParsedCrossOriginEmbedderPolicy> {
         if parameter.is_empty() {
             return None;
         }
-        let Some((name, raw_value)) = parameter.split_once('=') else {
-            return None;
+        let (name, raw_value) = match parameter.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            // A parameter without "=" is the Structured Field Boolean true.
+            None => (parameter, None),
         };
         let name = name.trim_matches(|c| matches!(c, ' ' | '\t'));
-        let raw_value = raw_value.trim_matches(|c| matches!(c, ' ' | '\t'));
+        let raw_value = raw_value.map(|value| value.trim_matches(|c| matches!(c, ' ' | '\t')));
         if !is_structured_key(name) {
             return None;
         }
-
-        if name == "report-to" {
-            if report_to.is_some() {
+        if let Some(value) = raw_value {
+            if structured_bare_item_len(value) != Some(value.len()) {
                 return None;
             }
-            report_to = Some(parse_structured_string(raw_value)?);
-        } else if !is_structured_bare_item(raw_value) {
-            // Unknown Structured Field parameters do not affect the policy,
-            // but malformed parameter syntax invalidates the field.
-            return None;
+        }
+        if name == "report-to" {
+            // Parameter maps retain the last value. Only an ASCII String names
+            // a reporting endpoint; other valid types leave the policy intact.
+            report_to = match raw_value {
+                Some(value) if value.starts_with('"') => Some(parse_structured_string(value)?),
+                _ => None,
+            };
         }
     }
 
@@ -103,6 +108,7 @@ fn split_parameters(value: &str) -> Option<Vec<&str>> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut quoted = false;
+    let mut display_string = false;
     let mut escaped = false;
 
     for (index, byte) in value.bytes().enumerate() {
@@ -111,8 +117,15 @@ fn split_parameters(value: &str) -> Option<Vec<&str>> {
             continue;
         }
         match byte {
-            b'\\' if quoted => escaped = true,
-            b'"' => quoted = !quoted,
+            b'\\' if quoted && !display_string => escaped = true,
+            b'"' => {
+                if quoted {
+                    quoted = false;
+                } else {
+                    quoted = true;
+                    display_string = value[..index].ends_with('%');
+                }
+            }
             b';' if !quoted => {
                 parts.push(&value[start..index]);
                 start = index + 1;
@@ -135,42 +148,8 @@ fn is_structured_key(value: &str) -> bool {
     };
     (first.is_ascii_lowercase() || first == '*')
         && chars.all(|c| {
-            c.is_ascii_lowercase()
-                || c.is_ascii_digit()
-                || matches!(c, '_' | '-' | '.' | '*')
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.' | '*')
         })
-}
-
-fn parse_structured_string(value: &str) -> Option<String> {
-    let inner = value.strip_prefix('"')?.strip_suffix('"')?;
-    let mut output = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => match chars.next()? {
-                '\\' => output.push('\\'),
-                '"' => output.push('"'),
-                _ => return None,
-            },
-            '"' | '\r' | '\n' => return None,
-            c if c.is_ascii() && !c.is_ascii_control() => output.push(c),
-            _ => return None,
-        }
-    }
-    Some(output)
-}
-
-fn is_structured_bare_item(value: &str) -> bool {
-    if value == "?0" || value == "?1" {
-        return true;
-    }
-    if value.starts_with('"') {
-        return parse_structured_string(value).is_some();
-    }
-    if value.is_empty() || value.chars().any(char::is_whitespace) {
-        return false;
-    }
-    value.is_ascii()
 }
 
 #[cfg(test)]
@@ -198,6 +177,22 @@ mod tests {
             )),
             ParsedCrossOriginEmbedderPolicy::default()
         );
+        for value in [
+            "require-corp; future=?2",
+            "require-corp; future=?1suffix",
+            "require-corp; report-to=?2",
+            "require-corp; future=@1.5",
+            r#"require-corp; future=%"%ff""#,
+        ] {
+            assert_eq!(
+                parse_cross_origin_embedder_policy(&headers(
+                    "cross-origin-embedder-policy",
+                    &[value]
+                )),
+                ParsedCrossOriginEmbedderPolicy::default(),
+                "{value}",
+            );
+        }
     }
 
     #[test]
@@ -237,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_fields_and_duplicate_report_to_are_invalid() {
+    fn duplicate_fields_are_invalid_and_last_report_to_parameter_wins() {
         assert_eq!(
             parse_cross_origin_embedder_policy(&headers(
                 "Cross-Origin-Embedder-Policy",
@@ -245,13 +240,12 @@ mod tests {
             )),
             ParsedCrossOriginEmbedderPolicy::default()
         );
-        assert_eq!(
-            parse_cross_origin_embedder_policy(&headers(
-                "Cross-Origin-Embedder-Policy",
-                &[r#"require-corp; report-to="a"; report-to="b""#],
-            )),
-            ParsedCrossOriginEmbedderPolicy::default()
-        );
+        let parsed = parse_cross_origin_embedder_policy(&headers(
+            "Cross-Origin-Embedder-Policy",
+            &[r#"require-corp; report-to="a"; report-to="b""#],
+        ));
+        assert_eq!(parsed.policy, CrossOriginEmbedderPolicy::RequireCorp);
+        assert_eq!(parsed.report_to.as_deref(), Some("b"));
     }
 
     #[test]

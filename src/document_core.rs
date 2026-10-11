@@ -225,7 +225,19 @@ impl Document {
         seed_textarea_values(&mut dom);
 
         let stylesheet = collect_stylesheet(&dom, &base_url, loader, &mut diagnostics);
-        let runtime = run_scripts(&mut dom, &base_url, loader, &mut diagnostics, storage);
+        let referrer_policy = crate::referrer_meta::apply_meta_referrer_policies(
+            &dom,
+            crate::referrer_policy::ReferrerPolicy::default(),
+        );
+        let runtime = run_scripts(
+            &mut dom,
+            &base_url,
+            url,
+            referrer_policy,
+            loader,
+            &mut diagnostics,
+            storage,
+        );
 
         let mut document = Document {
             url: url.clone(),
@@ -499,6 +511,9 @@ impl Document {
         // A turn starts by finishing any microtasks left from the last one.
         self.run_microtask_checkpoint();
         self.runtime.now_ms = now_ms;
+        // Observe signal deadlines before completions or preflight follow-ups
+        // can deliver a response or dispatch an already-aborted request.
+        self.runtime.abort_requests();
         let network_completions = self.deliver_network_completions();
         let requests_sent = self.dispatch_network_requests();
         let timers_run = self.run_due_timers(now_ms);
@@ -1149,6 +1164,8 @@ fn style_sources(dom: &Node) -> Vec<StyleSource> {
 fn run_scripts(
     dom: &mut Node,
     base_url: &Url,
+    document_url: &Url,
+    referrer_policy: crate::referrer_policy::ReferrerPolicy,
     loader: &dyn ResourceLoader,
     diagnostics: &mut Vec<Diagnostic>,
     storage: Option<crate::script::interp::StorageRef>,
@@ -1158,6 +1175,8 @@ fn run_scripts(
     let sources = script_sources(dom);
     let mut runtime = JsRuntime::new();
     runtime.url = base_url.clone();
+    runtime.referrer_source = Some(document_url.clone());
+    runtime.referrer_policy = referrer_policy;
     if let Some(s) = storage {
         runtime.local_storage = s;
     }
@@ -3379,8 +3398,8 @@ mod tests {
         assert_eq!(sent[0].body.as_deref(), Some(&b"payload"[..]));
         assert_eq!(
             logs(&document),
-            "bodyUsed after fetch false\nsent, got 201",
-            "sending a request does not consume its body"
+            "bodyUsed after fetch true\nsent, got 201",
+            "Fetch synchronously disturbs the Request input body"
         );
     }
 

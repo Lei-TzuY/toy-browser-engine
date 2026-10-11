@@ -15,19 +15,26 @@
 //  task.
 
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use crate::cookie_network::{policy_registry_for_jar, CookieCredentials, CookieRequestPolicy};
 use crate::cookie_same_site::SameSiteRequestContext;
+use crate::fetch_cors::{validate_cors_response_origin, CORS_REDIRECT_ORIGIN_HEADER};
+use crate::fetch_cors_redirect::{
+    cors_redirect_policy_registry_for_jar, FetchCorsRedirectPolicy, FetchCredentialsMode,
+    FetchRequestMode,
+};
 use crate::fetch_redirect_policy::{redirect_policy_registry_for_jar, FetchRedirectMode};
 use crate::net::fetch::{FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin};
 use crate::net::Url;
+use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 
 use super::host::{
-    decode_text, headers_ref, AbortState, Body, HeadersRef, HostObject, IntersectionObserverData,
-    IntersectionObserverEntryData, IntersectionObserverTarget, RequestCredentials, RequestData,
-    RequestMode, ResizeObserverData, ResizeObserverEntryData, ResponseData, ResponseType, UrlData,
-    UrlSearchParamsData,
+    decode_text, headers_ref, request_headers_ref, AbortState, Body, HeadersRef, HostObject,
+    IntersectionObserverData, IntersectionObserverEntryData, IntersectionObserverTarget,
+    MessagePortData, MutationObserverData, MutationObserverTarget, MutationRecordData,
+    RequestCredentials, RequestData, RequestMode, RequestReferrer, ResizeObserverData,
+    ResizeObserverEntryData, ResponseData, ResponseType, UrlData, UrlSearchParamsData,
 };
 use super::interp::{object_get, to_number, to_string, truthy, Builtin, JsRuntime, JsValue};
 use super::json;
@@ -36,76 +43,28 @@ use super::promise::{self, PromiseRef};
 /// The schemes a page may fetch, on top of its own.
 const FETCHABLE_SCHEMES: &[&str] = &["http", "https", "file"];
 
-/// Fetch defaults preflight permissions to five seconds when Max-Age is absent
-/// or invalid. A user agent may impose its own upper bound.
-const DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 5;
-const MAX_CORS_PREFLIGHT_MAX_AGE_SECS: u64 = 7_200;
-const MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION: usize = 256;
-
-#[derive(Debug, Clone)]
-struct CorsPreflightCacheEntry {
-    source_origin: String,
-    target_url: String,
-    credentialed: bool,
-    allowed_methods: Vec<String>,
-    allowed_headers: Vec<String>,
-    expires_at_ms: u64,
-}
-
-#[derive(Debug)]
-struct CorsPreflightSessionCache {
-    /// Browser documents in one session share a CookieJar. A weak handle gives
-    /// the preflight cache the same lifetime without keeping dead sessions alive.
-    jar: Weak<RefCell<crate::cookie::CookieJar>>,
-    entries: Vec<CorsPreflightCacheEntry>,
-}
-
-thread_local! {
-    static CORS_PREFLIGHT_CACHES: RefCell<Vec<CorsPreflightSessionCache>> = RefCell::new(Vec::new());
-}
-
-fn with_cors_preflight_session_cache<R>(
-    jar: &Rc<RefCell<crate::cookie::CookieJar>>,
-    operation: impl FnOnce(&mut Vec<CorsPreflightCacheEntry>) -> R,
-) -> R {
-    CORS_PREFLIGHT_CACHES.with(|sessions| {
-        let mut sessions = sessions.borrow_mut();
-        sessions.retain(|session| session.jar.upgrade().is_some());
-        let index = sessions
-            .iter()
-            .position(|session| {
-                session
-                    .jar
-                    .upgrade()
-                    .is_some_and(|live| Rc::ptr_eq(&live, jar))
-            })
-            .unwrap_or_else(|| {
-                sessions.push(CorsPreflightSessionCache {
-                    jar: Rc::downgrade(jar),
-                    entries: Vec::new(),
-                });
-                sessions.len() - 1
-            });
-        operation(&mut sessions[index].entries)
-    })
-}
-
 /// Browser-only state needed while a CORS fetch is in flight.
 #[derive(Debug, Clone)]
 struct CorsFetchState {
     source_origin: Origin,
+    /// Network partition token captured from the top-level environment.
+    partition_key: String,
     credentialed: bool,
     requested_method: Method,
     requested_headers: Vec<String>,
     needs_preflight: bool,
+    initially_cross_origin: bool,
 }
 
 /// Which network stage currently owns a script-visible Fetch promise.
 #[derive(Debug)]
 enum PendingFetchStage {
     Actual {
+        request: RequestData,
         cors: Option<CorsFetchState>,
         opaque: bool,
+        integrity: String,
+        method: Method,
     },
     Preflight {
         request: RequestData,
@@ -122,6 +81,8 @@ pub struct PendingFetch {
     pub signal: Option<Rc<AbortState>>,
     /// Browser-owned redirect behavior for every network stage of this Fetch.
     redirect: FetchRedirectMode,
+    /// Request mode/source/credential policy used by the per-hop redirect layer.
+    redirect_context: FetchCorsRedirectPolicy,
     stage: PendingFetchStage,
 }
 
@@ -146,8 +107,17 @@ impl JsRuntime {
             Ok((request, cookie_policy, cors, opaque)) => {
                 let signal = request.signal.clone();
                 let redirect = request.redirect;
-                if signal.as_ref().is_some_and(|state| state.aborted()) {
+                let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url).clone();
+                let referrer = request_referrer_state(
+                    &request,
+                    self.referrer_source.as_ref(),
+                    self.referrer_policy,
+                );
+                let redirect_context = fetch_redirect_context(&request, environment_url, referrer);
+                if signal.as_ref().is_some_and(|state| state.aborted_at(self.now_ms)) {
                     self.reject_with(&promise, &FetchError::Aborted);
+                } else if let Err(error) = consume_fetch_input_body(&args) {
+                    self.reject_with(&promise, &error);
                 } else {
                     let needs_preflight = match cors.as_ref() {
                         Some(state) if state.needs_preflight => {
@@ -157,11 +127,13 @@ impl JsRuntime {
                     };
                     let queued = if needs_preflight {
                         let cors = cors.expect("preflight requires CORS state");
-                        let preflight = build_cors_preflight_request(&request, &cors);
+                        let mut preflight = build_cors_preflight_request(&request, &cors);
+                        redirect_context.referrer.prepare_request(&mut preflight);
                         let pending = PendingFetch {
                             promise: promise.clone(),
                             signal,
                             redirect,
+                            redirect_context: redirect_context.clone(),
                             stage: PendingFetchStage::Preflight {
                                 request,
                                 cookie_policy,
@@ -170,12 +142,22 @@ impl JsRuntime {
                         };
                         self.queue_fetch(preflight, pending, cors_preflight_cookie_policy())
                     } else {
-                        let wire = request.to_wire();
+                        let integrity = request.integrity.clone();
+                        let method = request.method;
+                        let mut wire = request.to_wire();
+                        redirect_context.referrer.prepare_request(&mut wire);
                         let pending = PendingFetch {
                             promise: promise.clone(),
                             signal,
                             redirect,
-                            stage: PendingFetchStage::Actual { cors, opaque },
+                            redirect_context,
+                            stage: PendingFetchStage::Actual {
+                                request,
+                                cors,
+                                opaque,
+                                integrity,
+                                method,
+                            },
                         };
                         self.queue_fetch(wire, pending, cookie_policy)
                     };
@@ -200,38 +182,92 @@ impl JsRuntime {
             promise,
             signal,
             redirect,
+            redirect_context,
             stage,
         } = pending;
 
-        if signal.as_ref().is_some_and(|state| state.aborted()) {
+        if signal.as_ref().is_some_and(|state| state.aborted_at(self.now_ms)) {
             self.reject_with(&promise, &FetchError::Aborted);
             return;
         }
 
         match stage {
-            PendingFetchStage::Actual { cors, opaque } => match result {
+            PendingFetchStage::Actual {
+                request,
+                cors,
+                opaque,
+                integrity,
+                method,
+            } => match result {
                 Ok(mut response) => {
                     // SessionRedirectNetwork marks an intercepted manual redirect
                     // internally with redirected=true. The script-visible filter
                     // deliberately clears that bit along with URL/status/headers.
                     if redirect == FetchRedirectMode::Manual && response.redirected {
+                        if !integrity.is_empty() {
+                            self.reject_with(
+                                &promise,
+                                &FetchError::Blocked("Subresource Integrity check failed".into()),
+                            );
+                            return;
+                        }
                         let value = host_value(HostObject::Response(
                             ResponseData::opaque_redirect_from_wire(response),
                         ));
                         self.settle_resolve(&promise, value);
                         return;
                     }
+                    let redirecting_session =
+                        redirect_policy_registry_for_jar(&self.cookie_jar).is_some();
+                    let trusted_redirect_origin = if redirecting_session {
+                        response.headers.get(CORS_REDIRECT_ORIGIN_HEADER)
+                    } else {
+                        None
+                    };
+                    response.headers.delete(CORS_REDIRECT_ORIGIN_HEADER);
+                    let mut cors_visible = false;
                     if let Some(cors) = &cors {
-                        if let Err(error) = validate_cors_response(
-                            &cors.source_origin,
-                            cors.credentialed,
-                            &response,
-                        ) {
-                            self.reject_with(&promise, &error);
+                        cors_visible = if redirecting_session {
+                            trusted_redirect_origin.is_some()
+                        } else {
+                            cors.initially_cross_origin
+                        };
+                        if cors_visible {
+                            let fallback_origin = cors.source_origin.header_value();
+                            let serialized_origin = trusted_redirect_origin
+                                .as_deref()
+                                .unwrap_or(fallback_origin.as_str());
+                            if let Err(error) = validate_cors_response_origin(
+                                serialized_origin,
+                                cors.credentialed,
+                                &response,
+                            ) {
+                                if cors.needs_preflight {
+                                    self.clear_cors_preflight_permissions(&request, cors);
+                                }
+                                self.reject_with(&promise, &error);
+                                return;
+                            }
+                            filter_cors_response_headers(&mut response, cors.credentialed);
+                        }
+                    }
+                    if !integrity.is_empty() {
+                        let null_body = method == Method::Head
+                            || matches!(response.status, 101 | 103 | 204 | 205 | 304);
+                        if null_body
+                            || !crate::fetch_integrity::bytes_match_integrity(
+                                &integrity,
+                                &response.body,
+                            )
+                        {
+                            self.reject_with(
+                                &promise,
+                                &FetchError::Blocked("Subresource Integrity check failed".into()),
+                            );
                             return;
                         }
-                        filter_cors_response_headers(&mut response, cors.credentialed);
                     }
+
                     let mut response_data = if opaque {
                         debug_assert!(
                             cors.is_none(),
@@ -239,15 +275,24 @@ impl JsRuntime {
                         );
                         ResponseData::opaque_from_wire(response)
                     } else {
-                        ResponseData::from_wire(response)
+                        let mut response_data = ResponseData::from_wire(response);
+                        if method == Method::Head {
+                            response_data.body = Body::absent();
+                        }
+                        response_data
                     };
-                    if cors.is_some() {
+                    if cors_visible {
                         response_data.response_type = ResponseType::Cors;
                     }
                     let value = host_value(HostObject::Response(response_data));
                     self.settle_resolve(&promise, value);
                 }
-                Err(error) => self.reject_with(&promise, &error),
+                Err(error) => {
+                    if let Some(cors) = cors.as_ref().filter(|state| state.needs_preflight) {
+                        self.clear_cors_preflight_permissions(&request, cors);
+                    }
+                    self.reject_with(&promise, &error);
+                }
             },
             PendingFetchStage::Preflight {
                 request,
@@ -257,24 +302,33 @@ impl JsRuntime {
                 let response = match result {
                     Ok(response) => response,
                     Err(error) => {
+                        self.clear_cors_preflight_permissions(&request, &cors);
                         self.reject_with(&promise, &error);
                         return;
                     }
                 };
                 if let Err(error) = validate_cors_preflight_response(&cors, &response) {
+                    self.clear_cors_preflight_permissions(&request, &cors);
                     self.reject_with(&promise, &error);
                     return;
                 }
                 self.store_cors_preflight_permissions(&request, &cors, &response);
 
-                let wire = request.to_wire();
+                let integrity = request.integrity.clone();
+                let method = request.method;
+                let mut wire = request.to_wire();
+                redirect_context.referrer.prepare_request(&mut wire);
                 let actual = PendingFetch {
                     promise: promise.clone(),
                     signal,
                     redirect,
+                    redirect_context,
                     stage: PendingFetchStage::Actual {
+                        request,
                         cors: Some(cors),
                         opaque: false,
+                        integrity,
+                        method,
                     },
                 };
                 if let Err(error) = self.queue_fetch(wire, actual, cookie_policy) {
@@ -285,39 +339,16 @@ impl JsRuntime {
     }
 
     fn cors_preflight_cache_allows(&self, request: &RequestData, cors: &CorsFetchState) -> bool {
-        let now_ms = self
-            .cookie_jar
-            .borrow()
-            .effective_now_ms(self.now_ms.max(0.0) as u64);
-        let source_origin = cors.source_origin.header_value();
-        let target_url = request.url.without_fragment().to_string();
-
-        with_cors_preflight_session_cache(&self.cookie_jar, |entries| {
-            entries.retain(|entry| entry.expires_at_ms > now_ms);
-            entries.iter().any(|entry| {
-                if entry.source_origin != source_origin
-                    || entry.target_url != target_url
-                    || (!entry.credentialed && cors.credentialed)
-                {
-                    return false;
-                }
-
-                let method_allowed = is_cors_safelisted_method(cors.requested_method)
-                    || entry.allowed_methods.iter().any(|method| {
-                        method == cors.requested_method.as_str()
-                            || (method == "*" && !cors.credentialed)
-                    });
-                method_allowed
-                    && cors.requested_headers.iter().all(|requested| {
-                        entry.allowed_headers.iter().any(|allowed| {
-                            allowed.eq_ignore_ascii_case(requested)
-                                || (allowed == "*"
-                                    && !cors.credentialed
-                                    && !is_cors_non_wildcard_request_header_name(requested))
-                        })
-                    })
-            })
-        })
+        crate::fetch_cors_preflight::cache_allows(
+            &self.cookie_jar,
+            &cors.partition_key,
+            self.now_ms.max(0.0) as u64,
+            &cors.source_origin.header_value(),
+            &request.url,
+            cors.credentialed,
+            cors.requested_method,
+            &cors.requested_headers,
+        )
     }
 
     fn store_cors_preflight_permissions(
@@ -326,40 +357,24 @@ impl JsRuntime {
         cors: &CorsFetchState,
         response: &FetchResponse,
     ) {
-        let max_age = cors_preflight_max_age_seconds(response);
-        if max_age == 0 {
-            return;
-        }
+        crate::fetch_cors_preflight::store_permissions(
+            &self.cookie_jar,
+            &cors.partition_key,
+            self.now_ms.max(0.0) as u64,
+            &cors.source_origin.header_value(),
+            &request.url,
+            cors.credentialed,
+            response,
+        );
+    }
 
-        let now_ms = self
-            .cookie_jar
-            .borrow()
-            .effective_now_ms(self.now_ms.max(0.0) as u64);
-        let source_origin = cors.source_origin.header_value();
-        let target_url = request.url.without_fragment().to_string();
-        let expires_at_ms = now_ms.saturating_add(max_age.saturating_mul(1_000));
-        let allowed_methods = comma_tokens(response.headers.get("access-control-allow-methods"));
-        let allowed_headers = comma_tokens(response.headers.get("access-control-allow-headers"));
-
-        with_cors_preflight_session_cache(&self.cookie_jar, |entries| {
-            entries.retain(|entry| {
-                entry.expires_at_ms > now_ms
-                    && (entry.source_origin != source_origin
-                        || entry.target_url != target_url
-                        || entry.credentialed != cors.credentialed)
-            });
-            if entries.len() >= MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION {
-                entries.remove(0);
-            }
-            entries.push(CorsPreflightCacheEntry {
-                source_origin,
-                target_url,
-                credentialed: cors.credentialed,
-                allowed_methods,
-                allowed_headers,
-                expires_at_ms,
-            });
-        });
+    fn clear_cors_preflight_permissions(&self, request: &RequestData, cors: &CorsFetchState) {
+        crate::fetch_cors_preflight::clear_permissions(
+            &self.cookie_jar,
+            &cors.partition_key,
+            &cors.source_origin.header_value(),
+            &request.url,
+        );
     }
 
     fn queue_fetch(
@@ -369,6 +384,7 @@ impl JsRuntime {
         cookie_policy: CookieRequestPolicy,
     ) -> Result<(), FetchError> {
         let redirect = pending.redirect;
+        let redirect_context = pending.redirect_context.clone();
         let id = self.fetches.start(request, pending)?;
         if let Some(registry) = policy_registry_for_jar(&self.cookie_jar) {
             registry.set(id, cookie_policy);
@@ -376,16 +392,21 @@ impl JsRuntime {
         if let Some(registry) = redirect_policy_registry_for_jar(&self.cookie_jar) {
             registry.set(id, redirect);
         }
+        if let Some(registry) = cors_redirect_policy_registry_for_jar(&self.cookie_jar) {
+            registry.set(id, redirect_context);
+        }
         Ok(())
     }
 
-    /// Reject every request watching `state`, and stop their delivery.
-    fn abort_requests(&mut self, state: &Rc<AbortState>) {
+    /// Reject requests whose direct or composed signal has aborted.
+    /// Retiring them also removes unsent work and queues backend cancellations.
+    pub(crate) fn abort_requests(&mut self) {
+        let now_ms = self.now_ms;
         let aborted = self.fetches.take_where(|pending| {
             pending
                 .signal
                 .as_ref()
-                .is_some_and(|signal| Rc::ptr_eq(signal, state))
+                .is_some_and(|signal| signal.aborted_at(now_ms))
         });
         for (_, pending) in aborted {
             self.reject_with(&pending.promise, &FetchError::Aborted);
@@ -438,11 +459,18 @@ impl JsRuntime {
             ));
         }
 
-        let source_origin = Origin::of(&self.url);
+        let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url);
+        let source_origin = Origin::of(environment_url);
         let same_origin = source_origin.can_fetch(&request.url);
-        let cross_origin_web = matches!(self.url.scheme(), "http" | "https")
+        let cross_origin_web = matches!(environment_url.scheme(), "http" | "https")
             && matches!(request.url.scheme(), "http" | "https")
             && !same_origin;
+
+        if !request.integrity.is_empty() && mode == RequestMode::NoCors && cross_origin_web {
+            return Err(FetchError::Blocked(
+                "Subresource Integrity requires CORS for cross-origin requests".into(),
+            ));
+        }
 
         if mode == RequestMode::NoCors {
             if !is_cors_safelisted_method(request.method) {
@@ -452,22 +480,12 @@ impl JsRuntime {
                 )));
             }
 
-            // A request-no-cors header guard only permits CORS-safelisted
-            // request headers. This engine does not attach guard metadata to
-            // Headers objects yet, so enforce the equivalent wire invariant at
-            // fetch preparation time by dropping unsafe authored fields.
+            // Request construction and script mutations already enforce the
+            // request-no-cors guard. Re-apply it here as a wire-boundary defense
+            // for embedders that may construct RequestData directly in Rust.
             {
                 let mut headers = request.headers.borrow_mut();
-                headers.delete("origin");
-                headers.delete("access-control-request-method");
-                headers.delete("access-control-request-headers");
-            }
-            let unsafe_names = cors_unsafe_request_header_names(&request);
-            if !unsafe_names.is_empty() {
-                let mut headers = request.headers.borrow_mut();
-                for name in unsafe_names {
-                    headers.delete(&name);
-                }
+                retain_request_headers_for_mode(&mut headers, RequestMode::NoCors, true);
             }
         }
 
@@ -480,40 +498,47 @@ impl JsRuntime {
                     request.url
                 )))
             }
-            RequestMode::Cors if cross_origin_web => {
-                // Origin and the preflight-control fields are browser-owned.
-                // Strip authored copies before classification so they cannot
-                // influence either the preflight or the eventual actual request.
+            RequestMode::Cors
+                if matches!(self.url.scheme(), "http" | "https")
+                    && matches!(request.url.scheme(), "http" | "https") =>
+            {
+                // Keep CORS state even for an initially same-origin request: a
+                // later redirect may cross origin and turn the final response
+                // into a CORS-filtered response.
                 {
                     let mut headers = request.headers.borrow_mut();
-                    headers.delete("origin");
-                    headers.delete("access-control-request-method");
-                    headers.delete("access-control-request-headers");
+                    retain_request_headers_for_mode(&mut headers, RequestMode::Cors, false);
                 }
 
                 let requested_headers = cors_unsafe_request_header_names(&request);
-                let needs_preflight =
-                    !is_cors_safelisted_method(request.method) || !requested_headers.is_empty();
-                request
-                    .headers
-                    .borrow_mut()
-                    .insert_raw("origin", &source_origin.header_value());
+                let needs_preflight = cross_origin_web
+                    && (!is_cors_safelisted_method(request.method)
+                        || !requested_headers.is_empty());
+                if cross_origin_web {
+                    request
+                        .headers
+                        .borrow_mut()
+                        .insert_raw("origin", &source_origin.header_value());
+                }
                 Some(CorsFetchState {
                     source_origin: source_origin.clone(),
+                    // There are no nested browsing contexts yet; using the
+                    // environment origin deliberately over-partitions rather
+                    // than leaking preflight grants across top-level contexts.
+                    partition_key: source_origin.header_value(),
                     credentialed: request.credentials == RequestCredentials::Include,
                     requested_method: request.method,
                     requested_headers,
                     needs_preflight,
+                    initially_cross_origin: cross_origin_web,
                 })
             }
             RequestMode::Cors if !same_origin => {
-                // CORS is only meaningful for network tuple origins here. Keep
-                // the existing local-file containment boundary intact.
                 return Err(FetchError::Blocked(format!(
                     "{} may not fetch {}",
                     source_origin.header_value(),
                     request.url
-                )));
+                )))
             }
             RequestMode::NoCors if cross_origin_web => {
                 // no-cors sends the constrained request without a CORS
@@ -541,7 +566,7 @@ impl JsRuntime {
             RequestCredentials::SameOrigin => CookieCredentials::Omit,
             RequestCredentials::Include => CookieCredentials::Include,
         };
-        let same_site = if conservative_same_site(&self.url, &request.url) {
+        let same_site = if conservative_same_site(environment_url, &request.url) {
             SameSiteRequestContext::same_site(request.method)
         } else {
             SameSiteRequestContext::cross_site_subresource(request.method)
@@ -553,6 +578,11 @@ impl JsRuntime {
 
     /// The `Request` constructor, shared with `fetch`'s first argument.
     fn build_request(&mut self, input: JsValue, init: JsValue) -> Result<RequestData, FetchError> {
+        let inherited_request =
+            matches!(&input, JsValue::Host(host) if host.as_request().is_some());
+        let init_has_members =
+            matches!(&init, JsValue::Object(props) if !props.borrow().is_empty());
+
         let (
             mut url,
             mut method,
@@ -562,18 +592,34 @@ impl JsRuntime {
             mut mode,
             mut credentials,
             mut redirect,
+            mut referrer,
+            mut referrer_policy,
+            mut integrity,
         ) = match &input {
             JsValue::Host(host) => match host.as_request() {
-                Some(existing) => (
-                    existing.url.clone(),
-                    existing.method,
-                    existing.headers.borrow().clone(),
-                    existing.body.peek(),
-                    existing.signal.clone(),
-                    existing.mode,
-                    existing.credentials,
-                    existing.redirect,
-                ),
+                Some(existing) => {
+                    if existing.body.used() {
+                        return Err(FetchError::BadRequest(
+                            "Request body stream is already used".into(),
+                        ));
+                    }
+                    (
+                        existing.url.clone(),
+                        existing.method,
+                        existing.headers.borrow().clone(),
+                        existing
+                            .body
+                            .peek()
+                            .or_else(|| existing.body.present().then(Vec::new)),
+                        existing.signal.clone(),
+                        existing.mode,
+                        existing.credentials,
+                        existing.redirect,
+                        existing.referrer.clone(),
+                        existing.referrer_policy,
+                        existing.integrity.clone(),
+                    )
+                }
                 None => return Err(FetchError::InvalidUrl(to_string(&input))),
             },
             other => (
@@ -585,6 +631,9 @@ impl JsRuntime {
                 RequestMode::Cors,
                 RequestCredentials::SameOrigin,
                 FetchRedirectMode::Follow,
+                RequestReferrer::Client,
+                None,
+                String::new(),
             ),
         };
 
@@ -599,7 +648,15 @@ impl JsRuntime {
                     "body" => {
                         body = match value {
                             JsValue::Undefined | JsValue::Null => None,
-                            other => Some(to_string(other).into_bytes()),
+                            other => {
+                                let (bytes, content_type) = extract_body_init(other);
+                                if let Some(content_type) = content_type {
+                                    if !headers.has("content-type") {
+                                        headers.append_raw("content-type", content_type);
+                                    }
+                                }
+                                Some(bytes)
+                            }
                         }
                     }
                     "signal" => {
@@ -616,6 +673,9 @@ impl JsRuntime {
                     "mode" => mode = check_mode(&to_string(value))?,
                     "credentials" => credentials = check_credentials(&to_string(value))?,
                     "redirect" => redirect = check_redirect(&to_string(value))?,
+                    "referrer" => referrer = self.check_referrer(&to_string(value))?,
+                    "referrerPolicy" => referrer_policy = check_referrer_policy(&to_string(value))?,
+                    "integrity" => integrity = to_string(value),
                     _ => {}
                 }
             }
@@ -630,19 +690,49 @@ impl JsRuntime {
             url = self.resolve_fetch_url(&url.to_string())?;
         }
 
+        // RequestInit is processed before the Request header guard is fixed. An
+        // unmodified Request copy is special: privileged no-CORS headers seeded
+        // by browser code survive it. Any non-empty RequestInit instead runs the
+        // headers back through the unprivileged guard and strips privileged Range.
+        let preserve_privileged_no_cors = inherited_request && !init_has_members;
+        retain_request_headers_for_mode(&mut headers, mode, preserve_privileged_no_cors);
+
         Ok(RequestData {
             url,
             method,
-            headers: headers_ref(headers),
+            headers: request_headers_ref(headers, mode),
             body: match body {
                 Some(bytes) => Body::new(bytes),
-                None => Body::empty(),
+                None => Body::absent(),
             },
             signal,
             mode,
             credentials,
             redirect,
+            referrer,
+            referrer_policy,
+            integrity,
         })
+    }
+
+    fn check_referrer(&self, value: &str) -> Result<RequestReferrer, FetchError> {
+        if value.is_empty() {
+            return Ok(RequestReferrer::NoReferrer);
+        }
+        if value == "about:client" {
+            return Ok(RequestReferrer::Client);
+        }
+
+        let mut url = self.resolve_fetch_url(value)?;
+        let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url);
+        if !Origin::of(environment_url).can_fetch(&url) {
+            return Err(FetchError::BadRequest(format!(
+                "referrer URL {} is not same-origin with {}",
+                url, environment_url
+            )));
+        }
+        url.set_fragment(None);
+        Ok(RequestReferrer::Url(url))
     }
 
     fn resolve_fetch_url(&self, reference: &str) -> Result<Url, FetchError> {
@@ -712,12 +802,15 @@ impl JsRuntime {
                 }
             }
             Builtin::ResponseCtor => {
-                let body = match args.first() {
-                    None | Some(JsValue::Undefined) | Some(JsValue::Null) => Vec::new(),
-                    Some(other) => to_string(other).into_bytes(),
+                let (body, body_type) = match args.first() {
+                    None | Some(JsValue::Undefined) | Some(JsValue::Null) => (None, None),
+                    Some(other) => {
+                        let (bytes, content_type) = extract_body_init(other);
+                        (Some(bytes), content_type)
+                    }
                 };
                 let mut status = 200u16;
-                let mut status_text: Option<String> = None;
+                let mut status_text = String::new();
                 let mut headers = HeaderMap::new();
 
                 if let Some(JsValue::Object(props)) = args.get(1) {
@@ -726,7 +819,7 @@ impl JsRuntime {
                             "status" => {
                                 status = super::interp::to_number(value).max(0.0) as u16;
                             }
-                            "statusText" => status_text = Some(to_string(value)),
+                            "statusText" => status_text = to_string(value),
                             "headers" => match self.header_map_from(value) {
                                 Ok(map) => headers = map,
                                 Err(error) => {
@@ -738,13 +831,37 @@ impl JsRuntime {
                         }
                     }
                 }
+
+                if !(200..=599).contains(&status) {
+                    self.throw_type_error(format!(
+                        "RangeError: Response status must be in the range 200 to 599, got {status}"
+                    ));
+                    return JsValue::Undefined;
+                }
+                if !valid_response_status_text(&status_text) {
+                    self.throw_type_error(
+                        "Response statusText contains invalid reason-phrase characters".to_string(),
+                    );
+                    return JsValue::Undefined;
+                }
+                if body.is_some() && matches!(status, 204 | 205 | 304) {
+                    self.throw_type_error(format!(
+                        "Response with status {status} cannot have a body"
+                    ));
+                    return JsValue::Undefined;
+                }
+                if let Some(content_type) = body_type {
+                    if !headers.has("content-type") {
+                        headers.append_raw("content-type", content_type);
+                    }
+                }
+
                 let response = ResponseData {
                     url: self.url.clone(),
                     status,
-                    status_text: status_text
-                        .unwrap_or_else(|| crate::net::fetch::reason_phrase(status).to_string()),
+                    status_text,
                     headers: headers_ref(headers),
-                    body: Body::new(body),
+                    body: body.map(Body::new).unwrap_or_else(Body::absent),
                     redirected: false,
                     response_type: ResponseType::Default,
                 };
@@ -752,6 +869,9 @@ impl JsRuntime {
             }
             Builtin::AbortControllerCtor => {
                 host_value(HostObject::AbortController(AbortState::new()))
+            }
+            Builtin::AbortSignalCtor => {
+                host_value(HostObject::AbortSignal(AbortState::new()))
             }
             Builtin::URLCtor => {
                 let url_str = to_string(args.first().unwrap_or(&JsValue::Undefined));
@@ -840,6 +960,10 @@ impl JsRuntime {
                 let data = ResizeObserverData::new();
                 host_value(HostObject::ResizeObserver(Rc::new(RefCell::new(data))))
             }
+            Builtin::MutationObserverCtor => {
+                let data = MutationObserverData::new();
+                host_value(HostObject::MutationObserver(Rc::new(RefCell::new(data))))
+            }
             Builtin::MapCtor => {
                 let entries: Vec<(String, JsValue)> =
                     if let Some(JsValue::Array(arr)) = args.first() {
@@ -878,6 +1002,18 @@ impl JsRuntime {
                 };
                 host_value(HostObject::JsSet(Rc::new(RefCell::new(items))))
             }
+            Builtin::MessageChannelCtor => {
+                let (p1, p2) = MessagePortData::new_pair();
+                host_value(HostObject::MessageChannel(p1, p2))
+            }
+            Builtin::MessagePortCtor => {
+                let p1 = Rc::new(MessagePortData {
+                    closed: Rc::new(std::cell::Cell::new(false)),
+                    onmessage: Rc::new(RefCell::new(None)),
+                    peer: Rc::new(RefCell::new(None)),
+                });
+                host_value(HostObject::MessagePort(p1))
+            }
             other => {
                 self.throw_type_error(format!("{other:?} is not a constructor"));
                 JsValue::Undefined
@@ -898,6 +1034,15 @@ impl JsRuntime {
                 "mode" => JsValue::Str(request.mode.as_str().to_string()),
                 "credentials" => JsValue::Str(request.credentials.as_str().to_string()),
                 "redirect" => JsValue::Str(request.redirect.as_str().to_string()),
+                "referrer" => JsValue::Str(request.referrer.as_str()),
+                "referrerPolicy" => JsValue::Str(
+                    request
+                        .referrer_policy
+                        .map(ReferrerPolicy::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                "integrity" => JsValue::Str(request.integrity.clone()),
                 "signal" => match &request.signal {
                     Some(state) => host_value(HostObject::AbortSignal(state.clone())),
                     None => JsValue::Null,
@@ -919,10 +1064,13 @@ impl JsRuntime {
                 "signal" => host_value(HostObject::AbortSignal(state.clone())),
                 _ => JsValue::Undefined,
             },
-            HostObject::AbortSignal(state) => match prop {
-                "aborted" => JsValue::Bool(state.aborted()),
-                _ => JsValue::Undefined,
-            },
+            HostObject::AbortSignal(state) => {
+                state.check_timeout(self.now_ms);
+                match prop {
+                    "aborted" => JsValue::Bool(state.aborted()),
+                    _ => JsValue::Undefined,
+                }
+            }
             HostObject::URL(u_rc) => {
                 let u = u_rc.borrow();
                 match prop {
@@ -1077,6 +1225,30 @@ impl JsRuntime {
                 "contentRect" => rect_to_js(&entry.content_rect),
                 _ => JsValue::Undefined,
             },
+            HostObject::MutationObserver(_) => JsValue::Undefined,
+            HostObject::MutationRecord(record) => match prop {
+                "type" => JsValue::Str(record.type_name.clone()),
+                "target" => JsValue::Str(record.target_id.clone()),
+                "attributeName" => record.attribute_name.as_ref().map(|s| JsValue::Str(s.clone())).unwrap_or(JsValue::Null),
+                "addedNodes" => {
+                    let arr: Vec<JsValue> = record.added_nodes.iter().map(|n| JsValue::Str(n.clone())).collect();
+                    JsValue::Array(Rc::new(RefCell::new(arr)))
+                }
+                "removedNodes" => {
+                    let arr: Vec<JsValue> = record.removed_nodes.iter().map(|n| JsValue::Str(n.clone())).collect();
+                    JsValue::Array(Rc::new(RefCell::new(arr)))
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::MessageChannel(p1, p2) => match prop {
+                "port1" => host_value(HostObject::MessagePort(p1.clone())),
+                "port2" => host_value(HostObject::MessagePort(p2.clone())),
+                _ => JsValue::Undefined,
+            },
+            HostObject::MessagePort(port) => match prop {
+                "onmessage" => port.onmessage.borrow().clone().unwrap_or(JsValue::Null),
+                _ => JsValue::Undefined,
+            },
             HostObject::JsMap(entries) => match prop {
                 "size" => JsValue::Number(entries.borrow().len() as f32),
                 _ => JsValue::Undefined,
@@ -1102,6 +1274,7 @@ impl JsRuntime {
             HostObject::Request(request) => match prop {
                 "text" => self.consume_body(&request.body, false),
                 "json" => self.consume_body(&request.body, true),
+                "clone" => self.clone_request_host(request),
                 _ => JsValue::Undefined,
             },
             HostObject::Response(response) => match prop {
@@ -1109,13 +1282,13 @@ impl JsRuntime {
                 "json" if response.is_opaque() => self.consume_null_body(true),
                 "text" => self.consume_body(&response.body, false),
                 "json" => self.consume_body(&response.body, true),
+                "clone" => self.clone_response_host(response),
                 _ => JsValue::Undefined,
             },
             HostObject::AbortController(state) => match prop {
                 "abort" => {
                     if state.abort() {
-                        let state = state.clone();
-                        self.abort_requests(&state);
+                        self.abort_requests();
                     }
                     JsValue::Undefined
                 }
@@ -1375,6 +1548,53 @@ impl JsRuntime {
                 _ => JsValue::Undefined,
             },
             HostObject::ResizeObserverEntry(_) => JsValue::Undefined,
+            HostObject::MutationObserver(data) => match prop {
+                "observe" => {
+                    let target_id = args.first().map(to_string).unwrap_or_default();
+                    let (child_list, attributes, character_data, subtree) = if let Some(JsValue::Object(opts)) = args.get(1) {
+                        let cl = object_get(opts, "childList").map(|v| truthy(&v)).unwrap_or(false);
+                        let attr = object_get(opts, "attributes").map(|v| truthy(&v)).unwrap_or(false);
+                        let cd = object_get(opts, "characterData").map(|v| truthy(&v)).unwrap_or(false);
+                        let st = object_get(opts, "subtree").map(|v| truthy(&v)).unwrap_or(false);
+                        (cl, attr, cd, st)
+                    } else {
+                        (true, false, false, false)
+                    };
+                    let mut d = data.borrow_mut();
+                    d.targets.retain(|t| t.target_id != target_id);
+                    d.targets.push(MutationObserverTarget {
+                        target_id: target_id.clone(),
+                        child_list,
+                        attributes,
+                        character_data,
+                        subtree,
+                    });
+                    d.records.push(MutationRecordData {
+                        type_name: if child_list { "childList".to_string() } else if attributes { "attributes".to_string() } else { "characterData".to_string() },
+                        target_id,
+                        added_nodes: Vec::new(),
+                        removed_nodes: Vec::new(),
+                        attribute_name: if attributes { Some("class".to_string()) } else { None },
+                    });
+                    JsValue::Undefined
+                }
+                "disconnect" => {
+                    let mut d = data.borrow_mut();
+                    d.targets.clear();
+                    d.records.clear();
+                    JsValue::Undefined
+                }
+                "takeRecords" => {
+                    let mut d = data.borrow_mut();
+                    let records = std::mem::take(&mut d.records);
+                    let items: Vec<JsValue> = records.into_iter().map(|rec| {
+                        host_value(HostObject::MutationRecord(rec))
+                    }).collect();
+                    JsValue::Array(Rc::new(RefCell::new(items)))
+                }
+                _ => JsValue::Undefined,
+            },
+            HostObject::MutationRecord(_) => JsValue::Undefined,
             HostObject::JsMap(entries) => match prop {
                 "get" => {
                     let key = args.first().map(to_string).unwrap_or_default();
@@ -1510,6 +1730,7 @@ impl JsRuntime {
                 }
                 _ => JsValue::Undefined,
             },
+            HostObject::MessageChannel(_, _) | HostObject::MessagePort(_) => JsValue::Undefined,
         }
     }
 
@@ -1728,6 +1949,11 @@ impl JsRuntime {
     }
 
     fn headers_method(&mut self, headers: &HeadersRef, prop: &str, args: &[JsValue]) -> JsValue {
+        if headers.is_immutable() && matches!(prop, "set" | "append" | "delete") {
+            self.throw_type_error("Headers are immutable".to_string());
+            return JsValue::Undefined;
+        }
+
         let name = to_string(args.first().unwrap_or(&JsValue::Undefined));
         let value = to_string(args.get(1).unwrap_or(&JsValue::Undefined));
 
@@ -1738,20 +1964,64 @@ impl JsRuntime {
             },
             "has" => JsValue::Bool(headers.borrow().has(&name)),
             "set" | "append" => {
-                if HeaderMap::is_forbidden(&name) {
-                    return JsValue::Undefined;
-                }
+                // Normalize and validate on a detached candidate first. Fetch
+                // checks forbidden request headers after header-value
+                // normalization, and request-no-cors append must judge the
+                // resulting combined field value rather than only the fragment.
+                let mut candidate = headers.borrow().clone();
                 let outcome = if prop == "set" {
-                    headers.borrow_mut().set(&name, &value)
+                    candidate.set(&name, &value)
                 } else {
-                    headers.borrow_mut().append(&name, &value)
+                    candidate.append(&name, &value)
                 };
                 if let Err(error) = outcome {
                     self.throw_type_error(error.to_string());
+                    return JsValue::Undefined;
                 }
+
+                let combined = candidate.get(&name).unwrap_or_default();
+                // Keep the engine's historical script-owned header protection,
+                // then apply the Fetch request guard. The method-override names
+                // are value-sensitive: they are forbidden only when a
+                // comma-delimited method token is CONNECT, TRACE, or TRACK.
+                if HeaderMap::is_forbidden(&name)
+                    || headers.is_request_guard() && is_forbidden_request_header(&name, &combined)
+                {
+                    return JsValue::Undefined;
+                }
+                if headers.is_request_no_cors() {
+                    let normalized_name = name.trim().to_ascii_lowercase();
+                    if !is_no_cors_safelisted_request_header(&normalized_name, &combined) {
+                        return JsValue::Undefined;
+                    }
+                    // A successful unprivileged mutation invalidates every
+                    // browser-owned privileged no-CORS header, including Range.
+                    remove_privileged_no_cors_request_headers(&mut candidate);
+                }
+                *headers.borrow_mut() = candidate;
                 JsValue::Undefined
             }
             "delete" => {
+                if headers.is_request_guard() && is_forbidden_request_header_name(&name) {
+                    return JsValue::Undefined;
+                }
+                if headers.is_request_no_cors() {
+                    if !is_no_cors_safelisted_request_header_name(&name)
+                        && !is_privileged_no_cors_request_header_name(&name)
+                    {
+                        return JsValue::Undefined;
+                    }
+                    // Fetch returns before privileged-header cleanup when the
+                    // requested field is absent. A successful deletion does the
+                    // cleanup, even when a different safelisted field was named.
+                    if !headers.borrow().has(&name) {
+                        return JsValue::Undefined;
+                    }
+                    let mut map = headers.borrow_mut();
+                    map.delete(&name);
+                    remove_privileged_no_cors_request_headers(&mut map);
+                    return JsValue::Undefined;
+                }
                 headers.borrow_mut().delete(&name);
                 JsValue::Undefined
             }
@@ -1762,20 +2032,20 @@ impl JsRuntime {
                     .into_iter()
                     .map(JsValue::Str)
                     .collect();
-                JsValue::Array(Rc::new(std::cell::RefCell::new(names)))
+                JsValue::Array(Rc::new(RefCell::new(names)))
             }
             "entries" => {
                 let entries: Vec<JsValue> = headers
                     .borrow()
                     .iter()
                     .map(|(name, value)| {
-                        JsValue::Array(Rc::new(std::cell::RefCell::new(vec![
+                        JsValue::Array(Rc::new(RefCell::new(vec![
                             JsValue::Str(name.to_string()),
                             JsValue::Str(value.to_string()),
                         ])))
                     })
                     .collect();
-                JsValue::Array(Rc::new(std::cell::RefCell::new(entries)))
+                JsValue::Array(Rc::new(RefCell::new(entries)))
             }
             _ => JsValue::Undefined,
         }
@@ -1833,8 +2103,108 @@ impl JsRuntime {
     }
 }
 
+/// Once Fetch accepts a Request input, it owns that input body unless
+/// RequestInit supplied a replacement. Disturb the script-visible source
+/// synchronously while retaining the prepared internal copy for a later
+/// network turn or CORS preflight.
+fn consume_fetch_input_body(args: &[JsValue]) -> Result<(), FetchError> {
+    let Some(JsValue::Host(host)) = args.first() else {
+        return Ok(());
+    };
+    let Some(request) = host.as_request() else {
+        return Ok(());
+    };
+    let init_replaces_body = args.get(1).is_some_and(|init| match init {
+        JsValue::Object(props) => props.borrow().iter().any(|(key, _)| key == "body"),
+        _ => false,
+    });
+    if init_replaces_body || !request.body.present() {
+        return Ok(());
+    }
+    request
+        .body
+        .take()
+        .map(|_| ())
+        .map_err(FetchError::BadRequest)
+}
+
+fn extract_body_init(value: &JsValue) -> (Vec<u8>, Option<&'static str>) {
+    if let JsValue::Host(host) = value {
+        if let HostObject::URLSearchParams(params) = host.as_ref() {
+            return (
+                params.borrow().to_query_string().into_bytes(),
+                Some("application/x-www-form-urlencoded;charset=UTF-8"),
+            );
+        }
+    }
+    (
+        to_string(value).into_bytes(),
+        Some("text/plain;charset=UTF-8"),
+    )
+}
+
+fn valid_response_status_text(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte == b'\t' || byte >= 0x20 && byte != 0x7f)
+}
+
 fn host_value(object: HostObject) -> JsValue {
     JsValue::Host(Rc::new(object))
+}
+
+fn fetch_redirect_context(
+    request: &RequestData,
+    source_url: Url,
+    referrer: RedirectReferrerState,
+) -> FetchCorsRedirectPolicy {
+    FetchCorsRedirectPolicy {
+        mode: match request.mode {
+            RequestMode::Cors => FetchRequestMode::Cors,
+            RequestMode::SameOrigin => FetchRequestMode::SameOrigin,
+            RequestMode::NoCors => FetchRequestMode::NoCors,
+        },
+        source_url,
+        credentials: match request.credentials {
+            RequestCredentials::Omit => FetchCredentialsMode::Omit,
+            RequestCredentials::SameOrigin => FetchCredentialsMode::SameOrigin,
+            RequestCredentials::Include => FetchCredentialsMode::Include,
+        },
+        referrer,
+    }
+}
+
+fn request_referrer_state(
+    request: &RequestData,
+    client_source: Option<&Url>,
+    client_policy: ReferrerPolicy,
+) -> RedirectReferrerState {
+    let source = match &request.referrer {
+        RequestReferrer::Client => client_source.cloned(),
+        RequestReferrer::NoReferrer => None,
+        RequestReferrer::Url(url) => Some(url.clone()),
+    };
+    RedirectReferrerState::new(source, request.referrer_policy.unwrap_or(client_policy))
+}
+
+fn check_referrer_policy(value: &str) -> Result<Option<ReferrerPolicy>, FetchError> {
+    let policy = match value {
+        "" => return Ok(None),
+        "no-referrer" => ReferrerPolicy::NoReferrer,
+        "no-referrer-when-downgrade" => ReferrerPolicy::NoReferrerWhenDowngrade,
+        "origin" => ReferrerPolicy::Origin,
+        "origin-when-cross-origin" => ReferrerPolicy::OriginWhenCrossOrigin,
+        "same-origin" => ReferrerPolicy::SameOrigin,
+        "strict-origin" => ReferrerPolicy::StrictOrigin,
+        "strict-origin-when-cross-origin" => ReferrerPolicy::StrictOriginWhenCrossOrigin,
+        "unsafe-url" => ReferrerPolicy::UnsafeUrl,
+        other => {
+            return Err(FetchError::BadRequest(format!(
+                "unsupported referrer policy {other:?}"
+            )))
+        }
+    };
+    Ok(Some(policy))
 }
 
 fn check_mode(mode: &str) -> Result<RequestMode, FetchError> {
@@ -1908,43 +2278,178 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
                 "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
             )
         }
+        "range" => is_cors_safelisted_range(value),
         _ => false,
     }
 }
 
-fn cors_unsafe_request_header_names(request: &RequestData) -> Vec<String> {
-    let mut names = Vec::new();
-    for (name, value) in request.headers.borrow().iter() {
-        if name != "origin" && !is_cors_safelisted_request_header(name, value) {
-            names.push(name.to_string());
+fn is_cors_safelisted_range(value: &str) -> bool {
+    let Some(range) = value.strip_prefix("bytes=") else {
+        return false;
+    };
+    let Some((start, end)) = range.split_once('-') else {
+        return false;
+    };
+    !start.is_empty()
+        && start.bytes().all(|byte| byte.is_ascii_digit())
+        && end.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_no_cors_safelisted_request_header_name(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "accept" | "accept-language" | "content-language" | "content-type"
+    )
+}
+
+fn is_no_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+    is_no_cors_safelisted_request_header_name(name)
+        && is_cors_safelisted_request_header(&name.trim().to_ascii_lowercase(), value)
+}
+
+fn is_privileged_no_cors_request_header_name(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("range")
+}
+
+fn remove_privileged_no_cors_request_headers(headers: &mut HeaderMap) {
+    headers.delete("range");
+}
+
+fn is_forbidden_request_header_name(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    HeaderMap::is_forbidden(&name)
+        || name.starts_with("proxy-")
+        || name.starts_with("sec-")
+        || matches!(
+            name.as_str(),
+            "accept-charset"
+                | "accept-encoding"
+                | "access-control-request-headers"
+                | "access-control-request-method"
+                | "cookie"
+                | "cookie2"
+                | "date"
+                | "dnt"
+                | "expect"
+                | "origin"
+                | "permissions-policy"
+                | "referer"
+                | "set-cookie"
+                | "te"
+                | "trailer"
+                | "via"
+        )
+}
+
+fn is_forbidden_request_header(name: &str, value: &str) -> bool {
+    if is_forbidden_request_header_name(name) {
+        return true;
+    }
+    let normalized_name = name.trim().to_ascii_lowercase();
+    matches!(
+        normalized_name.as_str(),
+        "x-http-method" | "x-http-method-override" | "x-method-override"
+    ) && contains_forbidden_override_method(value)
+}
+
+fn contains_forbidden_override_method(value: &str) -> bool {
+    // Fetch uses its HTTP-aware "get, decode, and split" algorithm here:
+    // commas inside a quoted string are data, not list separators. Preserve the
+    // quotes in each candidate token so `"TRACE"` is not the method TRACE.
+    let bytes = value.as_bytes();
+    let mut start = 0usize;
+    let mut index = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+
+    while index <= bytes.len() {
+        if index == bytes.len() || bytes[index] == b',' && !quoted {
+            let method = value[start..index].trim_matches(|c| c == ' ' || c == '\t');
+            if method.eq_ignore_ascii_case("CONNECT")
+                || method.eq_ignore_ascii_case("TRACE")
+                || method.eq_ignore_ascii_case("TRACK")
+            {
+                return true;
+            }
+            start = index.saturating_add(1);
+            index += 1;
+            continue;
+        }
+
+        match bytes[index] {
+            b'\\' if quoted && !escaped => escaped = true,
+            b'"' if quoted && !escaped => quoted = false,
+            b'"' if !quoted => quoted = true,
+            _ => escaped = false,
+        }
+        index += 1;
+    }
+    false
+}
+
+fn retain_request_headers_for_mode(
+    headers: &mut HeaderMap,
+    mode: RequestMode,
+    preserve_privileged_no_cors: bool,
+) {
+    for name in headers.names() {
+        let value = headers.get(&name).unwrap_or_default();
+        let allowed_no_cors = is_no_cors_safelisted_request_header(&name, &value)
+            || preserve_privileged_no_cors && is_privileged_no_cors_request_header_name(&name);
+        if is_forbidden_request_header(&name, &value)
+            || mode == RequestMode::NoCors && !allowed_no_cors
+        {
+            headers.delete(&name);
         }
     }
-    names.sort();
-    names.dedup();
-    names
+}
+
+const CORS_SAFELIST_VALUE_SIZE_LIMIT: usize = 1024;
+
+fn cors_unsafe_request_header_names(request: &RequestData) -> Vec<String> {
+    let headers = request.headers.borrow();
+    let mut unsafe_names = Vec::new();
+    let mut potentially_unsafe_names = Vec::new();
+    let mut safelist_value_size = 0usize;
+
+    for (name, value) in headers.iter() {
+        // Origin is browser-owned and is inserted after this calculation for
+        // ordinary CORS requests. Keep the exclusion as defense-in-depth for
+        // internally constructed requests that already carry one.
+        if name == "origin" {
+            continue;
+        }
+
+        if is_cors_safelisted_request_header(name, value) {
+            potentially_unsafe_names.push(name.to_ascii_lowercase());
+            safelist_value_size = safelist_value_size.saturating_add(value.len());
+        } else {
+            unsafe_names.push(name.to_ascii_lowercase());
+        }
+    }
+
+    // Fetch promotes every otherwise-safelisted header name when the sum of
+    // their individual header-value byte lengths exceeds 1024 bytes.
+    if safelist_value_size > CORS_SAFELIST_VALUE_SIZE_LIMIT {
+        unsafe_names.extend(potentially_unsafe_names);
+    }
+
+    unsafe_names.sort();
+    unsafe_names.dedup();
+    unsafe_names
 }
 
 fn build_cors_preflight_request(request: &RequestData, cors: &CorsFetchState) -> FetchRequest {
-    let mut headers = HeaderMap::new();
-    headers.insert_raw("origin", &cors.source_origin.header_value());
-    headers.insert_raw(
-        "access-control-request-method",
-        cors.requested_method.as_str(),
-    );
-    if !cors.requested_headers.is_empty() {
-        headers.insert_raw(
-            "access-control-request-headers",
-            &cors.requested_headers.join(", "),
-        );
-    }
-    FetchRequest::new(request.url.clone(), Method::Options, headers, None)
+    crate::fetch_cors_preflight::build_preflight_request(
+        request.url.clone(),
+        &cors.source_origin.header_value(),
+        cors.requested_method,
+        &cors.requested_headers,
+    )
 }
 
 fn cors_preflight_cookie_policy() -> CookieRequestPolicy {
-    CookieRequestPolicy::new(
-        CookieCredentials::Omit,
-        SameSiteRequestContext::cross_site_subresource(Method::Options),
-    )
+    crate::fetch_cors_preflight::preflight_cookie_policy()
 }
 
 const CORS_SAFELISTED_RESPONSE_HEADERS: &[&str] = &[
@@ -1984,59 +2489,6 @@ fn filter_cors_response_headers(response: &mut FetchResponse, credentialed: bool
     }
 }
 
-fn validate_cors_response(
-    source_origin: &Origin,
-    credentialed: bool,
-    response: &FetchResponse,
-) -> Result<(), FetchError> {
-    let allow_origin = response.headers.get("access-control-allow-origin");
-    let serialized = source_origin.header_value();
-
-    if credentialed {
-        if allow_origin.as_deref() != Some(serialized.as_str()) {
-            return Err(FetchError::Blocked(
-                "CORS: credentialed response requires an exact Access-Control-Allow-Origin value"
-                    .into(),
-            ));
-        }
-        if response
-            .headers
-            .get("access-control-allow-credentials")
-            .as_deref()
-            != Some("true")
-        {
-            return Err(FetchError::Blocked(
-                "CORS: credentialed response requires Access-Control-Allow-Credentials: true"
-                    .into(),
-            ));
-        }
-        return Ok(());
-    }
-
-    if matches!(allow_origin.as_deref(), Some("*"))
-        || allow_origin.as_deref() == Some(serialized.as_str())
-    {
-        Ok(())
-    } else {
-        Err(FetchError::Blocked(
-            "CORS: cross-origin response did not allow the document origin".into(),
-        ))
-    }
-}
-
-fn cors_preflight_max_age_seconds(response: &FetchResponse) -> u64 {
-    response
-        .headers
-        .get("access-control-max-age")
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_CORS_PREFLIGHT_MAX_AGE_SECS)
-        .min(MAX_CORS_PREFLIGHT_MAX_AGE_SECS)
-}
-
-fn is_cors_non_wildcard_request_header_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization")
-}
-
 fn comma_tokens(value: Option<String>) -> Vec<String> {
     value
         .unwrap_or_default()
@@ -2051,49 +2503,186 @@ fn validate_cors_preflight_response(
     cors: &CorsFetchState,
     response: &FetchResponse,
 ) -> Result<(), FetchError> {
-    if response.redirected {
-        return Err(FetchError::Blocked(
-            "CORS: redirected preflight responses are not supported".into(),
-        ));
-    }
-    if !(200..300).contains(&response.status) {
-        return Err(FetchError::Blocked(format!(
-            "CORS: preflight response status {} is not successful",
-            response.status
-        )));
-    }
-    validate_cors_response(&cors.source_origin, cors.credentialed, response)?;
+    crate::fetch_cors_preflight::validate_preflight_response(
+        &cors.source_origin.header_value(),
+        cors.credentialed,
+        cors.requested_method,
+        &cors.requested_headers,
+        response,
+    )
+}
 
-    if !is_cors_safelisted_method(cors.requested_method) {
-        let methods = comma_tokens(response.headers.get("access-control-allow-methods"));
-        let wildcard = !cors.credentialed && methods.iter().any(|method| method == "*");
-        let exact = methods
-            .iter()
-            .any(|method| method == cors.requested_method.as_str());
-        if !wildcard && !exact {
-            return Err(FetchError::Blocked(format!(
-                "CORS: preflight did not allow method {}",
-                cors.requested_method
-            )));
-        }
+include!("fetch_body_clone_ext.rs");
+
+#[cfg(test)]
+mod privileged_range_tests {
+    use super::*;
+
+    fn runtime() -> JsRuntime {
+        let mut runtime = JsRuntime::new();
+        runtime.url = Url::parse("http://page.test/index.html").expect("valid page URL");
+        runtime
     }
 
-    if !cors.requested_headers.is_empty() {
-        let allowed = comma_tokens(response.headers.get("access-control-allow-headers"));
-        let wildcard = !cors.credentialed && allowed.iter().any(|header| header == "*");
-        for requested in &cors.requested_headers {
-            let wildcard_allows = wildcard && !is_cors_non_wildcard_request_header_name(requested);
-            if !wildcard_allows
-                && !allowed
-                    .iter()
-                    .any(|header| header.eq_ignore_ascii_case(requested))
-            {
-                return Err(FetchError::Blocked(format!(
-                    "CORS: preflight did not allow request header {requested}"
-                )));
-            }
-        }
+    fn privileged_request() -> RequestData {
+        let mut headers = HeaderMap::new();
+        headers.append_raw("accept", "text/plain");
+        let request = RequestData {
+            url: Url::parse("http://page.test/data").expect("valid request URL"),
+            method: Method::Get,
+            headers: request_headers_ref(headers, RequestMode::NoCors),
+            body: Body::absent(),
+            signal: None,
+            mode: RequestMode::NoCors,
+            credentials: RequestCredentials::SameOrigin,
+            redirect: FetchRedirectMode::Follow,
+            referrer: RequestReferrer::Client,
+            referrer_policy: None,
+            integrity: String::new(),
+        };
+        request.add_range_header(0, Some(99));
+        request
     }
 
-    Ok(())
+    fn request_value(request: RequestData) -> JsValue {
+        host_value(HostObject::Request(request))
+    }
+
+    #[test]
+    fn unmodified_no_cors_request_copy_preserves_privileged_range() {
+        let mut runtime = runtime();
+        let copy = runtime
+            .build_request(request_value(privileged_request()), JsValue::Undefined)
+            .expect("unmodified copy succeeds");
+        assert_eq!(
+            copy.headers.borrow().get("range").as_deref(),
+            Some("bytes=0-99")
+        );
+
+        let empty_init = JsValue::Object(Rc::new(RefCell::new(Vec::new())));
+        let empty_copy = runtime
+            .build_request(request_value(privileged_request()), empty_init)
+            .expect("empty init is still unmodified");
+        assert_eq!(
+            empty_copy.headers.borrow().get("range").as_deref(),
+            Some("bytes=0-99")
+        );
+    }
+
+    #[test]
+    fn nonempty_request_init_strips_inherited_privileged_range() {
+        let mut runtime = runtime();
+        let init = JsValue::Object(Rc::new(RefCell::new(vec![(
+            "credentials".to_string(),
+            JsValue::Str("omit".to_string()),
+        )])));
+        let copy = runtime
+            .build_request(request_value(privileged_request()), init)
+            .expect("modified copy succeeds");
+        assert!(!copy.headers.borrow().has("range"));
+        assert_eq!(
+            copy.headers.borrow().get("accept").as_deref(),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
+    fn successful_no_cors_mutation_removes_privileged_range() {
+        let mut runtime = runtime();
+        let request = privileged_request();
+        runtime.headers_method(
+            &request.headers,
+            "set",
+            &[
+                JsValue::Str("accept".to_string()),
+                JsValue::Str("text/html".to_string()),
+            ],
+        );
+        assert_eq!(
+            request.headers.borrow().get("accept").as_deref(),
+            Some("text/html")
+        );
+        assert!(!request.headers.borrow().has("range"));
+    }
+
+    #[test]
+    fn rejected_no_cors_mutations_leave_privileged_range_untouched() {
+        let mut runtime = runtime();
+        let request = privileged_request();
+        runtime.headers_method(
+            &request.headers,
+            "set",
+            &[
+                JsValue::Str("x-secret".to_string()),
+                JsValue::Str("blocked".to_string()),
+            ],
+        );
+        runtime.headers_method(
+            &request.headers,
+            "set",
+            &[
+                JsValue::Str("range".to_string()),
+                JsValue::Str("bytes=200-299".to_string()),
+            ],
+        );
+        assert_eq!(
+            request.headers.borrow().get("range").as_deref(),
+            Some("bytes=0-99")
+        );
+        assert!(!request.headers.borrow().has("x-secret"));
+    }
+
+    #[test]
+    fn no_cors_delete_only_purges_privileged_range_after_real_deletion() {
+        let mut runtime = runtime();
+        let request = privileged_request();
+        runtime.headers_method(
+            &request.headers,
+            "delete",
+            &[JsValue::Str("content-language".to_string())],
+        );
+        assert!(request.headers.borrow().has("range"));
+
+        runtime.headers_method(
+            &request.headers,
+            "delete",
+            &[JsValue::Str("accept".to_string())],
+        );
+        assert!(!request.headers.borrow().has("accept"));
+        assert!(!request.headers.borrow().has("range"));
+    }
+
+    #[test]
+    fn fetch_wire_boundary_preserves_browser_owned_no_cors_range() {
+        let mut runtime = runtime();
+        let (request, _, _, _) = runtime
+            .prepare_request(&[request_value(privileged_request())])
+            .expect("privileged request prepares");
+        let wire = request.to_wire();
+        assert_eq!(wire.headers.get("range").as_deref(), Some("bytes=0-99"));
+    }
+
+    #[test]
+    fn browser_range_helper_serializes_open_and_closed_ranges() {
+        let request = privileged_request();
+        request.headers.borrow_mut().delete("range");
+        request.add_range_header(25, None);
+        assert_eq!(
+            request.headers.borrow().get("range").as_deref(),
+            Some("bytes=25-")
+        );
+
+        request.headers.borrow_mut().delete("range");
+        request.add_range_header(25, Some(50));
+        assert_eq!(
+            request.headers.borrow().get("range").as_deref(),
+            Some("bytes=25-50")
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Range end must not precede its start")]
+    fn browser_range_helper_rejects_reversed_bounds() {
+        privileged_request().add_range_header(100, Some(99));
+    }
 }
