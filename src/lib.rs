@@ -19,8 +19,11 @@ pub mod cookie;
 pub mod cookie_network;
 pub mod cookie_same_site;
 pub mod cors_settings;
+pub mod cross_origin_embedder_policy;
+pub mod cross_origin_resource_policy;
 pub mod css;
 pub mod document;
+pub mod document_policy_container;
 pub mod document_referrer;
 pub mod dom;
 pub mod editing;
@@ -36,6 +39,7 @@ pub mod hsts;
 pub mod hsts_network;
 pub mod html;
 pub mod html_subresource_integrity;
+pub(crate) mod http_structured_field;
 pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
@@ -80,7 +84,18 @@ pub use cookie_same_site::{cookie_allows_request, same_site_allows, SameSiteRequ
 pub use cors_settings::{
     cors_enabled, parse_cors_settings_attribute, CorsCredentialsMode, CorsSettingsAttribute,
 };
+pub use cross_origin_embedder_policy::{
+    parse_cross_origin_embedder_policy, parse_cross_origin_embedder_policy_report_only,
+    ParsedCrossOriginEmbedderPolicy,
+};
+pub use cross_origin_resource_policy::{
+    cross_origin_resource_policy_allows, cross_origin_resource_policy_internal_check,
+    parse_cross_origin_resource_policy, response_allows_cross_origin_resource,
+    response_allows_cross_origin_resource_with_embedder_policy, CorpOriginRelation,
+    CrossOriginEmbedderPolicy, CrossOriginResourcePolicy,
+};
 pub use document::{Document, PointerState};
+pub use document_policy_container::{DocumentPolicyContainer, NoCorsResponsePolicyResult};
 pub use document_referrer::DocumentReferrerContext;
 pub use fetch_redirect_policy::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
@@ -94,8 +109,8 @@ pub use hyperlink_referrer::{
     hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
 };
 pub use integrity_policy::{
-    evaluate_integrity_policy, IntegrityPolicy, IntegrityPolicyDecision, IntegrityPolicyDestination,
-    IntegrityPolicyRequestMode, IntegrityPolicySource,
+    evaluate_integrity_policy, IntegrityPolicy, IntegrityPolicyDecision,
+    IntegrityPolicyDestination, IntegrityPolicyRequestMode, IntegrityPolicySource,
 };
 pub use integrity_policy_headers::{
     IntegrityPolicyContainer, INTEGRITY_POLICY_HEADER, INTEGRITY_POLICY_REPORT_ONLY_HEADER,
