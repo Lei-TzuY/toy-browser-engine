@@ -296,3 +296,76 @@ fn credentialed_redirect_preflight_omits_cookie_then_actual_includes_it() {
     assert_eq!(seen[2].method.as_str(), "PUT");
     assert_eq!(seen[2].headers.get("cookie").as_deref(), Some("session=one"));
 }
+
+#[test]
+fn redirected_range_uses_the_same_safelist_as_a_direct_fetch() {
+    let transport = Rc::new(ManualNetwork::new());
+    transport.set_auto_complete(true);
+    transport.respond(
+        "http://page.test/start",
+        redirect("http://page.test/start", "http://api.test/data"),
+    );
+    transport.respond(
+        "http://api.test/data",
+        cors_permission("http://api.test/data", "http://page.test", "60", false),
+    );
+    let mut browser = browser_for(
+        "fetch('/start', { headers: { Range: 'bytes=0-1' } }).then(function () { console.log('done'); }).catch(function () { console.log('blocked'); });",
+        transport.clone(),
+    );
+    browser.settle_network(12);
+    assert_eq!(browser.document().runtime.console, vec!["done"]);
+    let seen = transport.requests();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].method.as_str(), "GET");
+    assert_eq!(seen[1].headers.get("range").as_deref(), Some("bytes=0-1"));
+}
+
+#[test]
+fn redirected_aggregate_headers_require_permission_before_actual_dispatch() {
+    for allowed in [false, true] {
+        let transport = Rc::new(ManualNetwork::new());
+        transport.set_auto_complete(true);
+        transport.respond(
+            "http://page.test/start",
+            redirect("http://page.test/start", "http://api.test/data"),
+        );
+        let mut grant = cors_permission("http://api.test/data", "http://page.test", "60", false);
+        grant
+            .headers
+            .insert_raw("access-control-allow-methods", "GET");
+        if allowed {
+            grant
+                .headers
+                .insert_raw("access-control-allow-headers", "accept,content-language");
+        } else {
+            grant.headers.delete("access-control-allow-headers");
+        }
+        transport.respond("http://api.test/data", grant);
+        let value = "a".repeat(128);
+        let mut script = String::from("const h = new Headers();");
+        for _ in 0..8 {
+            script.push_str(&format!("h.append('Accept', '{value}');"));
+        }
+        script.push_str("h.append('Content-Language', 'a'); fetch('/start', { headers: h }).then(function () { console.log('done'); }).catch(function () { console.log('blocked'); });");
+        let mut browser = browser_for(&script, transport.clone());
+        browser.settle_network(16);
+        assert_eq!(
+            browser.document().runtime.console,
+            vec![if allowed { "done" } else { "blocked" }]
+        );
+        let seen = transport.requests();
+        assert_eq!(seen.len(), if allowed { 3 } else { 2 });
+        assert_eq!(seen[1].method.as_str(), "OPTIONS");
+        assert_eq!(
+            seen[1]
+                .headers
+                .get("access-control-request-headers")
+                .as_deref(),
+            Some("accept,content-language")
+        );
+        if allowed {
+            assert_eq!(seen[2].method.as_str(), "GET");
+        }
+    }
+}

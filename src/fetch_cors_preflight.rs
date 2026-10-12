@@ -19,6 +19,8 @@ enum CorsPreflightPermission {
 
 #[derive(Debug, Clone)]
 struct CorsPreflightCacheEntry {
+    /// Conservative top-level environment origin used as the partition token.
+    partition_key: String,
     source_origin: String,
     target_url: String,
     credentialed: bool,
@@ -29,10 +31,8 @@ struct CorsPreflightCacheEntry {
 #[derive(Debug)]
 struct CorsPreflightSessionCache {
     jar: Weak<RefCell<CookieJar>>,
-    /// Conservative implementation-defined network partition key. The current
-    /// engine has no nested browsing contexts, so the top-level environment
-    /// origin is used as the partition token.
-    partition_key: String,
+    /// All partitions share the session's capacity budget. The partition key
+    /// belongs to each permission so isolation cannot multiply that budget.
     entries: Vec<CorsPreflightCacheEntry>,
 }
 
@@ -42,7 +42,6 @@ thread_local! {
 
 fn with_session_cache<R>(
     jar: &CookieJarRef,
-    partition_key: &str,
     operation: impl FnOnce(&mut Vec<CorsPreflightCacheEntry>) -> R,
 ) -> R {
     CORS_PREFLIGHT_CACHES.with(|sessions| {
@@ -55,12 +54,10 @@ fn with_session_cache<R>(
                     .jar
                     .upgrade()
                     .is_some_and(|live| Rc::ptr_eq(&live, jar))
-                    && session.partition_key == partition_key
             })
             .unwrap_or_else(|| {
                 sessions.push(CorsPreflightSessionCache {
                     jar: Rc::downgrade(jar),
-                    partition_key: partition_key.to_string(),
                     entries: Vec::new(),
                 });
                 sessions.len() - 1
@@ -159,11 +156,13 @@ fn max_age_seconds(response: &FetchResponse) -> u64 {
 
 fn cache_entry_matches_request(
     entry: &CorsPreflightCacheEntry,
+    partition_key: &str,
     source_origin: &str,
     target_url: &str,
     credentialed: bool,
 ) -> bool {
-    entry.source_origin == source_origin
+    entry.partition_key == partition_key
+        && entry.source_origin == source_origin
         && entry.target_url == target_url
         && (entry.credentialed || !credentialed)
 }
@@ -208,13 +207,18 @@ pub(crate) fn cache_allows(
     let now_ms = effective_now_ms(jar, now_ms);
     let target_url = target_cache_key(target);
 
-    with_session_cache(jar, partition_key, |entries| {
+    with_session_cache(jar, |entries| {
         entries.retain(|entry| entry.expires_at_ms > now_ms);
 
         let method_allowed = is_cors_safelisted_method(requested_method)
             || entries.iter().any(|entry| {
-                cache_entry_matches_request(entry, source_origin, &target_url, credentialed)
-                    && method_permission_matches(&entry.permission, requested_method, credentialed)
+                cache_entry_matches_request(
+                    entry,
+                    partition_key,
+                    source_origin,
+                    &target_url,
+                    credentialed,
+                ) && method_permission_matches(&entry.permission, requested_method, credentialed)
             });
         if !method_allowed {
             return false;
@@ -222,8 +226,13 @@ pub(crate) fn cache_allows(
 
         requested_headers.iter().all(|requested| {
             entries.iter().any(|entry| {
-                cache_entry_matches_request(entry, source_origin, &target_url, credentialed)
-                    && header_permission_matches(&entry.permission, requested, credentialed)
+                cache_entry_matches_request(
+                    entry,
+                    partition_key,
+                    source_origin,
+                    &target_url,
+                    credentialed,
+                ) && header_permission_matches(&entry.permission, requested, credentialed)
             })
         })
     })
@@ -251,24 +260,29 @@ fn permission_matches_grant(
 
 fn store_permission(
     entries: &mut Vec<CorsPreflightCacheEntry>,
+    partition_key: &str,
     source_origin: &str,
     target_url: &str,
     credentialed: bool,
     permission: CorsPreflightPermission,
-    now_ms: u64,
-    expires_at_ms: u64,
+    lifetime_ms: std::ops::Range<u64>,
 ) {
     if let Some(entry) = entries.iter_mut().find(|entry| {
-        cache_entry_matches_request(entry, source_origin, target_url, credentialed)
-            && permission_matches_grant(entry, &permission, credentialed)
+        cache_entry_matches_request(
+            entry,
+            partition_key,
+            source_origin,
+            target_url,
+            credentialed,
+        ) && permission_matches_grant(entry, &permission, credentialed)
     }) {
-        entry.expires_at_ms = expires_at_ms;
+        entry.expires_at_ms = lifetime_ms.end;
         return;
     }
 
     // A zero max-age refreshes matching entries to immediate expiry, but there
     // is no value in allocating a brand-new entry that is already expired.
-    if expires_at_ms <= now_ms {
+    if lifetime_ms.is_empty() {
         return;
     }
 
@@ -276,11 +290,12 @@ fn store_permission(
         entries.remove(0);
     }
     entries.push(CorsPreflightCacheEntry {
+        partition_key: partition_key.to_string(),
         source_origin: source_origin.to_string(),
         target_url: target_url.to_string(),
         credentialed,
         permission,
-        expires_at_ms,
+        expires_at_ms: lifetime_ms.end,
     });
 }
 
@@ -308,29 +323,29 @@ pub(crate) fn store_permissions(
     let allowed_methods = allowed_methods.unwrap_or_default();
     let allowed_headers = allowed_headers.unwrap_or_default();
 
-    with_session_cache(jar, partition_key, |entries| {
+    with_session_cache(jar, |entries| {
         entries.retain(|entry| entry.expires_at_ms > now_ms);
 
         for method in allowed_methods {
             store_permission(
                 entries,
+                partition_key,
                 source_origin,
                 &target_url,
                 credentialed,
                 CorsPreflightPermission::Method(method),
-                now_ms,
-                expires_at_ms,
+                now_ms..expires_at_ms,
             );
         }
         for header in allowed_headers {
             store_permission(
                 entries,
+                partition_key,
                 source_origin,
                 &target_url,
                 credentialed,
                 CorsPreflightPermission::HeaderName(header.to_ascii_lowercase()),
-                now_ms,
-                expires_at_ms,
+                now_ms..expires_at_ms,
             );
         }
     });
@@ -343,10 +358,13 @@ pub(crate) fn clear_permissions(
     target: &Url,
 ) -> usize {
     let target_url = target_cache_key(target);
-    with_session_cache(jar, partition_key, |entries| {
+    with_session_cache(jar, |entries| {
         let before = entries.len();
-        entries
-            .retain(|entry| entry.source_origin != source_origin || entry.target_url != target_url);
+        entries.retain(|entry| {
+            entry.partition_key != partition_key
+                || entry.source_origin != source_origin
+                || entry.target_url != target_url
+        });
         before - entries.len()
     })
 }
@@ -649,5 +667,42 @@ mod tests {
 
         assert!(allows(&jar, 1, Method::Put, &["x-token"]));
         assert!(!allows(&jar, 1, Method::Put, &["authorization"]));
+    }
+
+    #[test]
+    fn cache_capacity_is_shared_across_network_partitions() {
+        let jar = jar();
+        for index in 0..=MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION {
+            store_permissions(
+                &jar,
+                &format!("partition-{index}"),
+                0,
+                "http://page.test",
+                &target(),
+                false,
+                &permissions_response("60", "PUT", ""),
+            );
+        }
+
+        let cached = |partition: &str| {
+            cache_allows(
+                &jar,
+                partition,
+                1,
+                "http://page.test",
+                &target(),
+                false,
+                Method::Put,
+                &[],
+            )
+        };
+        assert!(
+            !cached("partition-0"),
+            "one session must not exceed its shared capacity"
+        );
+        assert!(cached("partition-1"));
+        assert!(cached(&format!(
+            "partition-{MAX_CORS_PREFLIGHT_CACHE_ENTRIES_PER_SESSION}"
+        )));
     }
 }
