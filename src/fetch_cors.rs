@@ -16,7 +16,7 @@ fn contains_cors_unsafe_request_header_byte(value: &str) -> bool {
     })
 }
 
-fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+pub(crate) fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
     if value.len() > 128 {
         return false;
     }
@@ -40,28 +40,58 @@ fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
                 "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
             )
         }
+        "range" => is_cors_safelisted_range(value),
         _ => false,
     }
 }
 
-/// Return authored request-header names that make a cross-origin request
-/// non-simple. Browser-owned CORS fields are deliberately ignored.
+fn is_cors_safelisted_range(value: &str) -> bool {
+    let Some(range) = value.strip_prefix("bytes=") else {
+        return false;
+    };
+    let Some((start, end)) = range.split_once('-') else {
+        return false;
+    };
+    !start.is_empty()
+        && start.bytes().all(|byte| byte.is_ascii_digit())
+        && end.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+const CORS_SAFELIST_VALUE_SIZE_LIMIT: usize = 1024;
+
 pub(crate) fn cors_unsafe_request_header_names(headers: &HeaderMap) -> Vec<String> {
-    let mut names = Vec::new();
+    let mut unsafe_names = Vec::new();
+    let mut potentially_unsafe_names = Vec::new();
+    let mut safelist_value_size = 0usize;
+
     for (name, value) in headers.iter() {
+        // Origin is browser-owned and is inserted after this calculation for
+        // ordinary CORS requests. Keep the exclusion as defense-in-depth for
+        // internally constructed requests that already carry one.
         if matches!(
             name,
             "origin" | "access-control-request-method" | "access-control-request-headers"
         ) {
             continue;
         }
-        if !is_cors_safelisted_request_header(name, value) {
-            names.push(name.to_string());
+
+        if is_cors_safelisted_request_header(name, value) {
+            potentially_unsafe_names.push(name.to_ascii_lowercase());
+            safelist_value_size = safelist_value_size.saturating_add(value.len());
+        } else {
+            unsafe_names.push(name.to_ascii_lowercase());
         }
     }
-    names.sort();
-    names.dedup();
-    names
+
+    // Fetch promotes every otherwise-safelisted header name when the sum of
+    // their individual header-value byte lengths exceeds 1024 bytes.
+    if safelist_value_size > CORS_SAFELIST_VALUE_SIZE_LIMIT {
+        unsafe_names.extend(potentially_unsafe_names);
+    }
+
+    unsafe_names.sort();
+    unsafe_names.dedup();
+    unsafe_names
 }
 
 /// Validate an actual CORS response against the serialized Origin value that

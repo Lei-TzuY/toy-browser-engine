@@ -291,3 +291,27 @@ fn redirect_target_preflight_uses_policy_updated_by_redirect_response() {
         );
     }
 }
+
+#[test]
+fn non_http_base_does_not_disable_cors_filtering_after_a_redirect() {
+    let transport = Rc::new(ManualNetwork::new());
+    transport.set_auto_complete(true);
+    transport.respond(
+        "http://page.test/start",
+        redirect("http://page.test/start", "http://api.test/data", None),
+    );
+    let mut final_response = cors_ok("http://api.test/data", "http://page.test");
+    final_response
+        .headers
+        .insert_raw("x-private", "must-not-be-exposed");
+    transport.respond("http://api.test/data", final_response);
+    let mut browser = browser_for(
+        "http://page.test/index.html",
+        r#"<base href="file:///assets/">"#,
+        "fetch('http://page.test/start').then(function (r) { console.log(r.type); console.log(r.headers.get('x-private')); }).catch(function () { console.log('blocked'); });",
+        transport.clone(),
+    );
+    browser.settle_network(12);
+    assert_eq!(browser.document().runtime.console, vec!["cors", "null"]);
+    assert_eq!(transport.requests().len(), 2);
+}

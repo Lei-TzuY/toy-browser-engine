@@ -529,3 +529,69 @@ fn cors_failure_precedes_integrity_and_cannot_be_rescued_by_a_matching_digest() 
         assert_eq!(transport.requests().len(), 1);
     }
 }
+
+#[test]
+fn redirected_cors_failure_revokes_the_authored_target_grant_even_after_hsts() {
+    for hsts in [false, true] {
+        let transport = Rc::new(ManualNetwork::new());
+        let scheme = if hsts { "https" } else { "http" };
+        let origin = format!("{scheme}://page.test");
+        let page = format!("{origin}/index.html");
+        let start = format!("{origin}/start");
+        let target = "http://api.test/data";
+        let effective_target = if hsts {
+            "https://api.test/data"
+        } else {
+            target
+        };
+        let fetch = "fetch('/start', { method: 'PUT', headers: { 'X-Token': 'one' } })";
+        let first = if hsts {
+            format!("fetch('https://api.test/warmup').then(function () {{ return {fetch}; }})")
+        } else {
+            fetch.to_string()
+        };
+        let script = format!("{first}.catch(function () {{ return fetch('{target}', {{ method: 'PUT', headers: {{ 'X-Token': 'two' }} }}); }}).then(function () {{ console.log('done'); }});");
+        let mut browser = browser(&page, &script, transport.clone());
+        let offset = usize::from(hsts);
+        if hsts {
+            dispatch_until(&mut browser, &transport, 1);
+            let mut warmup = permission("https://api.test/warmup", &origin, b"ok");
+            warmup
+                .headers
+                .insert_raw("strict-transport-security", "max-age=600");
+            complete(&transport, Ok(warmup));
+        }
+        dispatch_until(&mut browser, &transport, offset + 1);
+        complete(&transport, Ok(redirect(&start, target)));
+        dispatch_until(&mut browser, &transport, offset + 2);
+        assert_eq!(
+            transport.requests().last().unwrap().method.as_str(),
+            "OPTIONS"
+        );
+        complete(
+            &transport,
+            Ok(permission(effective_target, &origin, b"preflight")),
+        );
+        dispatch_until(&mut browser, &transport, offset + 3);
+        complete(
+            &transport,
+            Ok(response(effective_target, 200, b"missing CORS permission")),
+        );
+        dispatch_until(&mut browser, &transport, offset + 4);
+        let retry = transport.requests().last().unwrap().clone();
+        assert_eq!(
+            retry.method.as_str(),
+            "OPTIONS",
+            "a failed redirected actual must revoke its grant; HSTS={hsts}"
+        );
+        assert_eq!(retry.url.to_string(), effective_target);
+        complete(
+            &transport,
+            Ok(permission(effective_target, &origin, b"preflight")),
+        );
+        dispatch_until(&mut browser, &transport, offset + 5);
+        complete(&transport, Ok(permission(effective_target, &origin, b"ok")));
+        browser.settle_network(8);
+        assert_eq!(browser.document().runtime.console, vec!["done"]);
+    }
+}

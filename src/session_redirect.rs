@@ -51,9 +51,9 @@ struct RedirectChain {
     cors_origin: String,
     referrer: RedirectReferrerState,
     pending_preflight: Option<RedirectPreflight>,
-    /// Whether the currently dispatched actual redirect hop is an unsafe CORS
-    /// request whose permission came from (or was eligible for) preflight cache.
-    current_requires_preflight: bool,
+    /// Authored URL of the current hop's preflight grant, before HSTS rewrites.
+    /// Keep the cache key so an error can revoke the exact permission tuple.
+    current_preflight_target: Option<Url>,
     planner: RedirectPlanner,
 }
 
@@ -162,18 +162,13 @@ impl SessionRedirectNetwork {
     }
 
     fn clear_current_preflight_tuple(&self, chain: &RedirectChain) {
-        if !chain.current_requires_preflight {
+        let Some(target) = chain.current_preflight_target.as_ref() else {
             return;
-        }
+        };
         let Some(partition_key) = Self::preflight_partition_key(chain) else {
             return;
         };
-        clear_preflight_permissions(
-            &self.cookie_jar,
-            &partition_key,
-            &chain.cors_origin,
-            &chain.current_request.url,
-        );
+        clear_preflight_permissions(&self.cookie_jar, &partition_key, &chain.cors_origin, target);
     }
 
     fn current_cors_response_must_pass(chain: &RedirectChain) -> bool {
@@ -242,7 +237,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 cors_origin,
                 referrer,
                 pending_preflight: None,
-                current_requires_preflight: false,
+                current_preflight_target: None,
                 planner: RedirectPlanner::default(),
             },
         );
@@ -317,7 +312,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                 self.cookie_policies.set(id, preflight.actual_cookie_policy);
                 chain.current_request = preflight.actual_request.clone();
                 chain.current_request.url = preflight.effective_url;
-                chain.current_requires_preflight = true;
+                chain.current_preflight_target = Some(preflight.actual_request.url.clone());
                 self.chains.borrow_mut().insert(id, chain);
                 self.inner.start(id, preflight.actual_request);
                 continue;
@@ -331,6 +326,27 @@ impl NetworkBackend for SessionRedirectNetwork {
             match next {
                 Ok(None) => {
                     if let Ok(response) = &mut completion.result {
+                        if chain.cors_tainted
+                            && chain
+                                .request_policy
+                                .as_ref()
+                                .is_some_and(|policy| policy.mode == FetchRequestMode::Cors)
+                        {
+                            let credentialed =
+                                chain.request_policy.as_ref().is_some_and(|policy| {
+                                    policy.credentials == FetchCredentialsMode::Include
+                                });
+                            if let Err(error) = validate_cors_response_origin(
+                                &chain.cors_origin,
+                                credentialed,
+                                response,
+                            ) {
+                                self.clear_current_preflight_tuple(&chain);
+                                completion.result = Err(error);
+                                visible.push(completion);
+                                continue;
+                            }
+                        }
                         // Never trust an on-the-wire copy of the internal marker.
                         response.headers.delete(CORS_REDIRECT_ORIGIN_HEADER);
                         if chain.cors_tainted
@@ -508,7 +524,7 @@ impl NetworkBackend for SessionRedirectNetwork {
                             &requested_headers,
                         );
 
-                        chain.current_requires_preflight = true;
+                        chain.current_preflight_target = Some(next_request.url.clone());
                         if !cached {
                             let mut preflight_request = build_preflight_request(
                                 next_request.url.clone(),
@@ -543,7 +559,7 @@ impl NetworkBackend for SessionRedirectNetwork {
 
                     self.cookie_policies.set(id, actual_cookie_policy);
                     if !redirect_requires_preflight {
-                        chain.current_requires_preflight = false;
+                        chain.current_preflight_target = None;
                     }
 
                     chain.current_request = next_request.clone();
