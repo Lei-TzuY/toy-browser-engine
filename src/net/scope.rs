@@ -15,11 +15,21 @@
 //      page's own directory.
 //
 //  The rule is checked twice. First on the URL, which catches a page naming a
-//  file outside its root. Then by [`read_within`] on the file actually opened,
-//  which catches every way a path inside the root can lead out of it — a
-//  symbolic link, a junction, an escaped `..` — including one swapped in while
-//  the check runs. Top-level navigation does not go through here: it is the
-//  user or a link choosing a page, not a page choosing what to read.
+//  file outside its root. Then by [`read_within`], after the file is opened:
+//  a file whose resolved path is not beneath the root — through a symbolic
+//  link, a junction or an escaped `..` — is refused, and so is one whose path
+//  no longer names the file that was opened. That is a check the engine makes
+//  after the open, not confinement the kernel enforces; [`read_within`] says
+//  what it covers and what it does not. Top-level navigation does not go
+//  through here: it is the user or a link choosing a page, not a page choosing
+//  what to read.
+//
+//  Two roots, on purpose. Subresources use the local root above, which can be
+//  wider than the page's own directory, so the pages of a site can share its
+//  `../css`. A script's `fetch()` hands the response bytes to the page, so it
+//  keeps the stricter rule of `Origin::can_fetch`: the page's own directory
+//  only. A page in `pages/` may use `../css/site.css` as a stylesheet but may
+//  not `fetch()` it.
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -136,20 +146,31 @@ impl From<io::Error> for ReadError {
     }
 }
 
-/// Read the file at `path`, provided the file opened lives beneath `root`.
+/// Read the file at `path`, provided the file opened is beneath `root`.
 ///
-/// The check is made on the open handle, not on the path beforehand. The file
-/// is opened first; then the path is resolved, the resolved path must be
-/// beneath the resolved root, and it must still name *the same file* as the
-/// handle (same device and inode, or volume and file ID on Windows). Only then
-/// is the handle read. A link swapped before the open leads to a file outside
-/// the root; one swapped after it no longer names the opened file. Either
-/// way, nothing is read.
+/// In order: open `path`; record the opened file's identity (device and inode
+/// on Unix, volume serial number and 128-bit file ID on Windows); resolve
+/// `root` and `path`; require the resolved path to be beneath the resolved
+/// root *and* to have the same identity as the handle; only then read the
+/// handle.
 ///
-/// What this does not do: stop the open itself from following a link out of
-/// the root. Opening a regular file has no effect beyond the read we then
-/// decline. Opening a FIFO can block, as it always could here. A hard link
-/// inside the root *is* inside the root: paths cannot tell it apart.
+/// What that establishes, and no more: the bytes returned are read from the
+/// handle opened here, and when the check ran, after the open, that file was
+/// reachable at a resolved path beneath the resolved root. A link or junction
+/// swapped in before the open leads outside and is refused; one swapped in
+/// after the open no longer names the opened file and is refused.
+///
+/// Not covered:
+/// - This is not confinement enforced by the kernel. The open itself can
+///   follow a link out of the root before the check refuses the read. A
+///   regular file's bytes are then not returned, but opening a FIFO can block
+///   and opening a device can have side effects, as `fs::read` always could
+///   here. An OS-constrained open (`openat2` with `RESOLVE_BENEATH` on Linux)
+///   would be the step to take if that matters.
+/// - A hard link inside the root to a file elsewhere *is* inside the root:
+///   paths cannot tell the two apart.
+/// - The root is resolved once per call. Changes to the file's contents, or
+///   to where the root itself points, after the check are not tracked.
 ///
 /// A missing file is `NotFound` when its deepest existing ancestor is beneath
 /// the root, so a broken in-site reference is still a 404.
@@ -242,12 +263,29 @@ mod identity {
             ) -> i32;
         }
 
+        // `FILE_ID_INFO` is a `ULONGLONG` followed by a 16-byte `FILE_ID_128`:
+        // 24 bytes, 8-byte aligned. Checked here so a layout mistake fails the
+        // build instead of the call.
+        const _: () = assert!(std::mem::size_of::<FileIdInfo>() == 24);
+        const _: () = assert!(std::mem::align_of::<FileIdInfo>() == 8);
+
         let mut info = FileIdInfo {
             volume_serial_number: 0,
             file_id: [0; 16],
         };
-        // SAFETY: the handle is open for the lifetime of `file`, and `info` is
-        // a correctly sized, writable FILE_ID_INFO.
+        // SAFETY:
+        // - The declaration matches `fileapi.h`: `BOOL
+        //   GetFileInformationByHandleEx(HANDLE, FILE_INFO_BY_HANDLE_CLASS,
+        //   LPVOID, DWORD)`, `extern "system"`, with the enum passed as a C
+        //   `int` and `BOOL` returned as `i32`.
+        // - The handle is borrowed from `file`, so it is open and valid for the
+        //   whole call; the function neither closes nor keeps it.
+        // - `info` is a live, writable local with `FILE_ID_INFO`'s layout
+        //   (asserted above), and the size passed is exactly its size, so the
+        //   OS writes only inside it. Nothing else refers to it during the call.
+        // - On failure (for example on Windows before 8, where class 18 does
+        //   not exist) the call returns 0 and nothing in `info` is used: the
+        //   OS error is returned, and the caller refuses the read.
         let ok = unsafe {
             GetFileInformationByHandleEx(
                 file.as_raw_handle(),

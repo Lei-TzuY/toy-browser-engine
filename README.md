@@ -577,11 +577,24 @@ rule for the disk, because the page chooses what they load:
 The local root is the directory the session was opened at, for a page inside
 it, so `pages/about.html` can still use the site's `../css/site.css`; any
 other `file:` page (opened on its own, or reached by a link out of the site)
-gets its own directory. The rule is checked on the URL and again on the file
-actually opened (`net::scope`): a symbolic link, a junction or an escaped
-`%2e%2e` that leads outside the root is refused, also when swapped in while
-the check runs. Navigating to a page is not a subresource load and is not
-restricted.
+gets its own directory. Navigating to a page is not a subresource load and is
+not restricted.
+
+The local root and the `fetch()` directory differ on purpose. `fetch()` hands
+the response bytes to the page's script, so it keeps the stricter rule in the
+first table: the page's own directory. Subresources are run or rendered, and a
+site's pages need to share assets, so they get the possibly wider local root.
+`pages/about.html` may use `../css/site.css` as a stylesheet but may not
+`fetch("../css/site.css")`.
+
+The subresource rule is checked on the URL, and again after the file is opened
+(`net::scope::read_within`): a file whose resolved path leads outside the root
+— through a symbolic link, a junction or an escaped `%2e%2e` — is refused, and
+so is one whose path no longer names the file that was opened. That second
+check runs in the engine after the open; it is not confinement enforced by the
+kernel. The open itself can still follow a link out of the root (a FIFO can
+block, a device can react to being opened), and a hard link inside the root
+counts as inside.
 
 So a local page can read a sibling `api/data.json` but not `../secrets.txt`,
 and a page served over HTTP can never read `file:///etc/passwd`. Real browsers
@@ -589,9 +602,12 @@ treat `file:` as opaque; the directory rule here is a deliberate simplification
 that keeps the fixture site usable while still bounding what a page can reach.
 For `file:` the rule applies to where the disk resolves a path, not to how
 the URL spells it: a symbolic link inside the directory that leads outside it
-is refused. The check runs when `fetch()` is called and again when the file
-is opened, on the file actually opened, so a link or junction swapped in
-between the two is refused as well.
+is refused. The check runs when `fetch()` is called, and again after the
+network phase opens the file: the same `read_within` check as subresources,
+against the page's own directory rather than the local root. A link or
+junction swapped in between the two is refused. As for subresources, that
+second check is made by the engine after the open, not enforced by the
+kernel.
 
 The rule holds at every redirect hop, not only for the URL the script wrote: a
 `fetch()` whose redirect leads to another origin rejects as blocked before the

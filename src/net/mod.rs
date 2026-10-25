@@ -134,7 +134,9 @@ pub trait ResourceLoader: Send + Sync {
     ///
     /// Only a source that reads the disk has anything to confine, so the
     /// default — for memory and network sources — is an ordinary load.
-    /// [`FileLoader`] checks the file it actually opens.
+    /// [`FileLoader`] checks the file it actually opens. A custom loader that
+    /// reads the disk itself gets no confinement from this default and must
+    /// override it.
     fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
         let _ = root;
         self.load(url)
@@ -334,11 +336,13 @@ impl ResourceLoader for FileLoader {
     }
 
     /// A page's `fetch()` arrives with its document's origin as the
-    /// initiator. For a `file:` page that origin is its directory, and the
-    /// file is read only if it lies beneath that directory *when it is
-    /// opened*: the check made when `fetch()` was called may be stale by the
-    /// time the network phase gets here. A request with no initiator is
-    /// navigation, and reads as [`load`](ResourceLoader::load) does.
+    /// initiator. For a `file:` page that origin is its own directory — not
+    /// the wider local root subresources get — and the file is read through
+    /// [`scope::read_within`] beneath it: checked after the open, because the
+    /// check made when `fetch()` was called may be stale by the time the
+    /// network phase gets here. That is the engine's check, not confinement
+    /// enforced by the kernel. A request with no initiator is navigation, and
+    /// reads as [`load`](ResourceLoader::load) does.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         match &request.initiator {
             None => static_fetch(|url| self.load(url), request),
