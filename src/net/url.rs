@@ -180,6 +180,16 @@ impl Url {
         if self.scheme != "file" {
             return None;
         }
+        // Decoding must not change which directories the path walks through:
+        // `..%2f` would become `../` only after the same-origin check had seen
+        // one harmless segment. Such a URL names no file.
+        let escapes_its_segment = |segment: &str| {
+            let decoded = percent_decode(segment);
+            decoded == ".." || decoded.chars().any(std::path::is_separator)
+        };
+        if self.path.split('/').any(escapes_its_segment) {
+            return None;
+        }
         let decoded = percent_decode(&self.path);
         // `/C:/dir/file` is a Windows path; `/dir/file` is a POSIX one.
         let trimmed = decoded.strip_prefix('/').unwrap_or(&decoded);
@@ -333,17 +343,20 @@ impl Url {
             self.path.insert(0, '/');
         }
 
-        let had_trailing_slash =
-            self.path.ends_with('/') || self.path.ends_with("/.") || self.path.ends_with("/..");
+        let last_segment = self.path.rsplit('/').next().unwrap_or("");
+        let had_trailing_slash = last_segment.is_empty()
+            || is_single_dot_segment(last_segment)
+            || is_double_dot_segment(last_segment);
 
         let mut output: Vec<&str> = Vec::new();
         for segment in self.path.split('/') {
-            match segment {
-                "" | "." => {}
-                ".." => {
-                    output.pop();
-                }
-                other => output.push(other),
+            if segment.is_empty() || is_single_dot_segment(segment) {
+                continue;
+            }
+            if is_double_dot_segment(segment) {
+                output.pop();
+            } else {
+                output.push(segment);
             }
         }
 
@@ -394,6 +407,19 @@ fn split_scheme(input: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((scheme, &input[colon + 1..]))
+}
+
+/// `.`, or its percent-encoded spelling `%2e` (WHATWG URL "single-dot segment").
+fn is_single_dot_segment(segment: &str) -> bool {
+    segment == "." || segment.eq_ignore_ascii_case("%2e")
+}
+
+/// `..`, with either dot possibly written `%2e` (WHATWG URL "double-dot segment").
+fn is_double_dot_segment(segment: &str) -> bool {
+    matches!(
+        segment.to_ascii_lowercase().as_str(),
+        ".." | ".%2e" | "%2e." | "%2e%2e"
+    )
 }
 
 /// Split a reference into `(path, query, fragment)`.
@@ -584,6 +610,42 @@ mod tests {
             base.join("../../../x.css").unwrap().to_string(),
             "http://example.com/x.css"
         );
+    }
+
+    #[test]
+    fn percent_encoded_dots_are_dot_segments() {
+        let base = url("http://example.com/a/b/page.html");
+        for reference in ["%2e%2e/x", "%2E%2E/x", ".%2e/x", "%2e./x", "./%2e%2e/x"] {
+            assert_eq!(
+                base.join(reference).unwrap().to_string(),
+                "http://example.com/a/x",
+                "{reference}"
+            );
+        }
+        assert_eq!(
+            url("http://example.com/a/%2e/b/%2e%2e").to_string(),
+            "http://example.com/a/"
+        );
+        // Only whole segments are dots: these are ordinary names.
+        assert_eq!(
+            url("http://example.com/a%2e%2e/%2e%2e.txt").to_string(),
+            "http://example.com/a%2e%2e/%2e%2e.txt"
+        );
+    }
+
+    #[test]
+    fn escaped_separators_never_become_path_components() {
+        for path in [
+            "file:///site/..%2f..%2fsecret",
+            "file:///site/..%2F..%2Fsecret",
+            "file:///site/a%2fb.txt",
+        ] {
+            assert_eq!(url(path).to_file_path(), None, "{path}");
+        }
+        // A `..` that skipped normalization is refused rather than walked.
+        let mut unnormalized = url("file:///site/page.html");
+        unnormalized.set_path("/site/../secret");
+        assert_eq!(unnormalized.to_file_path(), None);
     }
 
     #[test]

@@ -21,14 +21,15 @@ mod readiness;
 /// the readiness invariant.
 pub mod fetch {
     pub use super::fetch_core::{
-        reason_phrase, FetchCompletion, FetchError, FetchId, FetchRegistry, FetchRequest,
-        FetchResponse, HeaderError, HeaderMap, LocalNetwork, ManualNetwork, Method,
-        NetworkBackend, OfflineNetwork, Origin, MAX_IN_FLIGHT_FETCHES,
+        file_target_stays_in_directory, reason_phrase, FetchCompletion, FetchError, FetchId,
+        FetchRegistry, FetchRequest, FetchResponse, HeaderError, HeaderMap, LocalNetwork,
+        ManualNetwork, Method, NetworkBackend, OfflineNetwork, Origin, MAX_IN_FLIGHT_FETCHES,
     };
     pub use super::readiness::{DefaultNetwork, ThreadedNetwork};
 }
 
 pub mod http;
+pub mod scope;
 pub mod url;
 
 use std::collections::HashMap;
@@ -43,6 +44,7 @@ pub use fetch::{
     Origin, ThreadedNetwork,
 };
 pub use http::HttpConfig;
+pub use scope::{Requester, SubresourceLoader};
 pub use url::{Url, UrlError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +55,8 @@ pub enum LoadError {
     HttpStatus { url: String, status: u16 },
     TooManyRedirects(String),
     Io { url: String, message: String },
+    // A page asked for something it may not load (see `scope`).
+    Blocked(String),
 }
 
 impl fmt::Display for LoadError {
@@ -71,6 +75,7 @@ impl fmt::Display for LoadError {
             LoadError::HttpStatus { url, status } => write!(f, "HTTP {status} at {url}"),
             LoadError::TooManyRedirects(u) => write!(f, "too many redirects: {u}"),
             LoadError::Io { url, message } => write!(f, "IO error at {url}: {message}"),
+            LoadError::Blocked(reason) => write!(f, "blocked: {reason}"),
         }
     }
 }
@@ -190,6 +195,19 @@ pub trait ResourceLoader: Send + Sync {
     fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         self.fetch(request)
     }
+
+    /// Load the `file:` URL `url` for a page confined to `root`, a `file:`
+    /// directory URL, refusing a file that is not on disk beneath it.
+    ///
+    /// Only a source that reads the disk has anything to confine, so the
+    /// default — for memory and network sources — is an ordinary load.
+    /// [`FileLoader`] checks the file it actually opens. A custom loader that
+    /// reads the disk itself gets no confinement from this default and must
+    /// override it.
+    fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
+        let _ = root;
+        self.load(url)
+    }
 }
 
 fn response_from_resource(resource: Resource) -> FetchResponse {
@@ -286,6 +304,7 @@ pub fn static_fetch(
         Err(LoadError::InvalidUrl(text)) => Err(FetchError::InvalidUrl(text)),
         Err(LoadError::TooManyRedirects(text)) => Err(FetchError::TooManyRedirects(text)),
         Err(LoadError::Io { message, .. }) => Err(FetchError::Io(message)),
+        Err(LoadError::Blocked(reason)) => Err(FetchError::Blocked(reason)),
     }
 }
 
@@ -374,15 +393,21 @@ impl Default for FileLoader {
     }
 }
 
-impl ResourceLoader for FileLoader {
-    fn load(&self, url: &Url) -> Result<Resource, LoadError> {
+impl FileLoader {
+    fn path_of(url: &Url) -> Result<std::path::PathBuf, LoadError> {
         if url.scheme() != "file" {
             return Err(LoadError::UnsupportedScheme(url.scheme().to_string()));
         }
-        let path = url
-            .to_file_path()
-            .ok_or_else(|| LoadError::InvalidUrl(url.to_string()))?;
-        match fs::read(&path) {
+        url.to_file_path()
+            .ok_or_else(|| LoadError::InvalidUrl(url.to_string()))
+    }
+
+    fn resource(
+        url: &Url,
+        path: &Path,
+        read: std::io::Result<Vec<u8>>,
+    ) -> Result<Resource, LoadError> {
+        match read {
             Ok(bytes) => {
                 let mime = Some(mime_from_path(&path.to_string_lossy()).to_string());
                 Ok(Resource::new(url.clone(), mime, bytes))
@@ -394,6 +419,48 @@ impl ResourceLoader for FileLoader {
                 url: url.to_string(),
                 message: e.to_string(),
             }),
+        }
+    }
+}
+
+impl ResourceLoader for FileLoader {
+    fn load(&self, url: &Url) -> Result<Resource, LoadError> {
+        let path = FileLoader::path_of(url)?;
+        FileLoader::resource(url, &path, fs::read(&path))
+    }
+
+    fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
+        let path = FileLoader::path_of(url)?;
+        let root_path = FileLoader::path_of(root)?;
+        match scope::read_within(&path, &root_path) {
+            Ok(bytes) => FileLoader::resource(url, &path, Ok(bytes)),
+            Err(scope::ReadError::Io(error)) => FileLoader::resource(url, &path, Err(error)),
+            Err(scope::ReadError::Outside) => {
+                Err(LoadError::Blocked(format!("{url} resolves outside {root}")))
+            }
+        }
+    }
+
+    /// A page's `fetch()` arrives with its document's origin as the
+    /// initiator. For a `file:` page that origin is its own directory — not
+    /// the wider local root subresources get — and the file is read through
+    /// [`scope::read_within`] beneath it: checked after the open, because the
+    /// check made when `fetch()` was called may be stale by the time the
+    /// network phase gets here. That is the engine's check, not confinement
+    /// enforced by the kernel. A request with no initiator is navigation, and
+    /// reads as [`load`](ResourceLoader::load) does.
+    fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        match &request.initiator {
+            None => static_fetch(|url| self.load(url), request),
+            Some(Origin::Local { scheme, directory }) if scheme == "file" => {
+                let root = Url::parse(&format!("file://{directory}"))
+                    .map_err(|_| FetchError::InvalidUrl(directory.clone()))?;
+                static_fetch(|url| self.load_within(url, &root), request)
+            }
+            Some(other) => Err(FetchError::Blocked(format!(
+                "{} may not read local files",
+                other.header_value()
+            ))),
         }
     }
 }
@@ -536,6 +603,16 @@ impl ResourceLoader for DefaultLoader {
         single_hop_load_response_from_fetch(requested_url, result).map(Some)
     }
 
+    fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
+        if self.memory.contains(url) {
+            return self.memory.load(url);
+        }
+        match url.scheme() {
+            "file" => self.file.load_within(url, root),
+            _ => self.load(url),
+        }
+    }
+
     /// Route the same way `load` does, so a `fetch()` and a navigation to one
     /// URL always reach the same source.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
@@ -588,6 +665,43 @@ mod tests {
         let resource = FileLoader.load(&url).expect("loaded");
         assert_eq!(resource.text(), "p { color: red; }");
         assert_eq!(resource.effective_mime(), "text/css");
+    }
+
+    /// A page's fetch is confined to the initiator's directory; a request
+    /// without an initiator (navigation) is not.
+    #[test]
+    fn file_fetch_is_confined_to_the_initiators_directory() {
+        let root =
+            std::env::temp_dir().join(format!("browser engine initiator {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("site dir")).unwrap();
+        std::fs::write(root.join("site dir/in.txt"), "synthetic in").unwrap();
+        std::fs::write(root.join("out.txt"), "synthetic out").unwrap();
+        let page = Url::from_file_path(root.join("site dir/page.html"));
+        let request = |target: &str, initiator: Option<Origin>| {
+            let mut request = FetchRequest::get(Url::from_file_path(root.join(target)));
+            request.initiator = initiator;
+            FileLoader.fetch(&request)
+        };
+
+        let inside = request("site dir/in.txt", Some(Origin::of(&page))).unwrap();
+        assert_eq!(
+            (inside.status, inside.body.as_slice()),
+            (200, &b"synthetic in"[..])
+        );
+        assert!(matches!(
+            request("out.txt", Some(Origin::of(&page))),
+            Err(FetchError::Blocked(_))
+        ));
+        assert_eq!(request("out.txt", None).unwrap().status, 200);
+        for other in ["http://a.test/x.html", "demo:///x.html"] {
+            let origin = Origin::of(&Url::parse(other).unwrap());
+            assert!(matches!(
+                request("site dir/in.txt", Some(origin)),
+                Err(FetchError::Blocked(_))
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
