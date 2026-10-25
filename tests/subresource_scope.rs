@@ -381,6 +381,38 @@ fn a_nested_page_reached_from_the_site_may_use_parent_directory_assets() {
     );
 }
 
+/// The two roots differ on purpose: the site root for what a page runs or
+/// renders, the page's own directory for what its script reads back.
+#[test]
+fn a_nested_page_may_use_site_assets_but_not_fetch_them() {
+    let fixture = Fixture::new("fetch-vs-subresource");
+    fixture.write("site/index.html", "<p>site</p>");
+    fixture.write(
+        "site/pages/nested.html",
+        r#"<head><link rel="stylesheet" href="../assets/ok.css"></head>
+           <script>
+             fetch("../assets/ok.css")
+                 .then(function (r) { console.log("fetched " + r.status); },
+                       function (e) { console.log("rejected: " + e); });
+           </script>"#,
+    );
+    let mut browser = fixture.open("site/index.html");
+    browser.follow_link("pages/nested.html").expect("navigates");
+    browser.document_mut().runtime.quiet = true;
+    browser.settle_network(20);
+
+    let loaded = loaded(browser.document());
+    assert_eq!(
+        loaded.author_rules, 1,
+        "the stylesheet comes from the site root"
+    );
+    assert!(
+        loaded.console.starts_with("rejected: TypeError"),
+        "fetch() keeps the page's own directory: {}",
+        loaded.console
+    );
+}
+
 #[test]
 fn a_page_opened_directly_is_the_root_of_its_own_session() {
     let fixture = Fixture::new("direct");
