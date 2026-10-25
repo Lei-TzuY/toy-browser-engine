@@ -134,7 +134,9 @@ pub trait ResourceLoader: Send + Sync {
     ///
     /// Only a source that reads the disk has anything to confine, so the
     /// default — for memory and network sources — is an ordinary load.
-    /// [`FileLoader`] checks the file it actually opens.
+    /// [`FileLoader`] checks the file it actually opens. A custom loader that
+    /// reads the disk itself gets no confinement from this default and must
+    /// override it.
     fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
         let _ = root;
         self.load(url)
