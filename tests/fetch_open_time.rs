@@ -138,7 +138,8 @@ fn a_directory_replaced_by_a_junction_outside_after_the_check_is_not_read() {
         .arg("/C")
         .arg("mklink")
         .arg("/J")
-        .arg(fixture.path("site/sub"))
+        // `cmd` reads a `/` inside an argument as the start of a switch.
+        .arg(fixture.path("site\\sub"))
         .arg(fixture.path("outside"))
         .stdout(std::process::Stdio::null())
         .status()
