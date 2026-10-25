@@ -18,7 +18,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Platform
         shell: bash
-        run: uname -a && rustc -vV && cargo -V && fsutil fsinfo volumeinfo D: | head -5 || true
+        run: |
+          uname -a && rustc -vV && cargo -V
+          fsutil fsinfo volumeinfo "$(pwd -W | cut -c1-2)" | head -8 || true
       - name: cargo test --locked
         shell: bash
         run: |
