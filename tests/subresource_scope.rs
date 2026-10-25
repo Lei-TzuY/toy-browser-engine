@@ -86,8 +86,9 @@ impl Fixture {
             .arg("/C")
             .arg("mklink")
             .arg("/J")
-            .arg(self.path(link))
-            .arg(self.path(target))
+            // `cmd` reads a `/` inside an argument as the start of a switch.
+            .arg(self.path(&link.replace('/', "\\")))
+            .arg(self.path(&target.replace('/', "\\")))
             .stdout(std::process::Stdio::null())
             .status()
             .expect("cmd runs");
