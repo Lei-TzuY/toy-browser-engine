@@ -365,8 +365,10 @@ impl Origin {
 /// is judged by its deepest existing ancestor, so a missing file is still a
 /// 404 rather than a refusal; anything that cannot be resolved is refused.
 ///
-/// This is a check at request time, not at open time: a link swapped in
-/// after it runs is not caught (see `FileLoader`, which opens by path).
+/// This is the check at request time, so a page hears "blocked" as soon as
+/// it calls `fetch()`. It is not the last word: `FileLoader` checks the file
+/// again after opening it (`net::scope::read_within`, which says what that
+/// check covers), so a link swapped in after this one runs is refused there.
 pub fn file_target_stays_in_directory(document: &Url, target: &Url) -> bool {
     // `.` is the document's directory as `Origin::of` sees it, trailing slash
     // and all, so this check and the lexical one agree on what "inside" is.

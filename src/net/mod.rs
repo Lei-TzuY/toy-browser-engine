@@ -334,6 +334,29 @@ impl ResourceLoader for FileLoader {
             }
         }
     }
+
+    /// A page's `fetch()` arrives with its document's origin as the
+    /// initiator. For a `file:` page that origin is its own directory — not
+    /// the wider local root subresources get — and the file is read through
+    /// [`scope::read_within`] beneath it: checked after the open, because the
+    /// check made when `fetch()` was called may be stale by the time the
+    /// network phase gets here. That is the engine's check, not confinement
+    /// enforced by the kernel. A request with no initiator is navigation, and
+    /// reads as [`load`](ResourceLoader::load) does.
+    fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
+        match &request.initiator {
+            None => static_fetch(|url| self.load(url), request),
+            Some(Origin::Local { scheme, directory }) if scheme == "file" => {
+                let root = Url::parse(&format!("file://{directory}"))
+                    .map_err(|_| FetchError::InvalidUrl(directory.clone()))?;
+                static_fetch(|url| self.load_within(url, &root), request)
+            }
+            Some(other) => Err(FetchError::Blocked(format!(
+                "{} may not read local files",
+                other.header_value()
+            ))),
+        }
+    }
 }
 
 // ── http: ─────────────────────────────────────────────────────────────────────
@@ -466,6 +489,43 @@ mod tests {
         let resource = FileLoader.load(&url).expect("loaded");
         assert_eq!(resource.text(), "p { color: red; }");
         assert_eq!(resource.effective_mime(), "text/css");
+    }
+
+    /// A page's fetch is confined to the initiator's directory; a request
+    /// without an initiator (navigation) is not.
+    #[test]
+    fn file_fetch_is_confined_to_the_initiators_directory() {
+        let root =
+            std::env::temp_dir().join(format!("browser engine initiator {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("site dir")).unwrap();
+        std::fs::write(root.join("site dir/in.txt"), "synthetic in").unwrap();
+        std::fs::write(root.join("out.txt"), "synthetic out").unwrap();
+        let page = Url::from_file_path(root.join("site dir/page.html"));
+        let request = |target: &str, initiator: Option<Origin>| {
+            let mut request = FetchRequest::get(Url::from_file_path(root.join(target)));
+            request.initiator = initiator;
+            FileLoader.fetch(&request)
+        };
+
+        let inside = request("site dir/in.txt", Some(Origin::of(&page))).unwrap();
+        assert_eq!(
+            (inside.status, inside.body.as_slice()),
+            (200, &b"synthetic in"[..])
+        );
+        assert!(matches!(
+            request("out.txt", Some(Origin::of(&page))),
+            Err(FetchError::Blocked(_))
+        ));
+        assert_eq!(request("out.txt", None).unwrap().status, 200);
+        for other in ["http://a.test/x.html", "demo:///x.html"] {
+            let origin = Origin::of(&Url::parse(other).unwrap());
+            assert!(matches!(
+                request("site dir/in.txt", Some(origin)),
+                Err(FetchError::Blocked(_))
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
