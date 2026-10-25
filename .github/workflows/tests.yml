@@ -34,6 +34,7 @@ jobs:
       - name: Origin and subresource tests, repeated for flakiness
         shell: bash
         run: |
+          set -o pipefail
           for i in 1 2 3 4 5; do
             echo "== repeat $i"
             cargo test --locked --test subresource_scope --test document_origin --test site 2>&1 | grep -E "^test result|FAILED|panicked" || exit 1
