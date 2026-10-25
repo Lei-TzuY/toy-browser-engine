@@ -17,7 +17,9 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use super::fetch::{reason_phrase, FetchError, FetchRequest, FetchResponse, HeaderMap, Method};
+use super::fetch::{
+    reason_phrase, FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin,
+};
 use super::url::Url;
 use super::{LoadError, Resource};
 
@@ -29,6 +31,23 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// Ceiling on the header block, for the same reason.
 pub const MAX_HEADER_BYTES: usize = 64 * 1024;
+
+/// Credentials meant for the origin the caller chose, dropped when a redirect
+/// leaves it (and not restored if a later one comes back). Fetch drops
+/// `Authorization`; `Cookie` and `Proxy-Authorization` go too, because this
+/// engine has no cookie jar or proxy to recompute them for the new origin, so
+/// any value here was written for the first one.
+const CROSS_ORIGIN_REDIRECT_DROPPED_HEADERS: &[&str] =
+    &["authorization", "proxy-authorization", "cookie"];
+
+/// Fetch's request-body-header names: they describe a body, so they leave
+/// with it when a redirect turns the request into a GET.
+const REQUEST_BODY_HEADERS: &[&str] = &[
+    "content-type",
+    "content-encoding",
+    "content-language",
+    "content-location",
+];
 
 #[derive(Debug, Clone)]
 pub struct HttpConfig {
@@ -65,19 +84,41 @@ struct RawResponse {
 pub fn send(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse, FetchError> {
     let mut current = request.url.clone();
     let mut method = request.method;
+    let mut headers = request.headers.clone();
     let mut body = request.body.clone();
     let mut redirected = false;
 
     for _ in 0..=config.max_redirects {
-        let raw = exchange(&current, method, &request.headers, body.as_deref(), config)?;
+        let raw = exchange(&current, method, &headers, body.as_deref(), config)?;
 
         if let Some(location) = redirect_target(&raw) {
             let next = current
                 .join(&location)
                 .map_err(|e| FetchError::InvalidUrl(e.to_string()))?;
+            // A page may not reach through a redirect what it could not fetch
+            // directly, and the refusal comes before the next request is sent.
+            if let Some(initiator) = &request.initiator {
+                if !initiator.can_fetch(&next) {
+                    return Err(FetchError::Blocked(format!(
+                        "{} may not follow a redirect to {next}",
+                        initiator.header_value()
+                    )));
+                }
+            }
+            if Origin::of(&current) != Origin::of(&next) {
+                for name in CROSS_ORIGIN_REDIRECT_DROPPED_HEADERS {
+                    headers.delete(name);
+                }
+            }
             // 303, and 301/302 in practice, turn everything into a GET; 307 and
             // 308 exist precisely to preserve the method and body.
             if !matches!(raw.status, 307 | 308) && method != Method::Head {
+                if method.allows_body() {
+                    // The body is dropped, so the headers describing it go too.
+                    for name in REQUEST_BODY_HEADERS {
+                        headers.delete(name);
+                    }
+                }
                 method = Method::Get;
                 body = None;
             }

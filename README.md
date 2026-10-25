@@ -568,6 +568,14 @@ the URL spells it: a symbolic link inside the directory that leads outside it
 is refused. The check runs when `fetch()` is called and the file is opened by
 path later, so a link swapped in between the two is not caught.
 
+The rule holds at every redirect hop, not only for the URL the script wrote: a
+`fetch()` whose redirect leads to another origin rejects as blocked before the
+redirected request is sent. Navigation is not a script reading a response, so
+it may still be redirected anywhere. Whoever made the request, a redirect that
+changes origin drops `Authorization`, `Proxy-Authorization` and `Cookie`, and
+one that turns the request into a `GET` drops the body and its `Content-*`
+headers.
+
 `mode` accepts `"cors"` and `"same-origin"` — both enforced as same-origin,
 because there is no preflight to make `cors` mean more — and rejects anything
 else rather than pretending. `credentials` accepts `"same-origin"` and

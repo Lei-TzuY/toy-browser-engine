@@ -406,6 +406,11 @@ pub struct FetchRequest {
     pub method: Method,
     pub headers: HeaderMap,
     pub body: Option<Vec<u8>>,
+    /// The document whose same-origin policy governs this request — set for a
+    /// script's `fetch()`, so every redirect is checked as if the page had
+    /// asked for its target directly. `None` for navigation, which may be
+    /// redirected anywhere.
+    pub initiator: Option<Origin>,
 }
 
 impl FetchRequest {
@@ -415,6 +420,7 @@ impl FetchRequest {
             method: Method::Get,
             headers: HeaderMap::new(),
             body: None,
+            initiator: None,
         }
     }
 
@@ -429,6 +435,7 @@ impl FetchRequest {
             method,
             headers,
             body,
+            initiator: None,
         }
     }
 }
