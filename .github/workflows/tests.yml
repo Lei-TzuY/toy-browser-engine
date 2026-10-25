@@ -9,9 +9,32 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Validation-only branch: the same `cargo test --locked` as main's
+    # workflow, run natively on a standard GitHub-hosted Windows runner.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
+      - name: Platform
+        shell: bash
+        run: uname -a && rustc -vV && cargo -V && fsutil fsinfo volumeinfo D: | head -5 || true
+      - name: cargo test --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked 2>&1 | tee test.log
+      - name: Totals
+        if: always()
+        shell: bash
+        run: |
+          grep -E "^test result" test.log | awk '{p+=$4; f+=$6; i+=$8; n++} END {print n" binaries: "p" passed, "f" failed, "i" ignored"}'
+          echo "-- scope / junction tests:"
+          grep -E "^test .*(junction|link|scope::|read_within|handle_to_another)" test.log || true
+      - name: Origin and subresource tests, repeated for flakiness
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "== repeat $i"
+            cargo test --locked --test subresource_scope --test document_origin --test site 2>&1 | grep -E "^test result|FAILED|panicked" || exit 1
+          done
