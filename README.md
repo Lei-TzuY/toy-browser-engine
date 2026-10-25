@@ -587,6 +587,10 @@ So a local page can read a sibling `api/data.json` but not `../secrets.txt`,
 and a page served over HTTP can never read `file:///etc/passwd`. Real browsers
 treat `file:` as opaque; the directory rule here is a deliberate simplification
 that keeps the fixture site usable while still bounding what a page can reach.
+For `file:` the rule applies to where the disk resolves a path, not to how
+the URL spells it: a symbolic link inside the directory that leads outside it
+is refused. The check runs when `fetch()` is called and the file is opened by
+path later, so a link swapped in between the two is not caught.
 
 `mode` accepts `"cors"` and `"same-origin"` — both enforced as same-origin,
 because there is no preflight to make `cors` mean more — and rejects anything

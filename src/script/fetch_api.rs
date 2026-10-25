@@ -22,7 +22,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::net::fetch::{FetchError, FetchResponse, HeaderMap, Method, Origin};
+use crate::net::fetch::{
+    file_target_stays_in_directory, FetchError, FetchResponse, HeaderMap, Method, Origin,
+};
 use crate::net::Url;
 
 use super::host::{
@@ -153,6 +155,14 @@ impl JsRuntime {
             return Err(FetchError::Blocked(format!(
                 "{} may not fetch {}",
                 Origin::of(&self.url).header_value(),
+                request.url
+            )));
+        }
+        if request.url.scheme() == "file"
+            && !file_target_stays_in_directory(&self.url, &request.url)
+        {
+            return Err(FetchError::Blocked(format!(
+                "{} resolves outside this page's directory",
                 request.url
             )));
         }
