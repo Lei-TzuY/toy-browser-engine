@@ -565,6 +565,24 @@ href>` changes what a relative `fetch("x")` resolves to, not who is asking:
 not widen what the page may fetch, and `location` and `document.cookie` keep
 reporting the page's own URL.
 
+Subresources — `<script src>`, `<link rel=stylesheet>`, `<img src>`, including
+images a script adds later — follow web rules for the network and a separate
+rule for the disk, because the page chooses what they load:
+
+| Document | `file:` subresources | `http:` / in-memory subresources |
+| --- | --- | --- |
+| `file:` | only beneath its *local root* | any |
+| anything else | never | any |
+
+The local root is the directory the session was opened at, for a page inside
+it, so `pages/about.html` can still use the site's `../css/site.css`; any
+other `file:` page (opened on its own, or reached by a link out of the site)
+gets its own directory. The rule is checked on the URL and again on the file
+actually opened (`net::scope`): a symbolic link, a junction or an escaped
+`%2e%2e` that leads outside the root is refused, also when swapped in while
+the check runs. Navigating to a page is not a subresource load and is not
+restricted.
+
 So a local page can read a sibling `api/data.json` but not `../secrets.txt`,
 and a page served over HTTP can never read `file:///etc/passwd`. Real browsers
 treat `file:` as opaque; the directory rule here is a deliberate simplification

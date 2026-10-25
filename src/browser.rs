@@ -64,6 +64,9 @@ pub struct Browser {
     /// Loop time at which the current document started, so `performance.now()`
     /// and frame timestamps are measured from page load.
     document_epoch_ms: f64,
+    /// The URL the session was opened at. A local page inside its directory
+    /// may load subresources from anywhere in that directory.
+    site: Url,
     /// Origin-scoped persistent localStorage pools shared across navigation.
     pub local_storage_pool: Rc<RefCell<HashMap<String, StorageRef>>>,
 }
@@ -127,7 +130,8 @@ impl Browser {
             .entry(origin)
             .or_insert_with(|| Rc::new(RefCell::new(Vec::new())))
             .clone();
-        let mut document = Document::load_with_storage(url, loader.as_ref(), Some(storage))?;
+        let mut document =
+            Document::load_in_site(url, loader.as_ref(), Some(storage), Some(url))?;
         document.set_network(network.clone());
         let epoch = clock.now_ms();
         Ok(Browser {
@@ -138,6 +142,7 @@ impl Browser {
             document,
             clock,
             document_epoch_ms: epoch,
+            site: url.clone(),
             local_storage_pool: pool,
         })
     }
@@ -182,7 +187,12 @@ impl Browser {
     pub fn navigate(&mut self, url: &Url) -> Result<(), LoadError> {
         if !url.same_document(self.url()) {
             let storage = self.storage_for_url(url);
-            self.replace_document(Document::load_with_storage(url, self.loader.as_ref(), Some(storage))?);
+            self.replace_document(Document::load_in_site(
+                url,
+                self.loader.as_ref(),
+                Some(storage),
+                Some(&self.site),
+            )?);
         }
         self.history.truncate(self.index + 1);
         self.history.push(url.clone());
@@ -203,7 +213,12 @@ impl Browser {
     pub fn reload(&mut self) -> Result<(), LoadError> {
         let url = self.url().clone();
         let storage = self.storage_for_url(&url);
-        self.replace_document(Document::load_with_storage(&url, self.loader.as_ref(), Some(storage))?);
+        self.replace_document(Document::load_in_site(
+            &url,
+            self.loader.as_ref(),
+            Some(storage),
+            Some(&self.site),
+        )?);
         Ok(())
     }
 
@@ -250,7 +265,7 @@ impl Browser {
             return;
         }
         let storage = self.storage_for_url(&url);
-        match Document::load_with_storage(&url, self.loader.as_ref(), Some(storage)) {
+        match Document::load_in_site(&url, self.loader.as_ref(), Some(storage), Some(&self.site)) {
             Ok(document) => self.replace_document(document),
             Err(error) => self.document.diagnostics.push(crate::document::Diagnostic {
                 url: url.to_string(),
@@ -674,11 +689,12 @@ impl Browser {
                 let final_url = response.url.clone();
                 let html = String::from_utf8_lossy(&response.body);
                 let storage = self.storage_for_url(&final_url);
-                let document = Document::from_html_with_storage(
+                let document = Document::from_html_in_site(
                     &html,
                     &final_url,
                     self.loader.as_ref(),
                     Some(storage),
+                    Some(&self.site),
                 );
                 self.replace_document(document);
                 self.history.truncate(self.index + 1);
