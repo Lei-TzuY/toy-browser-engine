@@ -366,8 +366,9 @@ impl Origin {
 /// 404 rather than a refusal; anything that cannot be resolved is refused.
 ///
 /// This is the check at request time, so a page hears "blocked" as soon as
-/// it calls `fetch()`. It is not the last word: a link swapped in after it
-/// runs is caught when `FileLoader` opens the file (`net::scope::read_within`).
+/// it calls `fetch()`. It is not the last word: `FileLoader` checks the file
+/// again after opening it (`net::scope::read_within`, which says what that
+/// check covers), so a link swapped in after this one runs is refused there.
 pub fn file_target_stays_in_directory(document: &Url, target: &Url) -> bool {
     // `.` is the document's directory as `Origin::of` sees it, trailing slash
     // and all, so this check and the lexical one agree on what "inside" is.

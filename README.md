@@ -602,9 +602,12 @@ treat `file:` as opaque; the directory rule here is a deliberate simplification
 that keeps the fixture site usable while still bounding what a page can reach.
 For `file:` the rule applies to where the disk resolves a path, not to how
 the URL spells it: a symbolic link inside the directory that leads outside it
-is refused. The check runs when `fetch()` is called and again when the file
-is opened, on the file actually opened, so a link or junction swapped in
-between the two is refused as well.
+is refused. The check runs when `fetch()` is called, and again after the
+network phase opens the file: the same `read_within` check as subresources,
+against the page's own directory rather than the local root. A link or
+junction swapped in between the two is refused. As for subresources, that
+second check is made by the engine after the open, not enforced by the
+kernel.
 
 The rule holds at every redirect hop, not only for the URL the script wrote: a
 `fetch()` whose redirect leads to another origin rejects as blocked before the
