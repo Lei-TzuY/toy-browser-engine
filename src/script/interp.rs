@@ -377,7 +377,15 @@ pub struct JsRuntime {
     /// every junction and unwinds until a `try` catches it or the call
     /// finishes.
     exception: Option<JsValue>,
-    pub url: crate::net::url::Url,
+    /// The URL the document was loaded from: who the page *is*.
+    ///
+    /// Every security decision reads this — the origin `fetch()` is checked
+    /// against, `location`, `document.cookie` — so it is fixed when the
+    /// runtime is created and a `<base href>` never changes it.
+    pub(super) url: crate::net::url::Url,
+    /// Where relative references resolve: `<base href>`, or `url`. Only ever
+    /// used to turn a reference into a URL, never to authorize one.
+    pub(super) base_url: crate::net::url::Url,
     /// Promise reactions and `queueMicrotask` callbacks, drained to empty at
     /// every checkpoint.
     pub microtasks: MicrotaskQueue<Microtask>,
@@ -407,6 +415,13 @@ impl Default for JsRuntime {
 
 impl JsRuntime {
     pub fn new() -> Self {
+        let url = crate::net::url::Url::parse("demo:///index.html").unwrap();
+        Self::for_document(url.clone(), url)
+    }
+
+    /// A runtime for the document loaded from `url`, resolving relative
+    /// references against `base_url`.
+    pub fn for_document(url: crate::net::url::Url, base_url: crate::net::url::Url) -> Self {
         Self {
             global: Scope::new(None),
             listeners: Vec::new(),
@@ -423,10 +438,21 @@ impl JsRuntime {
             scheduler: Scheduler::new(),
             now_ms: 0.0,
             fetches: FetchRegistry::new(),
-            url: crate::net::url::Url::parse("demo:///index.html").unwrap(),
+            url,
+            base_url,
             detached: Vec::new(),
             depth: 0,
         }
+    }
+
+    /// The document's own URL, as loaded.
+    pub fn url(&self) -> &crate::net::url::Url {
+        &self.url
+    }
+
+    /// The base relative references resolve against.
+    pub fn base_url(&self) -> &crate::net::url::Url {
+        &self.base_url
     }
 
     // ── Exceptions ────────────────────────────────────────────────────────
