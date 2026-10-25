@@ -9,9 +9,21 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Validation-only branch for PR #269: the same `cargo test --locked` as
+    # main's workflow, run natively on a standard GitHub-hosted Windows runner.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Platform
+        shell: bash
+        run: uname -a && rustc -vV && cargo -V
       - run: cargo test --locked
+      - name: Local-file containment tests, repeated for flakiness
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            echo "== repeat $i"
+            cargo test --locked --test site --test file_containment || exit 1
+          done
