@@ -1249,6 +1249,47 @@ fn a_local_page_may_not_fetch_outside_its_directory() {
 }
 
 #[test]
+fn a_local_page_may_not_escape_its_directory_with_percent_encoding() {
+    // `%2e` is a dot and `%2f` a slash once the path reaches the disk, so each
+    // of these spells `../../Cargo.toml` and must be refused like it.
+    for reference in [
+        "%2e%2e/%2e%2e/Cargo.toml",
+        "%2E%2E/.%2e/Cargo.toml",
+        "..%2f..%2fCargo.toml",
+        "..%2F..%2FCargo.toml",
+        "%2e%2e%2f%2e%2e%2fCargo.toml",
+    ] {
+        let mut browser = Browser::open_with_clock(
+            Box::new(DefaultLoader::new()),
+            &site_url("fetch.html"),
+            Rc::new(ManualClock::new()),
+        )
+        .expect("fetch page loads");
+        browser.document_mut().runtime.quiet = true;
+
+        let document = browser.document_mut();
+        document.runtime.run_script(
+            &mut document.dom,
+            &format!(
+                r#"fetch("{reference}")
+                    .then(function (r) {{ return r.text(); }})
+                    .then(function (t) {{ console.log("read: " + t); }},
+                          function (e) {{ console.log("blocked: " + e); }});"#
+            ),
+        );
+        document.run_microtask_checkpoint();
+        browser.settle_network(20);
+
+        let logs = browser.document().runtime.console.join("\n");
+        assert!(
+            logs.contains("blocked: TypeError"),
+            "{reference} was not refused: {logs}"
+        );
+        assert!(!logs.contains("[package]"), "{reference} leaked Cargo.toml");
+    }
+}
+
+#[test]
 fn a_static_source_answers_a_post_with_405_rather_than_failing() {
     // The file backend can only read. A real server would echo the body; this
     // one says so with a status, which is still a resolved promise.
