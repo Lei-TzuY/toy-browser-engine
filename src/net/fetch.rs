@@ -1274,6 +1274,18 @@ mod tests {
     }
 
     #[test]
+    fn a_local_page_cannot_climb_out_with_percent_encoded_dots() {
+        let page = url("file:///home/user/site/index.html");
+        let origin = Origin::of(&page);
+        for reference in ["%2e%2e/secret.txt", "%2E%2E/secret.txt", ".%2e/secret.txt"] {
+            assert!(
+                !origin.can_fetch(&page.join(reference).unwrap()),
+                "{reference} escaped the directory"
+            );
+        }
+    }
+
+    #[test]
     fn a_local_page_cannot_reach_the_network_and_back() {
         let local = Origin::of(&url("file:///home/user/page.html"));
         assert!(!local.can_fetch(&url("http://example.com/")));
