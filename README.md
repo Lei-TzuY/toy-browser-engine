@@ -565,6 +565,37 @@ href>` changes what a relative `fetch("x")` resolves to, not who is asking:
 not widen what the page may fetch, and `location` and `document.cookie` keep
 reporting the page's own URL.
 
+Subresources — `<script src>`, `<link rel=stylesheet>`, `<img src>`, including
+images a script adds later — follow web rules for the network and a separate
+rule for the disk, because the page chooses what they load:
+
+| Document | `file:` subresources | `http:` / in-memory subresources |
+| --- | --- | --- |
+| `file:` | only beneath its *local root* | any |
+| anything else | never | any |
+
+The local root is the directory the session was opened at, for a page inside
+it, so `pages/about.html` can still use the site's `../css/site.css`; any
+other `file:` page (opened on its own, or reached by a link out of the site)
+gets its own directory. Navigating to a page is not a subresource load and is
+not restricted.
+
+The local root and the `fetch()` directory differ on purpose. `fetch()` hands
+the response bytes to the page's script, so it keeps the stricter rule in the
+first table: the page's own directory. Subresources are run or rendered, and a
+site's pages need to share assets, so they get the possibly wider local root.
+`pages/about.html` may use `../css/site.css` as a stylesheet but may not
+`fetch("../css/site.css")`.
+
+The subresource rule is checked on the URL, and again after the file is opened
+(`net::scope::read_within`): a file whose resolved path leads outside the root
+— through a symbolic link, a junction or an escaped `%2e%2e` — is refused, and
+so is one whose path no longer names the file that was opened. That second
+check runs in the engine after the open; it is not confinement enforced by the
+kernel. The open itself can still follow a link out of the root (a FIFO can
+block, a device can react to being opened), and a hard link inside the root
+counts as inside.
+
 So a local page can read a sibling `api/data.json` but not `../secrets.txt`,
 and a page served over HTTP can never read `file:///etc/passwd`. Real browsers
 treat `file:` as opaque; the directory rule here is a deliberate simplification

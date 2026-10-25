@@ -10,6 +10,7 @@
 
 pub mod fetch;
 pub mod http;
+pub mod scope;
 pub mod url;
 
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ pub use fetch::{
     Origin, ThreadedNetwork,
 };
 pub use http::HttpConfig;
+pub use scope::{Requester, SubresourceLoader};
 pub use url::{Url, UrlError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,8 @@ pub enum LoadError {
     HttpStatus { url: String, status: u16 },
     TooManyRedirects(String),
     Io { url: String, message: String },
+    // A page asked for something it may not load (see `scope`).
+    Blocked(String),
 }
 
 impl fmt::Display for LoadError {
@@ -52,6 +56,7 @@ impl fmt::Display for LoadError {
             LoadError::HttpStatus { url, status } => write!(f, "HTTP {status} at {url}"),
             LoadError::TooManyRedirects(u) => write!(f, "too many redirects: {u}"),
             LoadError::Io { url, message } => write!(f, "IO error at {url}: {message}"),
+            LoadError::Blocked(reason) => write!(f, "blocked: {reason}"),
         }
     }
 }
@@ -123,6 +128,19 @@ pub trait ResourceLoader: Send + Sync {
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         static_fetch(|url| self.load(url), request)
     }
+
+    /// Load the `file:` URL `url` for a page confined to `root`, a `file:`
+    /// directory URL, refusing a file that is not on disk beneath it.
+    ///
+    /// Only a source that reads the disk has anything to confine, so the
+    /// default — for memory and network sources — is an ordinary load.
+    /// [`FileLoader`] checks the file it actually opens. A custom loader that
+    /// reads the disk itself gets no confinement from this default and must
+    /// override it.
+    fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
+        let _ = root;
+        self.load(url)
+    }
 }
 
 /// The `fetch` behaviour of a source that only knows how to read a URL.
@@ -180,6 +198,7 @@ pub fn static_fetch(
         Err(LoadError::InvalidUrl(text)) => Err(FetchError::InvalidUrl(text)),
         Err(LoadError::TooManyRedirects(text)) => Err(FetchError::TooManyRedirects(text)),
         Err(LoadError::Io { message, .. }) => Err(FetchError::Io(message)),
+        Err(LoadError::Blocked(reason)) => Err(FetchError::Blocked(reason)),
     }
 }
 
@@ -268,15 +287,21 @@ impl Default for FileLoader {
     }
 }
 
-impl ResourceLoader for FileLoader {
-    fn load(&self, url: &Url) -> Result<Resource, LoadError> {
+impl FileLoader {
+    fn path_of(url: &Url) -> Result<std::path::PathBuf, LoadError> {
         if url.scheme() != "file" {
             return Err(LoadError::UnsupportedScheme(url.scheme().to_string()));
         }
-        let path = url
-            .to_file_path()
-            .ok_or_else(|| LoadError::InvalidUrl(url.to_string()))?;
-        match fs::read(&path) {
+        url.to_file_path()
+            .ok_or_else(|| LoadError::InvalidUrl(url.to_string()))
+    }
+
+    fn resource(
+        url: &Url,
+        path: &Path,
+        read: std::io::Result<Vec<u8>>,
+    ) -> Result<Resource, LoadError> {
+        match read {
             Ok(bytes) => {
                 let mime = Some(mime_from_path(&path.to_string_lossy()).to_string());
                 Ok(Resource::new(url.clone(), mime, bytes))
@@ -288,6 +313,25 @@ impl ResourceLoader for FileLoader {
                 url: url.to_string(),
                 message: e.to_string(),
             }),
+        }
+    }
+}
+
+impl ResourceLoader for FileLoader {
+    fn load(&self, url: &Url) -> Result<Resource, LoadError> {
+        let path = FileLoader::path_of(url)?;
+        FileLoader::resource(url, &path, fs::read(&path))
+    }
+
+    fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
+        let path = FileLoader::path_of(url)?;
+        let root_path = FileLoader::path_of(root)?;
+        match scope::read_within(&path, &root_path) {
+            Ok(bytes) => FileLoader::resource(url, &path, Ok(bytes)),
+            Err(scope::ReadError::Io(error)) => FileLoader::resource(url, &path, Err(error)),
+            Err(scope::ReadError::Outside) => {
+                Err(LoadError::Blocked(format!("{url} resolves outside {root}")))
+            }
         }
     }
 }
@@ -368,6 +412,16 @@ impl ResourceLoader for DefaultLoader {
             // Any other scheme can only be served from embedded resources, so
             // a miss there is a missing file rather than an unknown protocol.
             _ => self.memory.load(url),
+        }
+    }
+
+    fn load_within(&self, url: &Url, root: &Url) -> Result<Resource, LoadError> {
+        if self.memory.contains(url) {
+            return self.memory.load(url);
+        }
+        match url.scheme() {
+            "file" => self.file.load_within(url, root),
+            _ => self.load(url),
         }
     }
 
