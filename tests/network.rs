@@ -58,7 +58,12 @@ struct TestServer {
 impl TestServer {
     /// Serve each canned response in turn.
     fn serving(responses: Vec<String>) -> TestServer {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        TestServer::serving_on(bind_loopback(), responses)
+    }
+
+    /// Serve on a listener bound earlier, for servers whose answers must name
+    /// each other's ports.
+    fn serving_on(listener: TcpListener, responses: Vec<String>) -> TestServer {
         // The port is known the moment `bind` returns, so the client never has
         // to wait for the server to "be ready".
         let port = listener.local_addr().expect("local address").port();
@@ -86,6 +91,10 @@ impl TestServer {
     fn finish(self) -> Vec<Received> {
         self.worker.join().expect("server thread")
     }
+}
+
+fn bind_loopback() -> TcpListener {
+    TcpListener::bind("127.0.0.1:0").expect("bind loopback")
 }
 
 /// Read one request: the head, then exactly `Content-Length` body bytes.
@@ -856,6 +865,59 @@ fn credentials_do_not_follow_a_redirect_to_another_origin() {
         landed.header("content-type").as_deref(),
         Some("application/json")
     );
+}
+
+#[test]
+fn credentials_dropped_on_leaving_an_origin_are_not_restored_on_returning() {
+    // Both listeners exist before either answers, so each can name the other.
+    let (a_listener, b_listener) = (bind_loopback(), bind_loopback());
+    let a_port = a_listener.local_addr().unwrap().port();
+    let b_port = b_listener.local_addr().unwrap().port();
+    let a = TestServer::serving_on(
+        a_listener,
+        vec![
+            redirect(302, &format!("http://127.0.0.1:{b_port}/hop")),
+            ok_json("{}"),
+        ],
+    );
+    let b = TestServer::serving_on(
+        b_listener,
+        vec![redirect(302, &format!("http://127.0.0.1:{a_port}/back"))],
+    );
+
+    let mut request = FetchRequest::get(a.url("/start"));
+    for (name, value) in [
+        ("Authorization", "Bearer secret-token"),
+        ("Proxy-Authorization", "Basic c2VjcmV0"),
+        ("Cookie", "session=secret"),
+        ("X-Trace", "kept"),
+    ] {
+        request.headers.set(name, value).unwrap();
+    }
+
+    let response = HttpLoader::default().fetch(&request).expect("a response");
+    assert_eq!(response.url, a.url("/back"), "the chain ends back at A");
+
+    let at_a = a.finish();
+    let at_b = b.finish();
+    assert_eq!(at_a[0].request_line(), "GET /start HTTP/1.1");
+    assert_eq!(
+        at_a[0].header("authorization").as_deref(),
+        Some("Bearer secret-token"),
+        "A, the origin the caller chose, gets them first"
+    );
+    assert_eq!(at_b[0].request_line(), "GET /hop HTTP/1.1");
+    assert_eq!(at_a[1].request_line(), "GET /back HTTP/1.1");
+    for credential in ["authorization", "proxy-authorization", "cookie"] {
+        assert_eq!(at_b[0].header(credential), None, "{credential} reached B");
+        assert_eq!(
+            at_a[1].header(credential),
+            None,
+            "{credential} came back after a detour through B"
+        );
+    }
+    assert_eq!(at_b[0].header("x-trace").as_deref(), Some("kept"));
+    assert_eq!(at_a[1].header("x-trace").as_deref(), Some("kept"));
 }
 
 #[test]
