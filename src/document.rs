@@ -225,7 +225,7 @@ impl Document {
         seed_textarea_values(&mut dom);
 
         let stylesheet = collect_stylesheet(&dom, &base_url, loader, &mut diagnostics);
-        let runtime = run_scripts(&mut dom, &base_url, loader, &mut diagnostics, storage);
+        let runtime = run_scripts(&mut dom, url, &base_url, loader, &mut diagnostics, storage);
 
         let mut document = Document {
             url: url.clone(),
@@ -1146,8 +1146,11 @@ fn style_sources(dom: &Node) -> Vec<StyleSource> {
 }
 
 /// Run every `<script>` in document order through one runtime.
+///
+/// The runtime is the document at `url`; `base_url` only resolves references.
 fn run_scripts(
     dom: &mut Node,
+    url: &Url,
     base_url: &Url,
     loader: &dyn ResourceLoader,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1156,8 +1159,7 @@ fn run_scripts(
     // Sources are collected before execution: a script may restructure the DOM
     // underneath us, and the document-order list is fixed at parse time.
     let sources = script_sources(dom);
-    let mut runtime = JsRuntime::new();
-    runtime.url = base_url.clone();
+    let mut runtime = JsRuntime::for_document(url.clone(), base_url.clone());
     if let Some(s) = storage {
         runtime.local_storage = s;
     }

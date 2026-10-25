@@ -147,7 +147,8 @@ impl JsRuntime {
         let init = args.get(1).cloned().unwrap_or(JsValue::Undefined);
         let request = self.build_request(input, init)?;
 
-        // Policy, applied once, on the URL that will actually be requested.
+        // Policy, applied once, on the URL that will actually be requested,
+        // for the document's own URL — never its `<base href>`.
         let scheme = request.url.scheme();
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
             return Err(FetchError::UnsupportedScheme(scheme.to_string()));
@@ -253,13 +254,15 @@ impl JsRuntime {
         })
     }
 
-    /// Resolve a fetch URL against the document, as a relative reference.
+    /// Resolve a fetch URL against the document's base, as a relative
+    /// reference. Resolution only: `prepare_request` still authorizes the
+    /// result against the document's own URL.
     fn resolve_fetch_url(&self, reference: &str) -> Result<Url, FetchError> {
         let trimmed = reference.trim();
         if trimmed.is_empty() {
             return Err(FetchError::InvalidUrl("(empty)".into()));
         }
-        self.url
+        self.base_url
             .join(trimmed)
             .map_err(|_| FetchError::InvalidUrl(trimmed.to_string()))
     }

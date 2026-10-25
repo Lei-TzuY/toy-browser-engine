@@ -559,6 +559,12 @@ preflight, no `Access-Control-Allow-Origin` handling, and no opaque response.
 | `http://host:port/…` | the same scheme, host and port, and nothing else |
 | `file:` / `demo:` | the same scheme, confined to its own directory subtree |
 
+"Document" is the URL the page was loaded from, after redirects. A `<base
+href>` changes what a relative `fetch("x")` resolves to, not who is asking:
+`<base href="../">`, `<base href="/">` or a base on another host or port does
+not widen what the page may fetch, and `location` and `document.cookie` keep
+reporting the page's own URL.
+
 So a local page can read a sibling `api/data.json` but not `../secrets.txt`,
 and a page served over HTTP can never read `file:///etc/passwd`. Real browsers
 treat `file:` as opaque; the directory rule here is a deliberate simplification
