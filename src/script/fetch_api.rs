@@ -86,7 +86,9 @@ impl JsRuntime {
                         promise: promise.clone(),
                         signal,
                     };
-                    if let Err(error) = self.fetches.start(request.to_wire(), pending) {
+                    let mut wire = request.to_wire();
+                    wire.initiator = Some(Origin::of(&self.url));
+                    if let Err(error) = self.fetches.start(wire, pending) {
                         self.reject_with(&promise, &error);
                     }
                 }
