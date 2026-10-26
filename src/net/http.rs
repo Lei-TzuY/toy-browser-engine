@@ -82,6 +82,16 @@ pub fn send(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse
             let next = current
                 .join(&location)
                 .map_err(|e| FetchError::InvalidUrl(e.to_string()))?;
+            // A page may not reach through a redirect what it could not fetch
+            // directly, and the refusal comes before the next request is sent.
+            if let Some(initiator) = &request.initiator {
+                if !initiator.can_fetch(&next) {
+                    return Err(FetchError::Blocked(format!(
+                        "{} may not follow a redirect to {next}",
+                        initiator.header_value()
+                    )));
+                }
+            }
 
             // CookieNetwork selected Cookie for `current`, not `next`. Reusing
             // it even on a same-origin redirect can violate Path scoping, so
