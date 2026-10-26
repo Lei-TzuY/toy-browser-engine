@@ -16,13 +16,14 @@ use browser_engine::{
     layout::{BoxType, LayoutBox},
     net::{url_from_argument, DefaultLoader, Url},
 };
-use minifb::{Key, Window, WindowOptions};
+use minifb::{CursorStyle, Key, Window, WindowOptions};
 
 mod demo;
 mod location_input;
 mod platform;
+mod toolbar;
 
-use location_input::{LocationAction, LocationInput};
+use toolbar::{compose, Command, Navigation, PointerTarget, Toolbar, TOOLBAR_HEIGHT};
 
 const USAGE: &str = "\
 Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
@@ -31,8 +32,10 @@ Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
   <out.ppm>       write the rendered page here (default: output.ppm)
 
 Options:
-  --window        interactive window (Ctrl+L: URL, Enter: go, Esc: cancel/close)
-  --size WxH      canvas and viewport size (default 800x600)
+  --window        interactive window with a toolbar (click the address or
+                  Ctrl+L to edit, Enter: go, Esc: cancel/close)
+  --size WxH      canvas and viewport size (default 800x600); the window
+                  adds the toolbar above the viewport
   --viewport WxH  alias for --size WxH
   --stats         print engine performance and node count diagnostics
   --inspect       dump detailed DOM node and computed CSS style tree
@@ -437,10 +440,12 @@ fn node_label(node: &browser_engine::dom::Node) -> String {
 const FRAME_RATE: usize = 60;
 
 fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), minifb::Error> {
+    // The page keeps the full `--size` viewport; the toolbar sits above it.
+    let window_height = height + TOOLBAR_HEIGHT;
     let mut window = Window::new(
         &browser.status_line(),
         width,
-        height,
+        window_height,
         WindowOptions::default(),
     )?;
     // Pace the loop so animations run at a steady rate and an idle page does
@@ -448,17 +453,19 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
     window.set_target_fps(FRAME_RATE);
     let input = platform::InputAdapter::attach(&mut window);
 
+    let mut toolbar = Toolbar::new(width);
     let mut scroll_y: f32 = 0.0;
     let mut was_mouse_down = false;
+    // Whether the button went down over the page, so dragging in from the
+    // toolbar does not paint page elements as :active.
+    let mut press_on_page = false;
     let mut title = String::new();
-    let mut location_input: Option<LocationInput> = None;
+    let mut text_cursor = false;
 
     while window.is_open() {
         // Escape cancels address entry; outside entry it retains the window's
         // existing Escape-to-close shortcut.
-        if location_input.is_none()
-            && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No)
-        {
+        if !toolbar.is_editing() && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No) {
             break;
         }
         // ── Browser chrome shortcuts ──────────────────────────────────────
@@ -474,19 +481,23 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         if address_opened {
             // The current URL starts selected, like a familiar address field.
             // All editor keys stay in window chrome, never in the page's DOM.
-            location_input = Some(LocationInput::new(browser.url().to_string()));
+            toolbar.focus_address(&browser.url().to_string());
         }
-        if chrome && location_input.is_none() {
-            if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) && browser.back() {
-                scroll_y = 0.0;
+        if toolbar.is_editing() && ctrl && window.is_key_pressed(Key::A, minifb::KeyRepeat::No) {
+            // Ctrl+A arrives as a control character, which the text channel
+            // drops, so select-all is read from the physical key.
+            toolbar.select_all();
+        }
+        let mut command = None;
+        if chrome && !toolbar.is_editing() {
+            if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) {
+                command = Some(Command::Back);
             }
-            if window.is_key_pressed(Key::Right, minifb::KeyRepeat::No) && browser.forward() {
-                scroll_y = 0.0;
+            if window.is_key_pressed(Key::Right, minifb::KeyRepeat::No) {
+                command = Some(Command::Forward);
             }
             if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
-                if let Err(error) = browser.reload() {
-                    eprintln!("reload failed: {error}");
-                }
+                command = Some(Command::Reload);
             }
             if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
                 scroll_y += 40.0;
@@ -496,76 +507,72 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
             }
         }
 
-        // ── Keyboard → location editor or page ───────────────────────────
+        // ── Keyboard → address field or page ─────────────────────────────
         // Consume once per frame, even for Alt shortcuts, so old text input
         // cannot leak into a document on a later frame.
         let events = input.drain(&window);
         if !address_opened {
-            if location_input.is_some() {
-                for event in events {
-                    let action = location_input.as_mut().expect("address entry").handle(&event);
-                    match action {
-                        LocationAction::Continue => {}
-                        LocationAction::Cancel => {
-                            location_input = None;
-                            break;
-                        }
-                        LocationAction::Go(target) => {
-                            let url = url_from_argument(&target);
-                            match browser.navigate(&url) {
-                                Ok(()) => {
-                                    println!("→ {}", browser.url());
-                                    scroll_y = 0.0;
-                                    location_input = None;
-                                }
-                                Err(error) => {
-                                    eprintln!("could not open {url}: {error}");
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            } else if !chrome {
-                for event in events {
-                    match browser.press_key(&event) {
-                        ClickOutcome::Navigated(url) => {
-                            println!("→ {url}");
-                            scroll_y = 0.0;
-                        }
-                        ClickOutcome::NavigationFailed { url, error } => {
-                            eprintln!("could not open {url}: {error}");
-                        }
-                        ClickOutcome::Script | ClickOutcome::Ignored => {}
-                    }
+            let dispatch = toolbar.dispatch_keys(events);
+            command = command.or(dispatch.command);
+            if !chrome {
+                for event in dispatch.page {
+                    report_page_outcome(browser.press_key(&event), &mut scroll_y);
                 }
             }
         }
 
+        // ── Pointer → toolbar or page ─────────────────────────────────────
         let is_mouse_down = window.get_mouse_down(minifb::MouseButton::Left);
-        let mouse = window.get_mouse_pos(minifb::MouseMode::Pass);
-        let page_point = mouse.map(|(x, y)| (x, y + scroll_y));
+        let target = window
+            .get_mouse_pos(minifb::MouseMode::Pass)
+            .map(|(x, y)| (x, y, toolbar.route(x, y, height, scroll_y)));
+        let page_point = match target {
+            Some((_, _, PointerTarget::Page { x, y })) => Some((x, y)),
+            _ => None,
+        };
+        match target {
+            Some((x, y, _)) => toolbar.pointer_moved(x, y),
+            None => toolbar.pointer_left(),
+        }
+        if toolbar.over_address() != text_cursor {
+            text_cursor = toolbar.over_address();
+            window.set_cursor_style(if text_cursor {
+                CursorStyle::Ibeam
+            } else {
+                CursorStyle::Arrow
+            });
+        }
 
-        // ── Click ─────────────────────────────────────────────────────────
         if is_mouse_down && !was_mouse_down {
-            if location_input.is_some() {
-                // A click outside the address edit cancels it without also
-                // activating the underlying page's link or button.
-                location_input = None;
-            } else if let Some((x, y)) = page_point {
-                match browser.click_at(x, y, width as f32) {
-                    ClickOutcome::Navigated(url) => {
-                        println!("→ {url}");
-                        scroll_y = 0.0;
-                    }
-                    ClickOutcome::NavigationFailed { url, error } => {
-                        eprintln!("could not open {url}: {error}");
-                    }
-                    ClickOutcome::Script | ClickOutcome::Ignored => {}
+            press_on_page = false;
+            match target {
+                Some((x, y, PointerTarget::Toolbar)) => {
+                    let shift =
+                        window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+                    toolbar.press(x, y, &browser.url().to_string(), shift);
                 }
+                Some((_, _, PointerTarget::Page { x, y })) => {
+                    if toolbar.is_editing() {
+                        // A click outside the address field closes it without
+                        // also activating the page's link or button.
+                        toolbar.cancel();
+                    } else {
+                        press_on_page = true;
+                        report_page_outcome(browser.click_at(x, y, width as f32), &mut scroll_y);
+                    }
+                }
+                _ => {}
             }
+        }
+        if !is_mouse_down && was_mouse_down {
+            let (x, y) = target.map_or((-1.0, -1.0), |(x, y, _)| (x, y));
+            command = command.or(toolbar.release(x, y, Navigation::of(browser)));
         }
         was_mouse_down = is_mouse_down;
+
+        if let Some(command) = command {
+            run_command(browser, &mut toolbar, command, &mut scroll_y);
+        }
 
         // ── Event loop ────────────────────────────────────────────────────
         // Timers and animation frames run here, between input and paint, so
@@ -577,20 +584,21 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         scroll_y = scroll_y.clamp(0.0, max_scroll);
 
         let hovered = page_point.and_then(|(x, y)| browser.document().hit_test(x, y, width as f32));
-        let active = is_mouse_down.then(|| hovered.clone()).flatten();
+        let active = (is_mouse_down && press_on_page)
+            .then(|| hovered.clone())
+            .flatten();
         let pointer = PointerState {
             focused: active.clone().or(hovered.clone()),
             active,
             hovered,
         };
 
-        let canvas = browser.render(width, height, scroll_y, &pointer);
-        window.update_with_buffer(&canvas.to_u32_buffer(), width, height)?;
+        let page = browser.render(width, height, scroll_y, &pointer);
+        let strip = toolbar.paint(&browser.url().to_string(), Navigation::of(browser));
+        window.update_with_buffer(&compose(&strip, &page), width, window_height)?;
 
-        // minifb has no editable native address widget. Give the title bar
-        // an explicit editing mode while preserving the normal page title.
-        let status = match &location_input {
-            Some(entry) => entry.title(),
+        let status = match toolbar.error() {
+            Some(error) => format!("{error} — {}", browser.status_line()),
             None => browser.status_line(),
         };
         if status != title {
@@ -599,4 +607,55 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// Carry out a toolbar button, Alt shortcut or address-field navigation.
+fn run_command(browser: &mut Browser, toolbar: &mut Toolbar, command: Command, scroll_y: &mut f32) {
+    match command {
+        Command::Back => {
+            if browser.back() {
+                *scroll_y = 0.0;
+            }
+        }
+        Command::Forward => {
+            if browser.forward() {
+                *scroll_y = 0.0;
+            }
+        }
+        Command::Reload => {
+            if let Err(error) = browser.reload() {
+                eprintln!("reload failed: {error}");
+            }
+        }
+        Command::Navigate(target) => {
+            let url = url_from_argument(&target);
+            match browser.navigate(&url) {
+                Ok(()) => {
+                    println!("→ {}", browser.url());
+                    *scroll_y = 0.0;
+                    toolbar.navigation_succeeded();
+                }
+                Err(error) => {
+                    // The previous page stays on screen and the typed text
+                    // stays in the field for correction.
+                    eprintln!("could not open {url}: {error}");
+                    toolbar.navigation_failed(format!("Could not open {url}: {error}"));
+                }
+            }
+        }
+    }
+}
+
+/// Log what a click or key on the page led to.
+fn report_page_outcome(outcome: ClickOutcome, scroll_y: &mut f32) {
+    match outcome {
+        ClickOutcome::Navigated(url) => {
+            println!("→ {url}");
+            *scroll_y = 0.0;
+        }
+        ClickOutcome::NavigationFailed { url, error } => {
+            eprintln!("could not open {url}: {error}");
+        }
+        ClickOutcome::Script | ClickOutcome::Ignored => {}
+    }
 }
