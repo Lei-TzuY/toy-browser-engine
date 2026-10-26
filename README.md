@@ -10,6 +10,12 @@ cargo run                     # render the built-in demo site
 cargo run -- --window         # open it in an interactive window
 ```
 
+In the interactive window, press **Ctrl+L** to edit the current URL in the
+window title, type an explicit `http://`, `https://`, or `file://` URL
+(or a local file path), and press **Enter** to navigate. Press **Esc** to cancel
+editing; outside editing, Esc still closes the window. This is a keyboard-first
+interim address entry, not a full browser toolbar.
+
 ## Architecture
 
 ```text
