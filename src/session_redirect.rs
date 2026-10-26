@@ -28,6 +28,7 @@ use crate::fetch_cors_redirect::{
 use crate::fetch_redirect_policy::{FetchRedirectMode, FetchRedirectPolicyRegistry};
 use crate::hsts_network::HstsCacheRef;
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin, Url};
+use crate::net::scope::is_mixed_content;
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
 use crate::referrer_policy::RedirectReferrerState;
 
@@ -420,6 +421,19 @@ impl NetworkBackend for SessionRedirectNetwork {
                     }
 
                     let effective_next = self.effective_url(&next_request);
+                    // HSTS is applied first. An HTTPS page must not fetch
+                    // http: on a later redirect, before cookies or preflight.
+                    if chain.request_policy.as_ref().is_some_and(|policy| {
+                        is_mixed_content(&policy.source_url, &effective_next)
+                    }) {
+                        completion.result = Err(FetchError::Blocked(format!(
+                            "mixed content: HTTPS document cannot follow redirect to {}",
+                            effective_next
+                        )));
+                        self.clear_current_preflight_tuple(&chain);
+                        visible.push(completion);
+                        continue;
+                    }
                     let next_origin = Origin::of(&effective_next);
                     let mut redirect_preflight: Option<Vec<String>> = None;
 

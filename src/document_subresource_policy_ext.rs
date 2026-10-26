@@ -637,10 +637,12 @@ fn fetch_document_subresource(
     // then, for `file:`, the opened file — `FileLoader` reads a request with a
     // local initiator beneath that initiator's directory, here the page's
     // local root.
-    requester
-        .authorize(url)
-        .map_err(|error| error.to_string())?;
+    // HSTS may upgrade an authored http: URL to verified https: before any
+    // network request. Check the actual target, not its pre-upgrade spelling.
     let effective_target = navigation.effective_url(url);
+    requester
+        .authorize(&effective_target)
+        .map_err(|error| error.to_string())?;
     let same_site = referrer.source().is_some_and(|source| {
         source.scheme() == effective_target.scheme()
             && source.host().eq_ignore_ascii_case(effective_target.host())
@@ -651,11 +653,12 @@ fn fetch_document_subresource(
         crate::net::Method::Get,
     );
     let mut request = crate::net::FetchRequest::get(url.clone());
-    if url.scheme() == "file" {
-        if let Some(root) = requester.local_root() {
-            request.initiator = Some(crate::net::Origin::of(root));
-        }
-    }
+    // Bind every browser element request to the committed document's origin,
+    // so each subsequent redirect is checked before the next hop is sent.
+    // Local files keep the wider site-root policy and post-open confinement.
+    request.initiator = Some(crate::net::Origin::of(
+        requester.local_root().unwrap_or(requester.document()),
+    ));
     let response = referrer
         .fetch_subresource_with_cors_credentials(
             navigation,

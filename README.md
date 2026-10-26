@@ -822,10 +822,13 @@ cargo clippy --all-targets  # 0 warnings
 ## Known limitations
 
 - **HTTPS uses verified TLS**, with a fixed trust-store release and no insecure fallback; HTTP/2 and QUIC are not implemented.
-- **Mixed content is not yet blocked:** an HTTPS page can load an HTTP script or
-  stylesheet, allowing an on-path attacker to change active content in the HTTPS
-  document. Avoid treating this toy engine as a secure browser for untrusted sites.
-  Active mixed-content blocking remains a separate follow-up.
+- **Mixed-content blocking:** HTTPS documents reject direct HTTP scripts,
+  stylesheets, images and JavaScript Fetch requests before dispatch. Browser
+  session redirects to HTTP are also refused after applying known HSTS upgrades.
+  This is conservative (including loopback HTTP); it is not a full
+  specification-conformant upgradeable-content or CSP implementation. Standalone
+  custom ResourceLoader implementations may handle redirects internally without
+  exposing each hop to the browser policy layer.
 - **No streaming or incremental rendering**: a document is fully loaded, then
   laid out.
 - There is no module system and no network API for scripts, and `Math.random`
