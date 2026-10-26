@@ -35,9 +35,14 @@ pub mod forms;
 pub mod hsts;
 pub mod hsts_network;
 pub mod html;
+pub mod html_subresource_integrity;
 pub mod hyperlink_referrer;
 pub mod image;
 pub mod input;
+pub mod integrity_policy;
+pub mod integrity_policy_headers;
+pub mod integrity_policy_reporting;
+pub mod integrity_report_queue;
 pub mod layout;
 #[path = "navigation_network_with_credentials.rs"]
 pub mod navigation_network;
@@ -46,6 +51,14 @@ pub mod paint;
 pub mod redirect_policy;
 pub mod referrer_meta;
 pub mod referrer_policy;
+pub mod reporting_coordinator;
+pub mod reporting_delivery;
+pub mod reporting_endpoint_state;
+pub mod reporting_endpoints;
+pub mod reporting_request;
+pub mod reporting_retry;
+pub mod reporting_runtime;
+pub mod reporting_scheduler;
 pub mod script;
 pub mod select_state;
 pub mod session_network;
@@ -53,6 +66,7 @@ mod session_redirect;
 pub mod style;
 pub mod subresource_cors;
 pub mod subresource_cors_credentials;
+pub mod subresource_integrity_policy;
 pub mod subresource_referrer;
 pub mod svg;
 pub mod text;
@@ -72,16 +86,60 @@ pub use fetch_redirect_policy::FetchRedirectMode;
 pub use hsts::{HstsCache, HstsPolicy};
 pub use hsts_network::{HstsCacheRef, HstsNetwork};
 pub use html::extract_inline_styles;
+pub use html_subresource_integrity::{
+    fetch_html_subresource_with_integrity, fetch_html_subresource_with_integrity_reporting,
+    HtmlSubresourceIntegrityError, HtmlSubresourceIntegrityResult,
+};
 pub use hyperlink_referrer::{
     hyperlink_referrer_policy, parse_referrer_policy_attribute, rel_has_noreferrer,
 };
+pub use integrity_policy::{
+    evaluate_integrity_policy, IntegrityPolicy, IntegrityPolicyDecision, IntegrityPolicyDestination,
+    IntegrityPolicyRequestMode, IntegrityPolicySource,
+};
+pub use integrity_policy_headers::{
+    IntegrityPolicyContainer, INTEGRITY_POLICY_HEADER, INTEGRITY_POLICY_REPORT_ONLY_HEADER,
+};
+pub use integrity_policy_reporting::{
+    build_integrity_violation_reports, IntegrityViolationReport, IntegrityViolationReportBody,
+    INTEGRITY_VIOLATION_REPORT_TYPE,
+};
+pub use integrity_report_queue::IntegrityReportQueue;
 pub use navigation_network::NavigationNetwork;
 pub use net::{MemoryLoader, ResourceLoader, Url};
 pub use redirect_policy::{RedirectError, RedirectPlanner, FETCH_MAX_REDIRECTS};
 pub use referrer_meta::apply_meta_referrer_policies;
 pub use referrer_policy::{RedirectReferrerState, ReferrerPolicy};
+pub use reporting_coordinator::ReportingCoordinator;
+pub use reporting_delivery::{
+    batch_resolved_integrity_reports, ReportingDeliveryBatch, REPORTING_CONTENT_TYPE,
+};
+pub use reporting_endpoint_state::ReportingEndpointState;
+pub use reporting_endpoints::{
+    resolve_integrity_violation_reports, ReportingEndpoint, ReportingEndpoints,
+    ResolvedIntegrityViolationReport, REPORTING_ENDPOINTS_HEADER,
+};
+pub use reporting_request::{
+    build_reporting_delivery_request, build_reporting_delivery_requests,
+    reporting_delivery_succeeded,
+};
+pub use reporting_retry::{
+    ReportingRetryDecision, ReportingRetryEntry, ReportingRetryPolicy, ReportingRetryQueue,
+    DEFAULT_REPORTING_MAX_ATTEMPTS, DEFAULT_REPORTING_RETRY_INITIAL_DELAY_MS,
+    DEFAULT_REPORTING_RETRY_MAX_DELAY_MS,
+};
+pub use reporting_runtime::{ReportingDeliveryRuntime, ReportingRuntimeCompletion};
+pub use reporting_scheduler::{
+    ReportingDeliveryDisposition, ReportingDeliveryFailure, ReportingDeliveryOutcome,
+    ReportingDeliveryScheduler, MAX_IN_FLIGHT_REPORTING_DELIVERIES,
+};
 pub use session_network::SessionNetwork;
 pub use subresource_cors::validate_subresource_cors_response;
+pub use subresource_integrity_policy::{
+    enforce_subresource_integrity, evaluate_subresource_integrity_policy,
+    integrity_metadata_has_supported_expression, SubresourceIntegrityError,
+    SubresourceIntegrityResult,
+};
 pub use subresource_referrer::{
     prepare_subresource_request, subresource_redirect_state, subresource_referrer_policy,
 };

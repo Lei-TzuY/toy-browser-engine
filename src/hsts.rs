@@ -2,7 +2,7 @@
 //  hsts.rs — HTTP Strict Transport Security policy/cache
 // ============================================================
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use crate::net::Url;
@@ -14,46 +14,163 @@ pub struct HstsPolicy {
     pub include_subdomains: bool,
 }
 
+fn is_token_char(byte: u8) -> bool {
+    byte.is_ascii()
+        && byte > 0x20
+        && byte != 0x7f
+        && !matches!(
+            byte,
+            b'(' | b')'
+                | b'<'
+                | b'>'
+                | b'@'
+                | b','
+                | b';'
+                | b':'
+                | b'\\'
+                | b'"'
+                | b'/'
+                | b'['
+                | b']'
+                | b'?'
+                | b'='
+                | b'{'
+                | b'}'
+        )
+}
+
+fn valid_token(input: &str) -> bool {
+    !input.is_empty() && input.bytes().all(is_token_char)
+}
+
+fn split_directives(header: &str) -> Option<Vec<&str>> {
+    let bytes = header.as_bytes();
+    let mut directives = Vec::new();
+    let mut start = 0;
+    let mut in_quotes = false;
+    let mut escaped = false;
+
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if in_quotes {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'"' => in_quotes = false,
+                b'\r' | b'\n' | 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f => return None,
+                _ => {}
+            }
+        } else {
+            match byte {
+                b'"' => in_quotes = true,
+                b';' => {
+                    directives.push(&header[start..index]);
+                    start = index + 1;
+                }
+                b'\r' | b'\n' => return None,
+                _ => {}
+            }
+        }
+    }
+
+    if in_quotes || escaped {
+        return None;
+    }
+    directives.push(&header[start..]);
+    Some(directives)
+}
+
+fn unescape_quoted_string(input: &str) -> Option<String> {
+    let inner = input.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                let escaped = chars.next()?;
+                if escaped == '\r' || escaped == '\n' || escaped.is_control() {
+                    return None;
+                }
+                out.push(escaped);
+            }
+            '"' | '\r' | '\n' => return None,
+            ch if ch.is_control() && ch != '\t' => return None,
+            ch => out.push(ch),
+        }
+    }
+    Some(out)
+}
+
+fn parse_directive_value(input: &str) -> Option<String> {
+    if input.starts_with('"') {
+        unescape_quoted_string(input)
+    } else if valid_token(input) {
+        Some(input.to_string())
+    } else {
+        None
+    }
+}
+
+fn trim_http_lws(value: &str) -> &str {
+    value.trim_matches(|ch| matches!(ch, ' ' | '\t'))
+}
+
+fn parse_delta_seconds_saturating(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let mut parsed = 0_u64;
+    for digit in value.bytes().map(|byte| u64::from(byte - b'0')) {
+        parsed = parsed.saturating_mul(10).saturating_add(digit);
+    }
+    Some(parsed)
+}
+
 impl HstsPolicy {
     /// Parse the RFC 6797 directives needed by a user agent.
     ///
     /// `max-age` is mandatory and may be quoted. Directive names are
-    /// case-insensitive; unknown extension directives are ignored. Repeating
-    /// either standardized directive invalidates the field rather than making
-    /// the result depend on ordering.
+    /// case-insensitive; syntactically valid unknown extension directives are
+    /// ignored. Repeating any directive or including malformed directive
+    /// syntax invalidates the whole field, as required by RFC 6797.
     pub fn parse(header: &str) -> Option<HstsPolicy> {
         let mut max_age = None;
         let mut include_subdomains = false;
         let mut saw_include_subdomains = false;
+        let mut seen_directives = HashSet::new();
 
-        for raw in header.split(';') {
-            let directive = raw.trim();
+        for raw in split_directives(header)? {
+            let directive = trim_http_lws(raw);
             if directive.is_empty() {
                 continue;
             }
             let (name, value) = match directive.split_once('=') {
-                Some((name, value)) => (name.trim(), Some(value.trim())),
+                Some((name, value)) => (trim_http_lws(name), Some(trim_http_lws(value))),
                 None => (directive, None),
             };
+
+            if !valid_token(name) {
+                return None;
+            }
+            let parsed_value = match value {
+                Some(value) => Some(parse_directive_value(value)?),
+                None => None,
+            };
+
+            if !seen_directives.insert(name.to_ascii_lowercase()) {
+                return None;
+            }
 
             if name.eq_ignore_ascii_case("max-age") {
                 if max_age.is_some() {
                     return None;
                 }
-                let value = value?;
-                let digits = value
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .unwrap_or(value);
-                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                max_age = digits.parse::<u64>().ok();
-                if max_age.is_none() {
-                    return None;
-                }
+                let digits = parsed_value.as_deref()?;
+                max_age = Some(parse_delta_seconds_saturating(digits)?);
             } else if name.eq_ignore_ascii_case("includesubdomains") {
-                if saw_include_subdomains || value.is_some() {
+                if saw_include_subdomains || parsed_value.is_some() {
                     return None;
                 }
                 saw_include_subdomains = true;
@@ -131,8 +248,7 @@ impl HstsCache {
 
     /// Remove expired learned state.
     pub fn purge_expired(&mut self, now_ms: u64) {
-        self.entries
-            .retain(|_, entry| entry.expires_at_ms > now_ms);
+        self.entries.retain(|_, entry| entry.expires_at_ms > now_ms);
     }
 
     /// Whether `host` is a Known HSTS Host at `now_ms`.
@@ -155,9 +271,11 @@ impl HstsCache {
         let mut remainder = host.as_str();
         while let Some(dot) = remainder.find('.') {
             remainder = &remainder[dot + 1..];
-            if self.entries.get(remainder).is_some_and(|entry| {
-                entry.expires_at_ms > now_ms && entry.include_subdomains
-            }) {
+            if self
+                .entries
+                .get(remainder)
+                .is_some_and(|entry| entry.expires_at_ms > now_ms && entry.include_subdomains)
+            {
                 return true;
             }
         }
@@ -271,6 +389,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_extension_directives_case_insensitively() {
+        assert_eq!(HstsPolicy::parse("max-age=60; preload; preload"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60; Foo=1; fOO=2"), None);
+        assert_eq!(
+            HstsPolicy::parse("max-age=60; preload; other=1"),
+            Some(HstsPolicy {
+                max_age_seconds: 60,
+                include_subdomains: false,
+            })
+        );
+    }
+
+    #[test]
+    fn validates_extension_directive_grammar_and_quoted_semicolons() {
+        assert_eq!(
+            HstsPolicy::parse("max-age=60; future=\"a;b\\\"c\"; flag"),
+            Some(HstsPolicy {
+                max_age_seconds: 60,
+                include_subdomains: false,
+            })
+        );
+        assert_eq!(HstsPolicy::parse("max-age=60; bad name=value"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60; future="), None);
+        assert_eq!(HstsPolicy::parse("max-age=60; future=two words"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60; future=\"unterminated"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60; future=\"bad\rvalue\""), None);
+    }
+
+    #[test]
     fn secure_response_adds_and_zero_age_removes_policy() {
         let mut cache = HstsCache::new();
         let source = url("https://example.test/");
@@ -291,8 +438,14 @@ mod tests {
 
     #[test]
     fn canonicalizes_dns_case_and_one_terminal_root_dot() {
-        assert_eq!(canonical_dns_host("Example.TEST."), Some("example.test".into()));
-        assert_eq!(canonical_dns_host("XN--BCHER-KVA.Example"), Some("xn--bcher-kva.example".into()));
+        assert_eq!(
+            canonical_dns_host("Example.TEST."),
+            Some("example.test".into())
+        );
+        assert_eq!(
+            canonical_dns_host("XN--BCHER-KVA.Example"),
+            Some("xn--bcher-kva.example".into())
+        );
         assert_eq!(canonical_dns_host("example.test.."), None);
     }
 
@@ -303,8 +456,14 @@ mod tests {
         assert_eq!(canonical_dns_host("bad-.example"), None);
         assert_eq!(canonical_dns_host("bad_name.example"), None);
         assert_eq!(canonical_dns_host("bücher.example"), None);
-        assert_eq!(canonical_dns_host(&format!("{}.example", "a".repeat(64))), None);
-        assert_eq!(canonical_dns_host(&format!("{}.test", "a".repeat(249))), None);
+        assert_eq!(
+            canonical_dns_host(&format!("{}.example", "a".repeat(64))),
+            None
+        );
+        assert_eq!(
+            canonical_dns_host(&format!("{}.test", "a".repeat(249))),
+            None
+        );
     }
 
     #[test]
@@ -373,6 +532,53 @@ mod tests {
                 .upgrade_url(&url("https://example.test/a"), 1)
                 .to_string(),
             "https://example.test/a"
+        );
+    }
+    #[test]
+    fn directive_grammar_honors_implied_http_lws_only() {
+        assert!(HstsPolicy::parse("\tmax-age=60\t;\tincludeSubDomains\t").is_some());
+        assert!(HstsPolicy::parse("max-age = 60; ext = \"quoted value\"").is_some());
+        assert_eq!(HstsPolicy::parse("max-age=60;\u{00a0}preload"), None);
+        assert_eq!(HstsPolicy::parse("max-age=60;preload\u{2003}"), None);
+        assert_eq!(HstsPolicy::parse("max-age\u{00a0}=60"), None);
+        assert_eq!(HstsPolicy::parse("max-age=\u{00a0}60"), None);
+    }
+
+    #[test]
+    fn oversized_max_age_keeps_policy_live_at_u64_clock_boundary() {
+        let mut cache = HstsCache::new();
+        let source = url("https://example.test/");
+        assert!(cache.observe_response(
+            &source,
+            "max-age=18446744073709551616; includeSubDomains",
+            1_000,
+        ));
+        assert!(cache.is_known_host("example.test", u64::MAX - 1));
+        assert!(cache.is_known_host("api.example.test", u64::MAX - 1));
+    }
+
+    #[test]
+    fn oversized_delta_seconds_remains_valid_and_saturates() {
+        assert_eq!(
+            parse_delta_seconds_saturating("18446744073709551615"),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            parse_delta_seconds_saturating("18446744073709551616"),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            parse_delta_seconds_saturating(&"9".repeat(256)),
+            Some(u64::MAX)
+        );
+        assert_eq!(parse_delta_seconds_saturating(""), None);
+        assert_eq!(parse_delta_seconds_saturating("123x"), None);
+        assert_eq!(
+            HstsPolicy::parse("max-age=18446744073709551616"),
+            Some(HstsPolicy {
+                max_age_seconds: u64::MAX,
+                include_subdomains: false,
+            })
         );
     }
 }
