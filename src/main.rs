@@ -10,20 +10,24 @@
 use std::{env, fs, process};
 
 use browser_engine::{
-    browser::{Browser, ClickOutcome},
+    browser::Browser,
     document::PointerState,
     dom::NodeType,
     layout::{BoxType, LayoutBox},
-    net::{url_from_argument, DefaultLoader, Url},
+    net::{url_from_argument, DefaultLoader, LoadError, Url},
 };
 use minifb::{CursorStyle, Key, Window, WindowOptions};
 
 mod demo;
 mod location_input;
 mod platform;
+mod tab_strip;
+mod tabs;
 mod toolbar;
 
-use toolbar::{compose, Command, Navigation, PointerTarget, Toolbar, TOOLBAR_HEIGHT};
+use tab_strip::{route_window, TabStrip, WindowPoint, TAB_STRIP_HEIGHT};
+use tabs::{is_tab_shortcut_key, Applied, TabCommand, Tabs};
+use toolbar::{compose, Command, TOOLBAR_HEIGHT};
 
 const USAGE: &str = "\
 Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
@@ -32,10 +36,12 @@ Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
   <out.ppm>       write the rendered page here (default: output.ppm)
 
 Options:
-  --window        interactive window with a toolbar (click the address or
-                  Ctrl+L to edit, Enter: go, Esc: cancel/close)
+  --window        interactive window with tabs and a toolbar (click the
+                  address or Ctrl+L to edit, Enter: go, Esc: cancel/close;
+                  Ctrl+T: new tab, Ctrl+W: close tab, Ctrl+Tab /
+                  Ctrl+Shift+Tab: next/previous tab, Ctrl+1…9: pick a tab)
   --size WxH      canvas and viewport size (default 800x600); the window
-                  adds the toolbar above the viewport
+                  adds the tab strip and toolbar above the viewport
   --viewport WxH  alias for --size WxH
   --stats         print engine performance and node count diagnostics
   --inspect       dump detailed DOM node and computed CSS style tree
@@ -71,17 +77,13 @@ fn main() {
         }
     };
 
-    // Without a target the engine serves its own demo site out of memory, so
-    // the default run still exercises the resource-loading pipeline.
-    let (loader, url) = match &options.target {
-        Some(target) => (DefaultLoader::new(), url_from_argument(target)),
-        None => (
-            DefaultLoader::new().with_memory(demo::site()),
-            Url::parse(demo::ENTRY_URL).expect("valid demo URL"),
-        ),
+    let url = match &options.target {
+        Some(target) => url_from_argument(target),
+        None => Url::parse(demo::ENTRY_URL).expect("valid demo URL"),
     };
+    let demo_site = options.target.is_none();
 
-    let mut browser = match Browser::open(Box::new(loader), &url) {
+    let mut browser = match Browser::open(Box::new(loader(demo_site)), &url) {
         Ok(browser) => browser,
         Err(error) => {
             eprintln!("Failed to load {url}: {error}");
@@ -116,10 +118,19 @@ fn main() {
     }
 
     if options.show_window {
-        if let Err(error) = run_window(&mut browser, options.width, options.height) {
-            eprintln!("\nFailed to open window: {error}");
-            process::exit(1);
-        }
+        // Every new tab starts its own session at the page the window opened
+        // with, through a loader of its own.
+        let home = url.clone();
+        let open_tab = move || Browser::open(Box::new(loader(demo_site)), &home);
+        // The CLI output that follows describes the tab that was active when
+        // the window closed.
+        browser = match run_window(browser, open_tab, options.width, options.height) {
+            Ok(browser) => browser,
+            Err(error) => {
+                eprintln!("\nFailed to open window: {error}");
+                process::exit(1);
+            }
+        };
     }
 
     if options.show_stats {
@@ -148,6 +159,17 @@ fn main() {
 
     if !options.quiet {
         println!("\nDone.");
+    }
+}
+
+/// The loader a session uses. Without a target the engine serves its own
+/// demo site out of memory, so the default run still exercises the
+/// resource-loading pipeline.
+fn loader(demo_site: bool) -> DefaultLoader {
+    if demo_site {
+        DefaultLoader::new().with_memory(demo::site())
+    } else {
+        DefaultLoader::new()
     }
 }
 
@@ -439,9 +461,30 @@ fn node_label(node: &browser_engine::dom::Node) -> String {
 /// `requestAnimationFrame` callbacks get to run.
 const FRAME_RATE: usize = 60;
 
-fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), minifb::Error> {
-    // The page keeps the full `--size` viewport; the toolbar sits above it.
-    let window_height = height + TOOLBAR_HEIGHT;
+/// With Ctrl, these pick a tab by position.
+const NUMBER_KEYS: [Key; 9] = [
+    Key::Key1,
+    Key::Key2,
+    Key::Key3,
+    Key::Key4,
+    Key::Key5,
+    Key::Key6,
+    Key::Key7,
+    Key::Key8,
+    Key::Key9,
+];
+
+/// Drive the window until it is closed, then hand back the session of the
+/// tab that was active at the time. `open_tab` starts each new tab.
+fn run_window(
+    browser: Browser,
+    open_tab: impl Fn() -> Result<Browser, LoadError>,
+    width: usize,
+    height: usize,
+) -> Result<Browser, minifb::Error> {
+    // The page keeps the full `--size` viewport; the tab strip and toolbar
+    // sit above it.
+    let window_height = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT + height;
     let mut window = Window::new(
         &browser.status_line(),
         width,
@@ -453,43 +496,85 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
     window.set_target_fps(FRAME_RATE);
     let input = platform::InputAdapter::attach(&mut window);
 
-    let mut toolbar = Toolbar::new(width);
-    let mut scroll_y: f32 = 0.0;
+    let mut tabs = Tabs::new(browser, width);
+    let mut strip = TabStrip::new(width);
     let mut was_mouse_down = false;
+    let mut was_middle_down = false;
     // Whether the button went down over the page, so dragging in from the
-    // toolbar does not paint page elements as :active.
+    // chrome does not paint page elements as :active.
     let mut press_on_page = false;
     let mut title = String::new();
     let mut text_cursor = false;
+    // A window-level message, such as a new tab that failed to load. It
+    // leads the title until the next tab action.
+    let mut notice: Option<String> = None;
 
     while window.is_open() {
+        let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
+        let ctrl = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
+        let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+
+        // ── Tab shortcuts ─────────────────────────────────────────────────
+        // First, so the rest of the frame already works on the tab they
+        // pick. A frame with one hands no keys to any tab.
+        let mut tab_key = None;
+        if ctrl && !chrome {
+            if window.is_key_pressed(Key::T, minifb::KeyRepeat::No) {
+                tab_key = Some(TabCommand::New);
+            }
+            if window.is_key_pressed(Key::W, minifb::KeyRepeat::No) {
+                tab_key = Some(TabCommand::Close(tabs.active_index()));
+            }
+            if window.is_key_pressed(Key::Tab, minifb::KeyRepeat::Yes) {
+                tab_key = Some(if shift {
+                    TabCommand::Previous
+                } else {
+                    TabCommand::Next
+                });
+            }
+            for (index, &key) in NUMBER_KEYS.iter().enumerate() {
+                if window.is_key_pressed(key, minifb::KeyRepeat::No) {
+                    tab_key = Some(TabCommand::Number(index + 1));
+                }
+            }
+        }
+        if let Some(command) = tab_key {
+            if !apply_tab_command(&mut tabs, &strip, command, &open_tab, &mut notice) {
+                break;
+            }
+            press_on_page = false;
+        }
+
+        let count = tabs.len();
+        let tab = tabs.active_mut();
+
         // Escape cancels address entry; outside entry it retains the window's
         // existing Escape-to-close shortcut.
-        if !toolbar.is_editing() && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No) {
+        if !tab.toolbar.is_editing() && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No) {
             break;
         }
         // ── Browser chrome shortcuts ──────────────────────────────────────
         // These are the window's own keys; everything else goes to the page.
         if let Some((_, wheel_y)) = window.get_scroll_wheel() {
             if wheel_y != 0.0 {
-                scroll_y -= wheel_y * 30.0;
+                tab.scroll_y -= wheel_y * 30.0;
             }
         }
-        let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
-        let ctrl = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
         let address_opened = ctrl && window.is_key_pressed(Key::L, minifb::KeyRepeat::No);
         if address_opened {
             // The current URL starts selected, like a familiar address field.
             // All editor keys stay in window chrome, never in the page's DOM.
-            toolbar.focus_address(&browser.url().to_string());
+            let current = tab.browser.url().to_string();
+            tab.toolbar.focus_address(&current);
         }
-        if toolbar.is_editing() && ctrl && window.is_key_pressed(Key::A, minifb::KeyRepeat::No) {
+        if tab.toolbar.is_editing() && ctrl && window.is_key_pressed(Key::A, minifb::KeyRepeat::No)
+        {
             // Ctrl+A arrives as a control character, which the text channel
             // drops, so select-all is read from the physical key.
-            toolbar.select_all();
+            tab.toolbar.select_all();
         }
         let mut command = None;
-        if chrome && !toolbar.is_editing() {
+        if chrome && !tab.toolbar.is_editing() {
             if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) {
                 command = Some(Command::Back);
             }
@@ -500,42 +585,40 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
                 command = Some(Command::Reload);
             }
             if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
-                scroll_y += 40.0;
+                tab.scroll_y += 40.0;
             }
             if window.is_key_pressed(Key::Up, minifb::KeyRepeat::Yes) {
-                scroll_y -= 40.0;
+                tab.scroll_y -= 40.0;
             }
         }
 
         // ── Keyboard → address field or page ─────────────────────────────
         // Consume once per frame, even for Alt shortcuts, so old text input
-        // cannot leak into a document on a later frame.
-        let events = input.drain(&window);
-        if !address_opened {
-            let dispatch = toolbar.dispatch_keys(events);
-            command = command.or(dispatch.command);
-            if !chrome {
-                for event in dispatch.page {
-                    report_page_outcome(browser.press_key(&event), &mut scroll_y);
-                }
-            }
+        // cannot leak into a document on a later frame. Tab shortcut keys,
+        // including their auto-repeats, never reach a tab.
+        let mut events = input.drain(&window);
+        events.retain(|event| !is_tab_shortcut_key(event));
+        if !address_opened && tab_key.is_none() {
+            command = command.or(tab.handle_keys(events, chrome));
         }
 
-        // ── Pointer → toolbar or page ─────────────────────────────────────
+        // ── Pointer → tab strip, toolbar or page ──────────────────────────
         let is_mouse_down = window.get_mouse_down(minifb::MouseButton::Left);
-        let target = window
-            .get_mouse_pos(minifb::MouseMode::Pass)
-            .map(|(x, y)| (x, y, toolbar.route(x, y, height, scroll_y)));
-        let page_point = match target {
-            Some((_, _, PointerTarget::Page { x, y })) => Some((x, y)),
-            _ => None,
-        };
-        match target {
-            Some((x, y, _)) => toolbar.pointer_moved(x, y),
-            None => toolbar.pointer_left(),
+        let is_middle_down = window.get_mouse_down(minifb::MouseButton::Middle);
+        let position = window.get_mouse_pos(minifb::MouseMode::Pass);
+        let point = position.map(|(x, y)| route_window(&tab.toolbar, x, y, height, tab.scroll_y));
+        match position {
+            Some((x, y)) => {
+                strip.pointer_moved(x, y, count);
+                tab.toolbar.pointer_moved(x, y - TAB_STRIP_HEIGHT as f32);
+            }
+            None => {
+                strip.pointer_left();
+                tab.toolbar.pointer_left();
+            }
         }
-        if toolbar.over_address() != text_cursor {
-            text_cursor = toolbar.over_address();
+        if tab.toolbar.over_address() != text_cursor {
+            text_cursor = tab.toolbar.over_address();
             window.set_cursor_style(if text_cursor {
                 CursorStyle::Ibeam
             } else {
@@ -543,47 +626,82 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
             });
         }
 
+        let mut tab_click = None;
         if is_mouse_down && !was_mouse_down {
             press_on_page = false;
-            match target {
-                Some((x, y, PointerTarget::Toolbar)) => {
-                    let shift =
-                        window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
-                    toolbar.press(x, y, &browser.url().to_string(), shift);
+            match point {
+                Some(WindowPoint::TabStrip { x, y }) => tab_click = strip.press(x, y, count),
+                Some(WindowPoint::Toolbar { x, y }) => {
+                    let current = tab.browser.url().to_string();
+                    tab.toolbar.press(x, y, &current, shift);
                 }
-                Some((_, _, PointerTarget::Page { x, y })) => {
-                    if toolbar.is_editing() {
+                Some(WindowPoint::Page { x, y }) => {
+                    if tab.toolbar.is_editing() {
                         // A click outside the address field closes it without
                         // also activating the page's link or button.
-                        toolbar.cancel();
+                        tab.toolbar.cancel();
                     } else {
                         press_on_page = true;
-                        report_page_outcome(browser.click_at(x, y, width as f32), &mut scroll_y);
+                        let outcome = tab.browser.click_at(x, y, width as f32);
+                        tab.report_page_outcome(outcome);
                     }
                 }
                 _ => {}
             }
         }
         if !is_mouse_down && was_mouse_down {
-            let (x, y) = target.map_or((-1.0, -1.0), |(x, y, _)| (x, y));
-            command = command.or(toolbar.release(x, y, Navigation::of(browser)));
+            let (x, y) = position.unwrap_or((-1.0, -1.0));
+            tab_click = tab_click.or(strip.release(x, y, count));
+            let navigation = tab.navigation();
+            let toolbar_y = y - TAB_STRIP_HEIGHT as f32;
+            command = command.or(tab.toolbar.release(x, toolbar_y, navigation));
+        }
+        if is_middle_down && !was_middle_down {
+            if let Some(WindowPoint::TabStrip { x, y }) = point {
+                strip.press_middle(x, y, count);
+            }
+        }
+        if !is_middle_down && was_middle_down {
+            let (x, y) = position.unwrap_or((-1.0, -1.0));
+            tab_click = tab_click.or(strip.release_middle(x, y, count));
         }
         was_mouse_down = is_mouse_down;
+        was_middle_down = is_middle_down;
 
         if let Some(command) = command {
-            run_command(browser, &mut toolbar, command, &mut scroll_y);
+            tab.run_command(command);
+        }
+        if let Some(command) = tab_click {
+            if !apply_tab_command(&mut tabs, &strip, command, &open_tab, &mut notice) {
+                break;
+            }
+            press_on_page = false;
         }
 
         // ── Event loop ────────────────────────────────────────────────────
         // Timers and animation frames run here, between input and paint, so
-        // whatever a callback changed is in the frame that follows.
-        browser.tick();
+        // whatever a callback changed is in the frame that follows. Hidden
+        // tabs keep running, as in other browsers.
+        for tab in tabs.iter_mut() {
+            tab.browser.tick();
+        }
 
         // ── Draw ──────────────────────────────────────────────────────────
-        let max_scroll = (browser.document().content_height(width as f32) - height as f32).max(0.0);
-        scroll_y = scroll_y.clamp(0.0, max_scroll);
+        let tab = tabs.active_mut();
+        let max_scroll =
+            (tab.browser.document().content_height(width as f32) - height as f32).max(0.0);
+        tab.scroll_y = tab.scroll_y.clamp(0.0, max_scroll);
 
-        let hovered = page_point.and_then(|(x, y)| browser.document().hit_test(x, y, width as f32));
+        // Hover is worked out against the tab on screen now, which may not
+        // be the one the pointer was routed to earlier in the frame.
+        let page_point = position.and_then(|(x, y)| {
+            match route_window(&tab.toolbar, x, y, height, tab.scroll_y) {
+                WindowPoint::Page { x, y } => Some((x, y)),
+                _ => None,
+            }
+        });
+        let hovered =
+            page_point.and_then(|(x, y)| tab.browser.document().hit_test(x, y, width as f32));
         let active = (is_mouse_down && press_on_page)
             .then(|| hovered.clone())
             .flatten();
@@ -593,69 +711,45 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
             hovered,
         };
 
-        let page = browser.render(width, height, scroll_y, &pointer);
-        let strip = toolbar.paint(&browser.url().to_string(), Navigation::of(browser));
-        window.update_with_buffer(&compose(&strip, &page), width, window_height)?;
+        let page = tab.browser.render(width, height, tab.scroll_y, &pointer);
+        let navigation = tab.navigation();
+        let bar = tab
+            .toolbar
+            .paint(&tab.browser.url().to_string(), navigation);
+        let mut frame = strip
+            .paint(&tabs.labels(), tabs.active_index())
+            .to_u32_buffer();
+        frame.extend(compose(&bar, &page));
+        window.update_with_buffer(&frame, width, window_height)?;
 
-        let status = match toolbar.error() {
-            Some(error) => format!("{error} — {}", browser.status_line()),
-            None => browser.status_line(),
+        let status = match &notice {
+            Some(notice) => format!("{notice} — {}", tabs.active().status()),
+            None => tabs.active().status(),
         };
         if status != title {
             window.set_title(&status);
             title = status;
         }
     }
-    Ok(())
+    Ok(tabs.into_active())
 }
 
-/// Carry out a toolbar button, Alt shortcut or address-field navigation.
-fn run_command(browser: &mut Browser, toolbar: &mut Toolbar, command: Command, scroll_y: &mut f32) {
-    match command {
-        Command::Back => {
-            if browser.back() {
-                *scroll_y = 0.0;
-            }
+/// Carry out a tab-strip click or tab shortcut. Returns false when the last
+/// tab was closed, which closes the window.
+fn apply_tab_command(
+    tabs: &mut Tabs,
+    strip: &TabStrip,
+    command: TabCommand,
+    open_tab: &impl Fn() -> Result<Browser, LoadError>,
+    notice: &mut Option<String>,
+) -> bool {
+    *notice = None;
+    match tabs.apply(command, strip.capacity(), open_tab) {
+        Applied::Continue => true,
+        Applied::Notice(message) => {
+            *notice = Some(message);
+            true
         }
-        Command::Forward => {
-            if browser.forward() {
-                *scroll_y = 0.0;
-            }
-        }
-        Command::Reload => {
-            if let Err(error) = browser.reload() {
-                eprintln!("reload failed: {error}");
-            }
-        }
-        Command::Navigate(target) => {
-            let url = url_from_argument(&target);
-            match browser.navigate(&url) {
-                Ok(()) => {
-                    println!("→ {}", browser.url());
-                    *scroll_y = 0.0;
-                    toolbar.navigation_succeeded();
-                }
-                Err(error) => {
-                    // The previous page stays on screen and the typed text
-                    // stays in the field for correction.
-                    eprintln!("could not open {url}: {error}");
-                    toolbar.navigation_failed(format!("Could not open {url}: {error}"));
-                }
-            }
-        }
-    }
-}
-
-/// Log what a click or key on the page led to.
-fn report_page_outcome(outcome: ClickOutcome, scroll_y: &mut f32) {
-    match outcome {
-        ClickOutcome::Navigated(url) => {
-            println!("→ {url}");
-            *scroll_y = 0.0;
-        }
-        ClickOutcome::NavigationFailed { url, error } => {
-            eprintln!("could not open {url}: {error}");
-        }
-        ClickOutcome::Script | ClickOutcome::Ignored => {}
+        Applied::CloseWindow => false,
     }
 }

@@ -34,17 +34,17 @@ const MARGIN: f32 = 6.0;
 const FIELD_PADDING: f32 = 8.0;
 const FONT_SIZE: f32 = 14.0;
 
-const BAR: Color = Color::rgb(241, 243, 244);
+pub(crate) const BAR: Color = Color::rgb(241, 243, 244);
 const BAR_EDGE: Color = Color::rgb(200, 203, 207);
 const BUTTON_HOVER: Color = Color::rgb(222, 225, 229);
 const BUTTON_PRESSED: Color = Color::rgb(200, 204, 209);
-const ICON: Color = Color::rgb(60, 64, 67);
-const ICON_DISABLED: Color = Color::rgb(176, 180, 184);
+pub(crate) const ICON: Color = Color::rgb(60, 64, 67);
+pub(crate) const ICON_DISABLED: Color = Color::rgb(176, 180, 184);
 const FIELD: Color = Color::rgb(255, 255, 255);
 const FIELD_EDGE: Color = Color::rgb(196, 199, 203);
 const FOCUS_RING: Color = Color::rgb(26, 115, 232);
 const ERROR_RING: Color = Color::rgb(217, 48, 37);
-const TEXT: Color = Color::rgb(32, 33, 36);
+pub(crate) const TEXT: Color = Color::rgb(32, 33, 36);
 const SELECTION: Color = Color::rgb(179, 215, 255);
 
 /// A clickable part of the toolbar.
@@ -290,6 +290,14 @@ impl Toolbar {
         self.hovered = None;
     }
 
+    /// Forget hover, an armed button and a drag selection, e.g. when the tab
+    /// this toolbar belongs to is hidden mid-gesture. Address text is kept.
+    pub(crate) fn reset_pointer(&mut self) {
+        self.hovered = None;
+        self.pressed = None;
+        self.selecting = false;
+    }
+
     /// The pointer is over the address field (for an I-beam cursor).
     pub(crate) fn over_address(&self) -> bool {
         self.hovered == Some(Control::Address)
@@ -517,7 +525,7 @@ pub(crate) fn compose(toolbar: &Canvas, page: &Canvas) -> Vec<u32> {
     frame
 }
 
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
+pub(crate) fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
@@ -546,9 +554,9 @@ fn prefix_width(text: &str, chars: usize) -> f32 {
 const ICON_STROKE: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy)]
-struct Segment {
-    from: (f32, f32),
-    to: (f32, f32),
+pub(crate) struct Segment {
+    pub(crate) from: (f32, f32),
+    pub(crate) to: (f32, f32),
 }
 
 impl Segment {
@@ -614,7 +622,7 @@ fn reload_distance(cx: f32, cy: f32, x: f32, y: f32) -> f32 {
     ring.min(distance_to(&head, x, y))
 }
 
-fn distance_to(segments: &[Segment], x: f32, y: f32) -> f32 {
+pub(crate) fn distance_to(segments: &[Segment], x: f32, y: f32) -> f32 {
     segments
         .iter()
         .map(|segment| segment.distance(x, y))
@@ -623,7 +631,12 @@ fn distance_to(segments: &[Segment], x: f32, y: f32) -> f32 {
 
 /// Paint every pixel of `rect` whose distance to the shape is within half
 /// the stroke width, with an anti-aliased edge.
-fn stroke(canvas: &mut Canvas, rect: Rect, color: Color, distance: impl Fn(f32, f32) -> f32) {
+pub(crate) fn stroke(
+    canvas: &mut Canvas,
+    rect: Rect,
+    color: Color,
+    distance: impl Fn(f32, f32) -> f32,
+) {
     let (x0, y0) = (rect.x.floor() as i32, rect.y.floor() as i32);
     let (x1, y1) = (
         (rect.x + rect.width).ceil() as i32,

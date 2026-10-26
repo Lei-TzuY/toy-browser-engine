@@ -17,6 +17,15 @@ path), and press **Enter** to navigate. Press **Esc** to cancel editing; outside
 editing, Esc still closes the window. A failed navigation keeps the field open
 with the typed text and leaves the current page on screen.
 
+Above the toolbar is a tab strip. **Ctrl+T** or the **+** button opens a new tab
+at the page the window was started with, with its address selected so you can
+type a new one. Click a tab, or press **Ctrl+Tab** / **Ctrl+Shift+Tab**, to
+switch; **Ctrl+1**…**Ctrl+8** pick a tab by position and **Ctrl+9** the last.
+**Ctrl+W**, a tab's **×** or a middle click closes it; closing the last tab
+closes the window. Each tab is its own browsing session with its own document,
+history, scroll position, address field, cookies, HSTS state and
+localStorage, so nothing typed or visited in one tab affects another.
+
 ## Architecture
 
 ```text
@@ -95,6 +104,10 @@ against a resource already in memory.
 | [`platform`](src/platform.rs) | minifb → `KeyEvent` adapter (the only toolkit-aware file) |
 
 `main.rs` is only a CLI shell: argument parsing, tree dumps and the window loop.
+The window's chrome lives beside it: [`tabs`](src/tabs.rs) (one `Browser`
+session plus toolbar and scroll state per tab), [`tab_strip`](src/tab_strip.rs)
+(the tab row, and routing window points through strip → toolbar → page) and
+[`toolbar`](src/toolbar.rs).
 
 ## Resource loading
 
@@ -682,15 +695,17 @@ browser_engine [options] [<url-or-file> [<out.ppm>]]
   <url-or-file>   file path, file:// or http:// URL (default: built-in demo site)
   <out.ppm>       write the rendered page here (default: output.ppm)
 
-  --window        interactive window
-  --size WxH      canvas and viewport size (default 800x600)
+  --window        interactive window with tabs and a toolbar
+  --size WxH      canvas and viewport size (default 800x600; the window adds
+                  the tab strip and toolbar above it)
   --quiet         skip the DOM and layout tree dumps
   --help          usage
 ```
 
-In the window, keystrokes go to the **page** — click a field and type — unless
-the toolbar's address field is focused, in which case they stay in the toolbar.
-Browser chrome is on the toolbar and on `Alt`:
+In the window, keystrokes go to the active tab's **page** — click a field and
+type — unless its address field is focused, in which case they stay in the
+toolbar. Browser chrome is on the tab strip, the toolbar, `Alt` and the tab
+shortcuts below, none of which reach the page:
 
 | Key | Action |
 | --- | --- |
@@ -705,6 +720,10 @@ Browser chrome is on the toolbar and on `Alt`:
 | `Alt`+`R` | reload |
 | click the address field / `Ctrl`+`L` | edit the URL (Enter: go, Esc: cancel) |
 | `Alt`+`↑` / `Alt`+`↓` | scroll by a page step |
+| `Ctrl`+`T` / click **+** | new tab |
+| `Ctrl`+`W` / click a tab's **×** / middle-click a tab | close the tab (the last one closes the window) |
+| click a tab / `Ctrl`+`Tab` / `Ctrl`+`Shift`+`Tab` | switch tabs |
+| `Ctrl`+`1` … `Ctrl`+`8` / `Ctrl`+`9` | tab by position / last tab |
 | `Esc` | quit |
 
 Examples:
@@ -849,6 +868,11 @@ cargo clippy --all-targets  # 0 warnings
 - Images are decoded eagerly and never re-fetched; there is no HTTP cache.
 - The toolbar's address field has no clipboard, undo or IME support, and a
   bare host such as `example.com` is treated as a local file path.
+- Tabs are fully isolated sessions: cookies, HSTS and localStorage learned in
+  one tab are not shared with others (as with separate private windows). Tabs
+  cannot be dragged or reopened once closed, links cannot be opened in a new
+  tab, and the strip refuses new tabs once they would be narrower than 72px
+  rather than scrolling.
 - **Forms**: `POST` is recognised but refused rather than half-implemented (the
   loader only issues GETs); there is no `<select>` dropdown UI (the element is
   focusable and submits its `value`), no file inputs, no `multipart/form-data`,
