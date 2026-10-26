@@ -473,7 +473,12 @@ impl JsRuntime {
         // The document's own URL is the security identity, never its <base href>
         // and never its referrer source.
         let environment_url = &self.url;
-        if is_mixed_content(environment_url, &request.url) {
+        // Standalone runtimes have no HSTS-aware browser session: reject now.
+        // Browser sessions enforce this at the actual post-HSTS dispatch
+        // boundary, where a Known HSTS Host can be safely upgraded first.
+        if is_mixed_content(environment_url, &request.url)
+            && cors_redirect_policy_registry_for_jar(&self.cookie_jar).is_none()
+        {
             return Err(FetchError::Blocked(format!(
                 "mixed content: HTTPS document cannot fetch insecure {}",
                 request.url
