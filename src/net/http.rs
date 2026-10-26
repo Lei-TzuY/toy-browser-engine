@@ -451,13 +451,10 @@ fn read_http_message(
                         "{url}: TLS closed before a complete HTTP response"
                     )));
                 }
-                // Preserve plain-HTTP behavior for EOF, but reject malformed
-                // headers and incomplete explicitly framed responses.
-                return if framing.is_some() {
-                    Err(FetchError::MalformedResponse(url.to_string()))
-                } else {
-                    Ok(raw)
-                };
+                // Preserve the pre-existing plain-HTTP EOF tolerance. An
+                // insecure HTTP peer may close without honoring Content-Length;
+                // this compatibility behavior must NOT apply to verified TLS.
+                return Ok(raw);
             }
             Ok(n) => {
                 if raw.len().saturating_add(n) > MAX_WIRE_BYTES {
