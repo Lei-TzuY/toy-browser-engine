@@ -26,7 +26,7 @@ mod tabs;
 mod toolbar;
 
 use tab_strip::{route_window, TabStrip, WindowPoint, TAB_STRIP_HEIGHT};
-use tabs::{is_tab_shortcut_key, Applied, TabCommand, Tabs};
+use tabs::{Applied, ShortcutKeyFilter, TabCommand, Tabs};
 use toolbar::{compose, Command, TOOLBAR_HEIGHT};
 
 const USAGE: &str = "\
@@ -508,6 +508,7 @@ fn run_window(
     // A window-level message, such as a new tab that failed to load. It
     // leads the title until the next tab action.
     let mut notice: Option<String> = None;
+    let mut shortcut_keys = ShortcutKeyFilter::default();
 
     while window.is_open() {
         let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
@@ -539,7 +540,7 @@ fn run_window(
             }
         }
         if let Some(command) = tab_key {
-            if !apply_tab_command(&mut tabs, &strip, command, &open_tab, &mut notice) {
+            if !apply_tab_command(&mut tabs, &mut strip, command, &open_tab, &mut notice) {
                 break;
             }
             press_on_page = false;
@@ -596,8 +597,7 @@ fn run_window(
         // Consume once per frame, even for Alt shortcuts, so old text input
         // cannot leak into a document on a later frame. Tab shortcut keys,
         // including their auto-repeats, never reach a tab.
-        let mut events = input.drain(&window);
-        events.retain(|event| !is_tab_shortcut_key(event));
+        let events = shortcut_keys.filter(ctrl, input.drain(&window));
         if !address_opened && tab_key.is_none() {
             command = command.or(tab.handle_keys(events, chrome));
         }
@@ -672,7 +672,7 @@ fn run_window(
             tab.run_command(command);
         }
         if let Some(command) = tab_click {
-            if !apply_tab_command(&mut tabs, &strip, command, &open_tab, &mut notice) {
+            if !apply_tab_command(&mut tabs, &mut strip, command, &open_tab, &mut notice) {
                 break;
             }
             press_on_page = false;
@@ -738,18 +738,155 @@ fn run_window(
 /// tab was closed, which closes the window.
 fn apply_tab_command(
     tabs: &mut Tabs,
-    strip: &TabStrip,
+    strip: &mut TabStrip,
     command: TabCommand,
     open_tab: &impl Fn() -> Result<Browser, LoadError>,
     notice: &mut Option<String>,
 ) -> bool {
     *notice = None;
-    match tabs.apply(command, strip.capacity(), open_tab) {
+    let count = tabs.len();
+    let applied = tabs.apply(command, strip.capacity(), open_tab);
+    if tabs.len() != count {
+        // A press armed on the strip names a tab by index, which now points
+        // at a different tab; its release must not close that one.
+        strip.cancel_press();
+    }
+    match applied {
         Applied::Continue => true,
         Applied::Notice(message) => {
             *notice = Some(message);
             true
         }
         Applied::CloseWindow => false,
+    }
+}
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use browser_engine::{
+        layout::Rect,
+        net::{MemoryLoader, Url},
+    };
+
+    const WIDTH: usize = 800;
+
+    fn browser(url: &str) -> Browser {
+        let mut site = MemoryLoader::new();
+        for page in ["a", "b", "c"] {
+            site.insert(
+                format!("demo:///{page}.html"),
+                format!("<title>{page}</title>"),
+            );
+        }
+        Browser::open(Box::new(site), &Url::parse(url).unwrap()).unwrap()
+    }
+
+    /// Tabs a, b, c with a active.
+    fn three_tabs() -> Tabs {
+        let mut tabs = Tabs::new(browser("demo:///a.html"), WIDTH);
+        tabs.open(browser("demo:///b.html"));
+        tabs.open(browser("demo:///c.html"));
+        tabs.select(0);
+        tabs
+    }
+
+    fn labels(tabs: &Tabs) -> Vec<String> {
+        tabs.labels()
+    }
+
+    fn center(rect: Rect) -> (f32, f32) {
+        (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+    }
+
+    fn no_tab() -> Result<Browser, LoadError> {
+        panic!("no tab should be opened")
+    }
+
+    fn apply(tabs: &mut Tabs, strip: &mut TabStrip, command: TabCommand) -> bool {
+        apply_tab_command(tabs, strip, command, &no_tab, &mut None)
+    }
+
+    #[test]
+    fn closing_a_tab_mid_press_never_closes_the_tab_that_slid_under_the_pointer() {
+        let mut tabs = three_tabs();
+        let mut strip = TabStrip::new(WIDTH);
+        // Press b's close button, Ctrl+W closes a, release on the same pixel.
+        let (x, y) = center(strip.close_rect(1, 3));
+        assert_eq!(strip.press(x, y, 3), None);
+        assert!(apply(&mut tabs, &mut strip, TabCommand::Close(0)));
+        assert_eq!(strip.release(x, y, tabs.len()), None);
+        assert_eq!(labels(&tabs), ["b", "c"]);
+
+        // Same with a middle press on b.
+        let mut tabs = three_tabs();
+        let (x, y) = center(strip.tab_rect(1, 3));
+        strip.press_middle(x, y, 3);
+        assert!(apply(&mut tabs, &mut strip, TabCommand::Close(0)));
+        assert_eq!(strip.release_middle(x, y, tabs.len()), None);
+        assert_eq!(labels(&tabs), ["b", "c"]);
+    }
+
+    #[test]
+    fn opening_a_tab_mid_press_cancels_the_press_too() {
+        let mut tabs = three_tabs();
+        tabs.close(2);
+        let mut strip = TabStrip::new(WIDTH);
+        let (x, y) = center(strip.close_rect(1, 2));
+        strip.press(x, y, 2);
+        let opened = apply_tab_command(
+            &mut tabs,
+            &mut strip,
+            TabCommand::New,
+            &|| Ok(browser("demo:///c.html")),
+            &mut None,
+        );
+        assert!(opened);
+        assert_eq!(strip.release(x, y, tabs.len()), None);
+        assert_eq!(labels(&tabs), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn commands_that_keep_the_tabs_leave_a_press_armed() {
+        // Switching tabs moves no tab, so the press still names the tab it
+        // was made on and its release closes exactly that tab.
+        let mut tabs = three_tabs();
+        let mut strip = TabStrip::new(WIDTH);
+        let (x, y) = center(strip.close_rect(1, 3));
+        strip.press(x, y, 3);
+        assert!(apply(&mut tabs, &mut strip, TabCommand::Next));
+        let release = strip.release(x, y, tabs.len());
+        assert_eq!(release, Some(TabCommand::Close(1)));
+        assert!(apply(&mut tabs, &mut strip, release.unwrap()));
+        assert_eq!(labels(&tabs), ["a", "c"]);
+
+        // A new tab refused at capacity adds nothing, so a middle press
+        // survives it and still closes the tab it was made on.
+        let mut narrow = TabStrip::new(200);
+        assert_eq!(narrow.capacity(), 2);
+        let (x, y) = center(narrow.tab_rect(1, 2));
+        narrow.press_middle(x, y, 2);
+        let mut notice = None;
+        assert!(apply_tab_command(
+            &mut tabs,
+            &mut narrow,
+            TabCommand::New,
+            &no_tab,
+            &mut notice
+        ));
+        assert!(notice.is_some_and(|n| n.contains("Tab limit")));
+        assert_eq!(
+            narrow.release_middle(x, y, tabs.len()),
+            Some(TabCommand::Close(1))
+        );
+    }
+
+    #[test]
+    fn closing_the_last_tab_reports_that_the_window_closes() {
+        let mut tabs = Tabs::new(browser("demo:///a.html"), WIDTH);
+        let mut strip = TabStrip::new(WIDTH);
+        assert!(!apply(&mut tabs, &mut strip, TabCommand::Close(0)));
     }
 }

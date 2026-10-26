@@ -872,7 +872,8 @@ cargo clippy --all-targets  # 0 warnings
   one tab are not shared with others (as with separate private windows). Tabs
   cannot be dragged or reopened once closed, links cannot be opened in a new
   tab, and the strip refuses new tabs once they would be narrower than 72px
-  rather than scrolling.
+  rather than scrolling. In a window too narrow to show a tab's ×, close the
+  tab with Ctrl+W or a middle click.
 - **Forms**: `POST` is recognised but refused rather than half-implemented (the
   loader only issues GETs); there is no `<select>` dropdown UI (the element is
   focusable and submits its `value`), no file inputs, no `multipart/form-data`,

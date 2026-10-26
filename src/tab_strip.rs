@@ -36,6 +36,9 @@ pub(crate) const MIN_TAB_WIDTH: f32 = 72.0;
 const NEW_TAB_SIZE: f32 = 24.0;
 const NEW_TAB_GAP: f32 = 4.0;
 const CLOSE_SIZE: f32 = 16.0;
+/// Narrower tabs (only possible in a tiny window) get no close button, so
+/// it cannot cover the whole tab; Ctrl+W and middle click still close them.
+const MIN_CLOSABLE_TAB_WIDTH: f32 = CLOSE_SIZE + 3.0 * LABEL_PADDING;
 const LABEL_PADDING: f32 = 10.0;
 const FONT_SIZE: f32 = 13.0;
 const ELLIPSIS: char = '…';
@@ -174,7 +177,7 @@ impl TabStrip {
             return Some(TabControl::NewTab);
         }
         (0..count).find_map(|index| {
-            if contains(self.close_rect(index, count), x, y) {
+            if self.has_close_button(count) && contains(self.close_rect(index, count), x, y) {
                 Some(TabControl::Close(index))
             } else if contains(self.tab_rect(index, count), x, y) {
                 Some(TabControl::Tab(index))
@@ -193,6 +196,17 @@ impl TabStrip {
 
     pub(crate) fn pointer_left(&mut self) {
         self.hovered = None;
+    }
+
+    /// Forget armed presses. Called whenever tabs are added or removed: an
+    /// armed index would now name a different tab.
+    pub(crate) fn cancel_press(&mut self) {
+        self.pressed = None;
+        self.middle_pressed = None;
+    }
+
+    fn has_close_button(&self, count: usize) -> bool {
+        self.tab_width(count) >= MIN_CLOSABLE_TAB_WIDTH
     }
 
     /// A left press in the strip. A tab is selected as soon as it is
@@ -301,7 +315,11 @@ impl TabStrip {
     ) {
         let tab = self.tab_rect(index, count);
         let left = tab.x + LABEL_PADDING;
-        let right = self.close_rect(index, count).x - 4.0;
+        let right = if self.has_close_button(count) {
+            self.close_rect(index, count).x - 4.0
+        } else {
+            tab.x + tab.width - LABEL_PADDING
+        };
         if right <= left {
             return;
         }
@@ -335,6 +353,9 @@ impl TabStrip {
     }
 
     fn paint_close(&self, canvas: &mut Canvas, index: usize, count: usize, active: bool) {
+        if !self.has_close_button(count) {
+            return;
+        }
         let rect = self.close_rect(index, count);
         if self.hovered == Some(TabControl::Close(index)) {
             canvas.paint(&DisplayCommand::RoundedRect(CONTROL_HOVER, rect, 4.0));
@@ -525,6 +546,60 @@ mod tests {
         let (px, py) = center(strip.new_tab_rect(3));
         strip.press_middle(px, py, 3);
         assert_eq!(strip.release_middle(px, py, 3), None);
+    }
+
+    #[test]
+    fn cancelled_presses_fire_nothing_on_release() {
+        let mut strip = TabStrip::new(WIDTH);
+        // Up to three tabs are full width, so after one closes the same pixel
+        // is the same control index again, now naming the next tab.
+        let (cx, cy) = center(strip.close_rect(1, 3));
+        assert_eq!(strip.press(cx, cy, 3), None);
+        strip.cancel_press();
+        assert_eq!(strip.control_at(cx, cy, 2), Some(TabControl::Close(1)));
+        assert_eq!(strip.release(cx, cy, 2), None);
+
+        let (tx, ty) = center(strip.tab_rect(1, 3));
+        strip.press_middle(tx, ty, 3);
+        strip.cancel_press();
+        assert_eq!(strip.release_middle(tx, ty, 2), None);
+
+        let (px, py) = center(strip.new_tab_rect(3));
+        strip.press(px, py, 3);
+        strip.cancel_press();
+        assert_eq!(strip.release(px, py, 3), None);
+
+        // Cancelling leaves later presses working normally.
+        strip.press(cx, cy, 2);
+        assert_eq!(strip.release(cx, cy, 2), Some(TabCommand::Close(1)));
+        strip.press_middle(tx, ty, 2);
+        assert_eq!(strip.release_middle(tx, ty, 2), Some(TabCommand::Close(1)));
+    }
+
+    #[test]
+    fn a_tab_too_narrow_for_its_close_button_has_none() {
+        // A 60px window: the only tab is 20px wide.
+        let mut strip = TabStrip::new(60);
+        let tab = strip.tab_rect(0, 1);
+        assert!(tab.width < MIN_CLOSABLE_TAB_WIDTH);
+        for x in [
+            tab.x + 1.0,
+            tab.x + tab.width / 2.0,
+            tab.x + tab.width - 1.0,
+        ] {
+            assert_eq!(strip.control_at(x, 18.0, 1), Some(TabControl::Tab(0)));
+            assert_eq!(strip.press(x, 18.0, 1), Some(TabCommand::Select(0)));
+            assert_eq!(strip.release(x, 18.0, 1), None, "no close on release");
+        }
+        // Nothing dark is drawn inside the tab: no cross over the label area.
+        let canvas = strip.paint(&[String::new()], 0);
+        for y in tab.y as usize..(tab.y + tab.height) as usize {
+            for x in tab.x as usize..(tab.x + tab.width) as usize {
+                assert!(pixel(&canvas, x as f32, y as f32).r > 128, "({x},{y})");
+            }
+        }
+        // Normal widths keep it.
+        assert!(TabStrip::new(WIDTH).has_close_button(TabStrip::new(WIDTH).capacity()));
     }
 
     // ── Window routing ────────────────────────────────────────────────────

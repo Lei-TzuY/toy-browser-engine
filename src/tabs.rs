@@ -330,15 +330,40 @@ impl Tabs {
 /// Ctrl+1…9). Those keys belong to the window and never reach the address
 /// field or the page, including auto-repeats and the character a platform
 /// may report alongside the physical key.
-pub(crate) fn is_tab_shortcut_key(event: &KeyEvent) -> bool {
+///
+/// `ctrl_recent` says Ctrl was held this frame or the one before, for an
+/// event stamped without Ctrl because Ctrl came up in the same frame.
+pub(crate) fn is_tab_shortcut_key(event: &KeyEvent, ctrl_recent: bool) -> bool {
     let modifiers = event.modifiers;
-    if !modifiers.ctrl || modifiers.alt {
+    if !(modifiers.ctrl || ctrl_recent) || modifiers.alt {
         return false;
     }
     match &event.key {
         Key::Tab => true,
         Key::Character(c) => matches!(c, 't' | 'T' | 'w' | 'W' | '1'..='9'),
         _ => false,
+    }
+}
+
+/// Removes tab shortcut keys from each frame's key events.
+///
+/// Events are stamped with the modifiers sampled once per frame, so the last
+/// auto-repeat of a held Ctrl+Tab or Ctrl+digit can arrive without Ctrl when
+/// Ctrl is released in the same frame. Remembering whether Ctrl was down in
+/// the previous frame keeps that stray repeat out of the page and the address
+/// field; Tab and digits typed after that one-frame boundary pass through.
+#[derive(Debug, Default)]
+pub(crate) struct ShortcutKeyFilter {
+    ctrl_last_frame: bool,
+}
+
+impl ShortcutKeyFilter {
+    /// Filter one frame's events, with `ctrl_held` sampled this frame.
+    pub(crate) fn filter(&mut self, ctrl_held: bool, mut events: Vec<KeyEvent>) -> Vec<KeyEvent> {
+        let ctrl_recent = ctrl_held || self.ctrl_last_frame;
+        self.ctrl_last_frame = ctrl_held;
+        events.retain(|event| !is_tab_shortcut_key(event, ctrl_recent));
+        events
     }
 }
 
@@ -744,7 +769,7 @@ mod tests {
             with(Key::Character('1'), ctrl),
             with(Key::Character('9'), ctrl),
         ] {
-            assert!(is_tab_shortcut_key(&event), "{event:?}");
+            assert!(is_tab_shortcut_key(&event, false), "{event:?}");
         }
         for event in [
             key(Key::Tab),
@@ -756,7 +781,60 @@ mod tests {
             // AltGr reports Ctrl+Alt; its characters are text.
             with(Key::Character('w'), alt_gr),
         ] {
-            assert!(!is_tab_shortcut_key(&event), "{event:?}");
+            assert!(!is_tab_shortcut_key(&event, false), "{event:?}");
         }
+    }
+
+    #[test]
+    fn a_repeat_stamped_after_ctrl_came_up_is_still_dropped() {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        let mut filter = ShortcutKeyFilter::default();
+        // Ctrl+Tab and Ctrl+1 held: their repeats carry Ctrl and are dropped.
+        let held = vec![
+            KeyEvent::with_modifiers(Key::Tab, ctrl),
+            KeyEvent::with_modifiers(Key::Character('1'), ctrl),
+        ];
+        assert!(filter.filter(true, held).is_empty());
+        // Ctrl and the key come up in the same frame: the last queued repeat
+        // is stamped without Ctrl (the modifiers are sampled after release).
+        let stale = vec![
+            key(Key::Tab),
+            key(Key::Character('1')),
+            key(Key::Character('7')),
+        ];
+        assert!(filter.filter(false, stale).is_empty(), "release frame");
+        // From the next frame on, Tab and digits are ordinary input again.
+        let typed = vec![key(Key::Tab), key(Key::Character('1'))];
+        assert_eq!(filter.filter(false, typed.clone()), typed);
+    }
+
+    #[test]
+    fn ordinary_typing_passes_the_shortcut_filter_untouched() {
+        let mut filter = ShortcutKeyFilter::default();
+        let mut typed = chars("tw 1234567890 Tab");
+        typed.push(key(Key::Tab));
+        typed.push(KeyEvent::with_modifiers(
+            Key::Tab,
+            Modifiers {
+                shift: true,
+                ..Modifiers::NONE
+            },
+        ));
+        for _ in 0..3 {
+            assert_eq!(filter.filter(false, typed.clone()), typed);
+        }
+        // Other Ctrl keys are not tab shortcuts, held or just released.
+        let ctrl_l = KeyEvent::with_modifiers(
+            Key::Character('l'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        );
+        assert_eq!(filter.filter(true, vec![ctrl_l.clone()]), vec![ctrl_l]);
+        assert_eq!(filter.filter(false, chars("ab")), chars("ab"));
     }
 }
