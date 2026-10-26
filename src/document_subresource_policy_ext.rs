@@ -18,9 +18,25 @@ impl Document {
         storage: Option<crate::script::interp::StorageRef>,
         cookie_jar: Option<crate::cookie_network::CookieJarRef>,
     ) -> Document {
+        Document::from_response_with_session_subresources_in_site(
+            response, navigation, storage, cookie_jar, None,
+        )
+    }
+
+    /// As [`Document::from_response_with_session_subresources`], for a page of
+    /// the session opened at `site`: its subresources are held to the local
+    /// root that gives it (see [`Requester`]).
+    pub fn from_response_with_session_subresources_in_site(
+        response: &crate::net::FetchResponse,
+        navigation: &crate::navigation_network::NavigationNetwork,
+        storage: Option<crate::script::interp::StorageRef>,
+        cookie_jar: Option<crate::cookie_network::CookieJarRef>,
+        site: Option<&Url>,
+    ) -> Document {
         let html = String::from_utf8_lossy(&response.body);
         let mut dom = crate::html::parse_html(&html);
         let base_url = base_url_of(&dom, &response.url);
+        let requester = Requester::new(&response.url, site);
         let mut diagnostics = Vec::new();
 
         seed_textarea_values(&mut dom);
@@ -37,20 +53,31 @@ impl Document {
             &base_url,
             navigation,
             &referrer,
+            &requester,
             &mut diagnostics,
         );
         // Parser-time stylesheet links were prepared by the collection pass.
         // Freeze that fact before scripts can add new links to the live tree.
         mark_existing_stylesheet_links_started(&mut dom);
 
+        // The runtime is the document at its response URL; `base_url` only
+        // resolves references.
+        let mut runtime = JsRuntime::for_document(response.url.clone(), base_url.clone());
+        runtime.referrer_source = referrer.source().cloned();
+        runtime.referrer_policy = referrer.policy();
+        if let Some(storage) = storage {
+            runtime.local_storage = storage;
+        }
+        if let Some(cookie_jar) = cookie_jar {
+            runtime.cookie_jar = cookie_jar;
+        }
         let runtime = run_scripts_with_subresource_policy(
             &mut dom,
-            &base_url,
             navigation,
             &referrer,
+            &requester,
             &mut diagnostics,
-            storage,
-            cookie_jar,
+            runtime,
         );
 
         let mut document = Document {
@@ -60,6 +87,7 @@ impl Document {
             stylesheet,
             runtime,
             images: ImageCache::new(),
+            requester,
             diagnostics,
             focus: None,
             deferred_submission: None,
@@ -135,6 +163,7 @@ impl Document {
                     match fetch_document_subresource(
                         navigation,
                         referrer,
+                        &self.requester,
                         &url,
                         crossorigin.as_deref(),
                         referrerpolicy.as_deref(),
@@ -166,6 +195,7 @@ impl Document {
                     match fetch_document_subresource(
                         navigation,
                         referrer,
+                        &self.requester,
                         &url,
                         crossorigin.as_deref(),
                         referrerpolicy.as_deref(),
@@ -210,6 +240,7 @@ impl Document {
             match fetch_document_subresource(
                 navigation,
                 referrer,
+                &self.requester,
                 &url,
                 source.crossorigin.as_deref(),
                 source.referrerpolicy.as_deref(),
@@ -252,6 +283,7 @@ fn collect_stylesheet_with_subresource_policy(
     base_url: &Url,
     navigation: &crate::navigation_network::NavigationNetwork,
     referrer: &crate::document_referrer::DocumentReferrerContext,
+    requester: &Requester,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Stylesheet {
     let mut stylesheet = parse_css(UA_STYLESHEET);
@@ -278,6 +310,7 @@ fn collect_stylesheet_with_subresource_policy(
                 match fetch_document_subresource(
                     navigation,
                     referrer,
+                    requester,
                     &url,
                     crossorigin.as_deref(),
                     referrerpolicy.as_deref(),
@@ -379,14 +412,15 @@ enum PolicyScriptSource {
     },
 }
 
+/// Run parser-time scripts in `runtime`, which the caller has already bound to
+/// the document and its session state.
 fn run_scripts_with_subresource_policy(
     dom: &mut Node,
-    base_url: &Url,
     navigation: &crate::navigation_network::NavigationNetwork,
     referrer: &crate::document_referrer::DocumentReferrerContext,
+    requester: &Requester,
     diagnostics: &mut Vec<Diagnostic>,
-    storage: Option<crate::script::interp::StorageRef>,
-    cookie_jar: Option<crate::cookie_network::CookieJarRef>,
+    mut runtime: JsRuntime,
 ) -> JsRuntime {
     // Snapshot parser-time sources, then mark every parser-created script as
     // already prepared before execution. Scripts created by those scripts are
@@ -394,16 +428,7 @@ fn run_scripts_with_subresource_policy(
     let sources = policy_script_sources(dom);
     mark_existing_scripts_started(dom);
 
-    let mut runtime = JsRuntime::new();
-    runtime.url = base_url.clone();
-    runtime.referrer_source = referrer.source().cloned();
-    runtime.referrer_policy = referrer.policy();
-    if let Some(storage) = storage {
-        runtime.local_storage = storage;
-    }
-    if let Some(cookie_jar) = cookie_jar {
-        runtime.cookie_jar = cookie_jar;
-    }
+    let base_url = runtime.base_url().clone();
 
     for source in sources {
         match source {
@@ -423,6 +448,7 @@ fn run_scripts_with_subresource_policy(
                 match fetch_document_subresource(
                     navigation,
                     referrer,
+                    requester,
                     &url,
                     crossorigin.as_deref(),
                     referrerpolicy.as_deref(),
@@ -602,10 +628,18 @@ fn policy_image_sources(dom: &Node) -> Vec<PolicyImageSource> {
 fn fetch_document_subresource(
     navigation: &crate::navigation_network::NavigationNetwork,
     referrer: &crate::document_referrer::DocumentReferrerContext,
+    requester: &Requester,
     url: &Url,
     crossorigin: Option<&str>,
     referrerpolicy: Option<&str>,
 ) -> Result<crate::net::FetchResponse, String> {
+    // The same boundary as the standalone path (`net::scope`): first the URL,
+    // then, for `file:`, the opened file — `FileLoader` reads a request with a
+    // local initiator beneath that initiator's directory, here the page's
+    // local root.
+    requester
+        .authorize(url)
+        .map_err(|error| error.to_string())?;
     let effective_target = navigation.effective_url(url);
     let same_site = referrer.source().is_some_and(|source| {
         source.scheme() == effective_target.scheme()
@@ -616,7 +650,12 @@ fn fetch_document_subresource(
         false,
         crate::net::Method::Get,
     );
-    let request = crate::net::FetchRequest::get(url.clone());
+    let mut request = crate::net::FetchRequest::get(url.clone());
+    if url.scheme() == "file" {
+        if let Some(root) = requester.local_root() {
+            request.initiator = Some(crate::net::Origin::of(root));
+        }
+    }
     let response = referrer
         .fetch_subresource_with_cors_credentials(
             navigation,

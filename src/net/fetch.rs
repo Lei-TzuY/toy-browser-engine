@@ -359,6 +359,39 @@ impl Origin {
     }
 }
 
+/// Does the file `target` names live, on disk, inside the directory of the
+/// `file:` document at `document`?
+///
+/// [`Origin::can_fetch`] compares URL spellings, but the disk follows symbolic
+/// links: `escape.txt` in the page's directory may be a link to a file
+/// anywhere. This resolves both sides first. A target that does not exist yet
+/// is judged by its deepest existing ancestor, so a missing file is still a
+/// 404 rather than a refusal; anything that cannot be resolved is refused.
+///
+/// This is the check at request time, so a page hears "blocked" as soon as
+/// it calls `fetch()`. It is not the last word: `FileLoader` checks the file
+/// again after opening it (`net::scope::read_within`, which says what that
+/// check covers), so a link swapped in after this one runs is refused there.
+pub fn file_target_stays_in_directory(document: &Url, target: &Url) -> bool {
+    // `.` is the document's directory as `Origin::of` sees it, trailing slash
+    // and all, so this check and the lexical one agree on what "inside" is.
+    let directory = document.join(".").ok().and_then(|dir| dir.to_file_path());
+    let (Some(directory), Some(target)) = (directory, target.to_file_path()) else {
+        return false;
+    };
+    let Ok(directory) = directory.canonicalize() else {
+        return false;
+    };
+    for existing in target.ancestors() {
+        match existing.canonicalize() {
+            Ok(resolved) => return resolved.starts_with(&directory),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 fn default_port(scheme: &str) -> u16 {
     match scheme {
         "https" => 443,
@@ -378,6 +411,11 @@ pub struct FetchRequest {
     pub method: Method,
     pub headers: HeaderMap,
     pub body: Option<Vec<u8>>,
+    /// The document whose same-origin policy governs this request — set for a
+    /// script's `fetch()`, so every redirect is checked as if the page had
+    /// asked for its target directly. `None` for navigation, which may be
+    /// redirected anywhere.
+    pub initiator: Option<Origin>,
 }
 
 impl FetchRequest {
@@ -387,6 +425,7 @@ impl FetchRequest {
             method: Method::Get,
             headers: HeaderMap::new(),
             body: None,
+            initiator: None,
         }
     }
 
@@ -401,6 +440,7 @@ impl FetchRequest {
             method,
             headers,
             body,
+            initiator: None,
         }
     }
 }
@@ -1274,6 +1314,18 @@ mod tests {
             !origin.can_fetch(&url("demo:///secrets.txt")),
             "a local page must not climb out of its directory"
         );
+    }
+
+    #[test]
+    fn a_local_page_cannot_climb_out_with_percent_encoded_dots() {
+        let page = url("file:///home/user/site/index.html");
+        let origin = Origin::of(&page);
+        for reference in ["%2e%2e/secret.txt", "%2E%2E/secret.txt", ".%2e/secret.txt"] {
+            assert!(
+                !origin.can_fetch(&page.join(reference).unwrap()),
+                "{reference} escaped the directory"
+            );
+        }
     }
 
     #[test]

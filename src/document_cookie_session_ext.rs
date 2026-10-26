@@ -37,15 +37,19 @@ impl Document {
     ) -> Document {
         let mut dom = crate::html::parse_html(html);
         let base_url = base_url_of(&dom, url);
+        // No session URL here: the page's own directory is its local root.
+        let requester = Requester::new(url, None);
         let mut diagnostics = Vec::new();
 
         seed_textarea_values(&mut dom);
 
-        let stylesheet = collect_stylesheet(&dom, &base_url, loader, &mut diagnostics);
+        let subresources = SubresourceLoader::new(loader, &requester);
+        let stylesheet = collect_stylesheet(&dom, &base_url, &subresources, &mut diagnostics);
         let runtime = run_scripts_with_session_state(
             &mut dom,
+            url,
             &base_url,
-            loader,
+            &subresources,
             &mut diagnostics,
             storage,
             cookie_jar,
@@ -58,6 +62,7 @@ impl Document {
             stylesheet,
             runtime,
             images: ImageCache::new(),
+            requester,
             diagnostics,
             focus: None,
             deferred_submission: None,
@@ -76,6 +81,7 @@ impl Document {
 /// pre-collected document-order script list.
 fn run_scripts_with_session_state(
     dom: &mut Node,
+    document_url: &Url,
     base_url: &Url,
     loader: &dyn ResourceLoader,
     diagnostics: &mut Vec<Diagnostic>,
@@ -83,8 +89,7 @@ fn run_scripts_with_session_state(
     cookie_jar: Option<crate::cookie_network::CookieJarRef>,
 ) -> JsRuntime {
     let sources = script_sources(dom);
-    let mut runtime = JsRuntime::new();
-    runtime.url = base_url.clone();
+    let mut runtime = JsRuntime::for_document(document_url.clone(), base_url.clone());
     if let Some(storage) = storage {
         runtime.local_storage = storage;
     }

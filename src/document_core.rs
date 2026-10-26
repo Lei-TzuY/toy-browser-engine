@@ -26,7 +26,9 @@ use crate::forms::{self, Submission};
 use crate::image::{ImageCache, RasterImage};
 use crate::input::{FocusDirection, Key, KeyEvent};
 use crate::layout::{layout_tree_with, LayoutBox};
-use crate::net::{LoadError, NetworkBackend, OfflineNetwork, ResourceLoader, Url};
+use crate::net::{
+    LoadError, NetworkBackend, OfflineNetwork, Requester, ResourceLoader, SubresourceLoader, Url,
+};
 use crate::paint::{paint_with_scroll, Canvas};
 use crate::script::interp::{EventInit, EventOutcome, JsValue, PendingAction};
 use crate::script::{dom_api, JsRuntime, NodePath};
@@ -165,6 +167,9 @@ pub struct Document {
     /// listeners are still there when events fire.
     pub runtime: JsRuntime,
     pub images: ImageCache,
+    /// Who this page is when it asks for a subresource, and which part of the
+    /// disk it may read. Every stylesheet, script and image goes through it.
+    requester: Requester,
     /// Subresources that failed to load or decode.
     pub diagnostics: Vec<Diagnostic>,
     /// The focused element, kept as a stable id so DOM mutations cannot
@@ -198,8 +203,27 @@ impl Document {
         loader: &dyn ResourceLoader,
         storage: Option<crate::script::interp::StorageRef>,
     ) -> Result<Document, LoadError> {
+        Document::load_in_site(url, loader, storage, None)
+    }
+
+    /// Fetch `url` as a page of the session opened at `site`.
+    ///
+    /// The page itself is loaded unconditionally — choosing it is navigation.
+    /// What it then loads is held to its local root (see [`Requester`]).
+    pub fn load_in_site(
+        url: &Url,
+        loader: &dyn ResourceLoader,
+        storage: Option<crate::script::interp::StorageRef>,
+        site: Option<&Url>,
+    ) -> Result<Document, LoadError> {
         let resource = loader.load(url)?;
-        Ok(Document::from_html_with_storage(&resource.text(), &resource.url, loader, storage))
+        Ok(Document::from_html_in_site(
+            &resource.text(),
+            &resource.url,
+            loader,
+            storage,
+            site,
+        ))
     }
 
     /// Build a document from HTML that has already been fetched.
@@ -217,14 +241,28 @@ impl Document {
         loader: &dyn ResourceLoader,
         storage: Option<crate::script::interp::StorageRef>,
     ) -> Document {
+        Document::from_html_in_site(html, url, loader, storage, None)
+    }
+
+    /// Build a document from fetched HTML, as a page of the session opened at
+    /// `site`.
+    pub fn from_html_in_site(
+        html: &str,
+        url: &Url,
+        loader: &dyn ResourceLoader,
+        storage: Option<crate::script::interp::StorageRef>,
+        site: Option<&Url>,
+    ) -> Document {
         let mut dom = crate::html::parse_html(html);
         let base_url = base_url_of(&dom, url);
+        let requester = Requester::new(url, site);
         let mut diagnostics = Vec::new();
 
         // A textarea's initial value is its text content, not an attribute.
         seed_textarea_values(&mut dom);
 
-        let stylesheet = collect_stylesheet(&dom, &base_url, loader, &mut diagnostics);
+        let subresources = SubresourceLoader::new(loader, &requester);
+        let stylesheet = collect_stylesheet(&dom, &base_url, &subresources, &mut diagnostics);
         let referrer_policy = crate::referrer_meta::apply_meta_referrer_policies(
             &dom,
             crate::referrer_policy::ReferrerPolicy::default(),
@@ -234,7 +272,7 @@ impl Document {
             &base_url,
             url,
             referrer_policy,
-            loader,
+            &subresources,
             &mut diagnostics,
             storage,
         );
@@ -246,6 +284,7 @@ impl Document {
             stylesheet,
             runtime,
             images: ImageCache::new(),
+            requester,
             diagnostics,
             focus: None,
             deferred_submission: None,
@@ -266,6 +305,7 @@ impl Document {
     /// Called after loading and after scripts mutate the DOM, so images added
     /// at runtime are painted too.
     pub fn refresh_images(&mut self, loader: &dyn ResourceLoader) {
+        let loader = SubresourceLoader::new(loader, &self.requester);
         for source in image_sources(&self.dom) {
             let Ok(url) = self.base_url.join(&source) else {
                 self.diagnostics.push(Diagnostic {
@@ -277,7 +317,7 @@ impl Document {
             if self.images.get(&url).is_some() || self.images.error(&url).is_some() {
                 continue;
             }
-            if let Err(message) = self.images.fetch(&url, loader) {
+            if let Err(message) = self.images.fetch(&url, &loader) {
                 self.diagnostics.push(Diagnostic {
                     url: url.to_string(),
                     message,
@@ -1161,6 +1201,9 @@ fn style_sources(dom: &Node) -> Vec<StyleSource> {
 }
 
 /// Run every `<script>` in document order through one runtime.
+///
+/// The runtime is the document at `document_url`; `base_url` only resolves
+/// references.
 fn run_scripts(
     dom: &mut Node,
     base_url: &Url,
@@ -1173,8 +1216,7 @@ fn run_scripts(
     // Sources are collected before execution: a script may restructure the DOM
     // underneath us, and the document-order list is fixed at parse time.
     let sources = script_sources(dom);
-    let mut runtime = JsRuntime::new();
-    runtime.url = base_url.clone();
+    let mut runtime = JsRuntime::for_document(document_url.clone(), base_url.clone());
     runtime.referrer_source = Some(document_url.clone());
     runtime.referrer_policy = referrer_policy;
     if let Some(s) = storage {

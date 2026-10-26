@@ -551,24 +551,81 @@ means it never starts; aborting after it completes does nothing.
 
 ### Origins
 
-The engine enforces same-origin and does not implement CORS. There is no
-preflight, no `Access-Control-Allow-Origin` handling, and no opaque response.
+A page's `fetch()` follows its request `mode`. Between `http:`/`https:`
+origins, `"cors"` (the default) sends a CORS request carrying the page's
+`Origin` (with an `OPTIONS` preflight when the method or headers are not
+CORS-safelisted) and lets the script read the response only if the other
+origin allows it; `"no-cors"` returns an opaque response; `"same-origin"`
+refuses another origin before anything is sent. Local pages never cross
+origins:
 
 | Document | May fetch |
 | --- | --- |
-| `http://host:port/…` | the same scheme, host and port, and nothing else |
+| `http://host:port/…` | its own origin; another `http(s)` origin only as above |
 | `file:` / `demo:` | the same scheme, confined to its own directory subtree |
+
+"Document" is the URL the page was loaded from, after redirects. A `<base
+href>` changes what a relative `fetch("x")` resolves to, not who is asking:
+`<base href="../">`, `<base href="/">` or a base on another host or port does
+not widen what the page may fetch, and `location` and `document.cookie` keep
+reporting the page's own URL.
+
+Subresources — `<script src>`, `<link rel=stylesheet>`, `<img src>`, including
+images a script adds later — follow web rules for the network and a separate
+rule for the disk, because the page chooses what they load:
+
+| Document | `file:` subresources | `http:` / in-memory subresources |
+| --- | --- | --- |
+| `file:` | only beneath its *local root* | any |
+| anything else | never | any |
+
+The local root is the directory the session was opened at, for a page inside
+it, so `pages/about.html` can still use the site's `../css/site.css`; any
+other `file:` page (opened on its own, or reached by a link out of the site)
+gets its own directory. Navigating to a page is not a subresource load and is
+not restricted.
+
+The local root and the `fetch()` directory differ on purpose. `fetch()` hands
+the response bytes to the page's script, so it keeps the stricter rule in the
+first table: the page's own directory. Subresources are run or rendered, and a
+site's pages need to share assets, so they get the possibly wider local root.
+`pages/about.html` may use `../css/site.css` as a stylesheet but may not
+`fetch("../css/site.css")`.
+
+The subresource rule is checked on the URL, and again after the file is opened
+(`net::scope::read_within`): a file whose resolved path leads outside the root
+— through a symbolic link, a junction or an escaped `%2e%2e` — is refused, and
+so is one whose path no longer names the file that was opened. That second
+check runs in the engine after the open; it is not confinement enforced by the
+kernel. The open itself can still follow a link out of the root (a FIFO can
+block, a device can react to being opened), and a hard link inside the root
+counts as inside.
 
 So a local page can read a sibling `api/data.json` but not `../secrets.txt`,
 and a page served over HTTP can never read `file:///etc/passwd`. Real browsers
 treat `file:` as opaque; the directory rule here is a deliberate simplification
 that keeps the fixture site usable while still bounding what a page can reach.
+For `file:` the rule applies to where the disk resolves a path, not to how
+the URL spells it: a symbolic link inside the directory that leads outside it
+is refused. The check runs when `fetch()` is called, and again after the
+network phase opens the file: the same `read_within` check as subresources,
+against the page's own directory rather than the local root. A link or
+junction swapped in between the two is refused. As for subresources, that
+second check is made by the engine after the open, not enforced by the
+kernel.
 
-`mode` accepts `"cors"` and `"same-origin"` — both enforced as same-origin,
-because there is no preflight to make `cors` mean more — and rejects anything
-else rather than pretending. `credentials` accepts `"same-origin"` and
-`"omit"`; `"include"` is rejected, because there are **no cookies at all** in
-this engine: no jar, no `Set-Cookie`, no `document.cookie`.
+The mode is applied at every redirect hop, not only to the URL the script
+wrote: a `"same-origin"` fetch whose redirect leads to another origin rejects
+as blocked before the redirected request is sent, and a `"cors"` fetch
+redirected to another origin is checked as a CORS request there. Navigation is
+not a script reading a response, so it may still be redirected anywhere. A
+redirect that changes origin drops `Authorization` and `Proxy-Authorization`;
+`Cookie` is never copied from one hop to the next; and a redirect that turns the request into a
+`GET` drops the body and its `Content-*` headers.
+
+`credentials` accepts `"omit"`, `"same-origin"` and `"include"`. Cookies come
+from the browsing session's jar (`Set-Cookie`, `document.cookie`, `SameSite`);
+`"include"` is limited to `http(s)` requests.
 
 ### Errors
 

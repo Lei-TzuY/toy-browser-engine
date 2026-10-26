@@ -89,6 +89,9 @@ pub struct Browser {
     /// Loop time at which the current document started, so `performance.now()`
     /// and frame timestamps are measured from page load.
     document_epoch_ms: f64,
+    /// The URL the session was opened at. A local page inside its directory
+    /// may load subresources from anywhere in that directory.
+    site: Url,
     /// Origin-scoped persistent localStorage pools shared across navigation.
     pub local_storage_pool: Rc<RefCell<HashMap<String, StorageRef>>>,
 }
@@ -207,11 +210,12 @@ impl Browser {
             .clone();
 
         let network: Rc<dyn NetworkBackend> = Rc::new(session_network);
-        let mut document = Document::from_response_with_session_subresources(
+        let mut document = Document::from_response_with_session_subresources_in_site(
             &initial,
             &navigation,
             Some(storage),
             Some(cookie_jar.clone()),
+            Some(url),
         );
         document.set_network(network.clone());
         let epoch = clock.now_ms();
@@ -226,6 +230,7 @@ impl Browser {
             document_referrer,
             clock,
             document_epoch_ms: epoch,
+            site: url.clone(),
             local_storage_pool: pool,
         })
     }
@@ -293,11 +298,12 @@ impl Browser {
         let document_referrer = committed_referrer_context_from_response(&response);
         let final_url = response.url.clone();
         let storage = self.storage_for_url(&final_url);
-        let document = Document::from_response_with_session_subresources(
+        let document = Document::from_response_with_session_subresources_in_site(
             &response,
             &self.navigation,
             Some(storage),
             Some(self.cookie_jar.clone()),
+            Some(&self.site),
         );
         Ok((document, final_url, document_referrer))
     }
@@ -336,11 +342,12 @@ impl Browser {
         let document_referrer = committed_referrer_context_from_response(&response);
         let final_url = response.url.clone();
         let storage = self.storage_for_url(&final_url);
-        let document = Document::from_response_with_session_subresources(
+        let document = Document::from_response_with_session_subresources_in_site(
             &response,
             &self.navigation,
             Some(storage),
             Some(self.cookie_jar.clone()),
+            Some(&self.site),
         );
         Ok((document, final_url, document_referrer))
     }
@@ -915,11 +922,12 @@ impl Browser {
                 let document_referrer = committed_referrer_context_from_response(&response);
                 let final_url = response.url.clone();
                 let storage = self.storage_for_url(&final_url);
-                let document = Document::from_response_with_session_subresources(
+                let document = Document::from_response_with_session_subresources_in_site(
                     &response,
                     &self.navigation,
                     Some(storage),
                     Some(self.cookie_jar.clone()),
+                    Some(&self.site),
                 );
                 self.replace_document(document, document_referrer);
                 self.history.truncate(self.index + 1);

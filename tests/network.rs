@@ -58,7 +58,12 @@ struct TestServer {
 impl TestServer {
     /// Serve each canned response in turn.
     fn serving(responses: Vec<String>) -> TestServer {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        TestServer::serving_on(bind_loopback(), responses)
+    }
+
+    /// Serve on a listener bound earlier, for servers whose answers must name
+    /// each other's ports.
+    fn serving_on(listener: TcpListener, responses: Vec<String>) -> TestServer {
         // The port is known the moment `bind` returns, so the client never has
         // to wait for the server to "be ready".
         let port = listener.local_addr().expect("local address").port();
@@ -86,6 +91,10 @@ impl TestServer {
     fn finish(self) -> Vec<Received> {
         self.worker.join().expect("server thread")
     }
+}
+
+fn bind_loopback() -> TcpListener {
+    TcpListener::bind("127.0.0.1:0").expect("bind loopback")
 }
 
 /// Read one request: the head, then exactly `Content-Length` body bytes.
@@ -660,4 +669,357 @@ fn text_of(browser: &Browser, selector: &str) -> String {
     let path = dom_api::query_selector(&browser.document().dom, &[], selector)
         .unwrap_or_else(|| panic!("no element matched {selector}"));
     dom_api::text_content(dom_api::node_at(&browser.document().dom, &path).expect("node"))
+}
+
+// ── Redirects across origins ──────────────────────────────────────────────────
+//
+// Two loopback listeners on different ports are two origins. A page served
+// from one may fetch only from it; a navigation may go anywhere.
+
+fn redirect(status: u16, location: &str) -> String {
+    format!("HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
+}
+
+/// Finish a server the client may never have contacted.
+///
+/// A server blocks in `accept()` until its quota of requests arrives, so to
+/// prove that nothing came, one sentinel connection releases it and is then
+/// left out of what is reported. No timeout, so no guessing.
+fn finish_possibly_unused(server: TestServer) -> Vec<Received> {
+    const SENTINEL: &str = "GET /__test_sentinel__ HTTP/1.1";
+    if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", server.port)) {
+        let _ = stream.write_all(format!("{SENTINEL}\r\n\r\n").as_bytes());
+    }
+    server
+        .finish()
+        .into_iter()
+        .filter(|received| received.request_line() != SENTINEL)
+        .collect()
+}
+
+/// A page from `origin`'s memory whose script runs at load.
+fn open_page_on(origin: &TestServer, script: &str) -> Browser {
+    let page_url = origin.url("/index.html");
+    let mut memory = browser_engine::net::MemoryLoader::new();
+    memory.insert(
+        page_url.to_string(),
+        format!(r#"<p id="status">idle</p><script>{script}</script>"#),
+    );
+    let mut browser = Browser::open_with_clock(
+        Box::new(DefaultLoader::new().with_memory(memory)),
+        &page_url,
+        Rc::new(ManualClock::new()),
+    )
+    .expect("page loads");
+    browser.document_mut().runtime.quiet = true;
+    browser
+}
+
+const REPORT_TEXT: &str = r#"
+    .then(function (r) { return r.text().then(function (t) {
+        document.getElementById("status").textContent =
+            "read " + r.status + " from " + r.url + " redirected=" + r.redirected + ": " + t;
+    }); })
+    .catch(function (e) { document.getElementById("status").textContent = "rejected: " + e; });"#;
+
+/// A same-origin-mode fetch never reaches another origin: the hop is refused
+/// before it is sent. (The default mode is CORS, where the hop is sent without
+/// credentials and its response stays unreadable; see the test below.)
+#[test]
+fn a_page_fetch_does_not_follow_a_redirect_to_another_origin() {
+    let other = TestServer::serving(vec![ok_json(r#"{"secret":"other origin"}"#)]);
+    let page_origin =
+        TestServer::serving(vec![redirect(302, &other.url("/secret.json").to_string())]);
+
+    let mut browser = open_page_on(
+        &page_origin,
+        &format!(
+            r#"fetch("/api/data.json", {{ mode: "same-origin", headers: {{ "Authorization": "Bearer page-token" }} }}){REPORT_TEXT}"#
+        ),
+    );
+    browser.settle_network(200);
+
+    let status = text_of(&browser, "#status");
+    assert!(
+        status.starts_with("rejected: TypeError") && status.contains("same-origin policy"),
+        "a cross-origin redirect must fail like a cross-origin fetch: {status}"
+    );
+    assert!(
+        !status.contains("other origin"),
+        "the other origin's body leaked: {status}"
+    );
+
+    let asked = page_origin.finish();
+    assert_eq!(asked[0].request_line(), "GET /api/data.json HTTP/1.1");
+    let reached = finish_possibly_unused(other);
+    assert!(
+        reached.is_empty(),
+        "the redirect must be refused before it is followed, got {reached:?}"
+    );
+}
+
+/// In the default CORS mode a cross-origin hop is followed, as Fetch does, but
+/// it carries the page's own origin and none of its credentials, and the
+/// response stays unreadable unless the other origin opts in.
+#[test]
+fn a_cors_fetch_redirected_to_another_origin_is_unreadable_and_uncredentialed() {
+    let other = TestServer::serving(vec![ok_json(r#"{"secret":"other origin"}"#)]);
+    let page_origin =
+        TestServer::serving(vec![redirect(302, &other.url("/secret.json").to_string())]);
+    let page = format!("http://127.0.0.1:{}", page_origin.port);
+
+    let mut browser = open_page_on(
+        &page_origin,
+        &format!(
+            r#"fetch("/api/data.json", {{ headers: {{ "Authorization": "Bearer page-token" }} }}){REPORT_TEXT}"#
+        ),
+    );
+    browser.settle_network(200);
+
+    let status = text_of(&browser, "#status");
+    assert!(status.starts_with("rejected: TypeError"), "{status}");
+    assert!(
+        !status.contains("other origin"),
+        "the other origin's body leaked: {status}"
+    );
+
+    page_origin.finish();
+    for hop in finish_possibly_unused(other) {
+        assert_eq!(
+            hop.header("authorization"),
+            None,
+            "credential forwarded: {hop:?}"
+        );
+        assert_eq!(hop.header("cookie"), None, "cookie forwarded: {hop:?}");
+        assert_eq!(
+            hop.header("origin").as_deref(),
+            Some(page.as_str()),
+            "{hop:?}"
+        );
+    }
+}
+
+#[test]
+fn a_page_fetch_still_follows_a_same_origin_redirect() {
+    let origin = TestServer::serving(vec![
+        redirect(302, "/final.json"),
+        ok_json(r#"{"same":"origin"}"#),
+    ]);
+    let final_url = origin.url("/final.json");
+
+    let mut browser = open_page_on(&origin, &format!(r#"fetch("/start.json"){REPORT_TEXT}"#));
+    browser.settle_network(200);
+
+    assert_eq!(
+        text_of(&browser, "#status"),
+        format!(r#"read 200 from {final_url} redirected=true: {{"same":"origin"}}"#)
+    );
+    let sent = origin.finish();
+    assert_eq!(sent[1].request_line(), "GET /final.json HTTP/1.1");
+}
+
+#[test]
+fn a_page_fetch_redirect_loop_still_stops_at_the_limit() {
+    // A page's fetch is redirected by the Browser session, which applies
+    // Fetch's limit (`FETCH_MAX_REDIRECTS`, 20) rather than the transport's.
+    // That many hops are followed, so one more answer is asked for.
+    let limit = browser_engine::redirect_policy::FETCH_MAX_REDIRECTS;
+    let hops = (0..=limit).map(|_| redirect(302, "/loop")).collect();
+    let origin = TestServer::serving(hops);
+
+    let mut browser = open_page_on(&origin, &format!(r#"fetch("/loop"){REPORT_TEXT}"#));
+    browser.settle_network(200);
+
+    let status = text_of(&browser, "#status");
+    assert!(status.contains("too many redirects"), "{status}");
+    assert_eq!(origin.finish().len(), usize::from(limit) + 1);
+}
+
+#[test]
+fn a_navigation_still_follows_a_redirect_to_another_origin() {
+    let other = TestServer::serving(vec![
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 39\r\n\r\n\
+         <title>Landed</title><p>other site</p>"
+            .to_string(),
+    ]);
+    let landing = other.url("/landing.html");
+    let first = TestServer::serving(vec![redirect(301, &landing.to_string())]);
+
+    let browser =
+        Browser::open(Box::new(DefaultLoader::new()), &first.url("/moved")).expect("navigates");
+
+    assert_eq!(browser.document().title().as_deref(), Some("Landed"));
+    assert_eq!(browser.url(), &landing);
+    first.finish();
+    other.finish();
+}
+
+#[test]
+fn credentials_do_not_follow_a_redirect_to_another_origin() {
+    let other = TestServer::serving(vec![ok_json("{}")]);
+    let landing = other.url("/landing");
+    let first = TestServer::serving(vec![redirect(307, &landing.to_string())]);
+
+    let mut headers = HeaderMap::new();
+    for (name, value) in [
+        ("Authorization", "Bearer secret-token"),
+        ("Proxy-Authorization", "Basic c2VjcmV0"),
+        ("Cookie", "session=secret"),
+        ("Content-Type", "application/json"),
+        ("X-Trace", "kept"),
+    ] {
+        headers.set(name, value).unwrap();
+    }
+    let request = FetchRequest::new(
+        first.url("/start"),
+        Method::Post,
+        headers,
+        Some(br#"{"a":1}"#.to_vec()),
+    );
+
+    // No page asked for this, so the redirect is followed — without the keys.
+    let response = HttpLoader::default().fetch(&request).expect("a response");
+    assert_eq!(response.url, landing);
+    assert!(response.redirected);
+
+    let asked = first.finish();
+    assert_eq!(
+        asked[0].header("authorization").as_deref(),
+        Some("Bearer secret-token"),
+        "the origin the caller chose does get them"
+    );
+    let landed = &other.finish()[0];
+    assert_eq!(
+        landed.request_line(),
+        "POST /landing HTTP/1.1",
+        "307 keeps the method"
+    );
+    assert_eq!(landed.body, r#"{"a":1}"#, "307 keeps the body");
+    for credential in ["authorization", "proxy-authorization", "cookie"] {
+        assert_eq!(
+            landed.header(credential),
+            None,
+            "{credential} was forwarded to another origin"
+        );
+    }
+    assert_eq!(landed.header("x-trace").as_deref(), Some("kept"));
+    assert_eq!(
+        landed.header("content-type").as_deref(),
+        Some("application/json")
+    );
+}
+
+#[test]
+fn credentials_dropped_on_leaving_an_origin_are_not_restored_on_returning() {
+    // Both listeners exist before either answers, so each can name the other.
+    let (a_listener, b_listener) = (bind_loopback(), bind_loopback());
+    let a_port = a_listener.local_addr().unwrap().port();
+    let b_port = b_listener.local_addr().unwrap().port();
+    let a = TestServer::serving_on(
+        a_listener,
+        vec![
+            redirect(302, &format!("http://127.0.0.1:{b_port}/hop")),
+            ok_json("{}"),
+        ],
+    );
+    let b = TestServer::serving_on(
+        b_listener,
+        vec![redirect(302, &format!("http://127.0.0.1:{a_port}/back"))],
+    );
+
+    let mut request = FetchRequest::get(a.url("/start"));
+    for (name, value) in [
+        ("Authorization", "Bearer secret-token"),
+        ("Proxy-Authorization", "Basic c2VjcmV0"),
+        ("Cookie", "session=secret"),
+        ("X-Trace", "kept"),
+    ] {
+        request.headers.set(name, value).unwrap();
+    }
+
+    let response = HttpLoader::default().fetch(&request).expect("a response");
+    assert_eq!(response.url, a.url("/back"), "the chain ends back at A");
+
+    let at_a = a.finish();
+    let at_b = b.finish();
+    assert_eq!(at_a[0].request_line(), "GET /start HTTP/1.1");
+    assert_eq!(
+        at_a[0].header("authorization").as_deref(),
+        Some("Bearer secret-token"),
+        "A, the origin the caller chose, gets them first"
+    );
+    assert_eq!(at_b[0].request_line(), "GET /hop HTTP/1.1");
+    assert_eq!(at_a[1].request_line(), "GET /back HTTP/1.1");
+    for credential in ["authorization", "proxy-authorization", "cookie"] {
+        assert_eq!(at_b[0].header(credential), None, "{credential} reached B");
+        assert_eq!(
+            at_a[1].header(credential),
+            None,
+            "{credential} came back after a detour through B"
+        );
+    }
+    assert_eq!(at_b[0].header("x-trace").as_deref(), Some("kept"));
+    assert_eq!(at_a[1].header("x-trace").as_deref(), Some("kept"));
+}
+
+#[test]
+fn credentials_still_follow_a_same_origin_redirect() {
+    let origin = TestServer::serving(vec![redirect(302, "/next"), ok_json("{}")]);
+    let mut request = FetchRequest::get(origin.url("/start"));
+    request
+        .headers
+        .set("Authorization", "Bearer secret-token")
+        .unwrap();
+
+    HttpLoader::default().fetch(&request).expect("a response");
+    let sent = origin.finish();
+    assert_eq!(sent[1].request_line(), "GET /next HTTP/1.1");
+    assert_eq!(
+        sent[1].header("authorization").as_deref(),
+        Some("Bearer secret-token")
+    );
+}
+
+#[test]
+fn redirect_status_codes_keep_or_drop_the_method_and_body() {
+    // 301/302 rewrite a POST, 303 rewrites anything but GET/HEAD; both drop
+    // the body and the headers that describe it. 307/308 change nothing.
+    for (status, method_after, keeps_body) in [
+        (301, "GET", false),
+        (302, "GET", false),
+        (303, "GET", false),
+        (307, "POST", true),
+        (308, "POST", true),
+    ] {
+        let origin = TestServer::serving(vec![redirect(status, "/next"), ok_json("{}")]);
+        let mut headers = HeaderMap::new();
+        headers.set("Content-Type", "text/plain").unwrap();
+        headers.set("X-Trace", "kept").unwrap();
+        let request = FetchRequest::new(
+            origin.url("/form"),
+            Method::Post,
+            headers,
+            Some(b"payload".to_vec()),
+        );
+
+        HttpLoader::default().fetch(&request).expect("a response");
+        let sent = origin.finish();
+        let second = &sent[1];
+        assert_eq!(
+            second.request_line(),
+            format!("{method_after} /next HTTP/1.1"),
+            "{status}"
+        );
+        assert_eq!(second.body.is_empty(), !keeps_body, "{status}: body");
+        assert_eq!(
+            second.header("content-type").is_some(),
+            keeps_body,
+            "{status}: content-type must go with the body"
+        );
+        assert_eq!(
+            second.header("x-trace").as_deref(),
+            Some("kept"),
+            "{status}"
+        );
+    }
 }

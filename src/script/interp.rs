@@ -377,11 +377,18 @@ pub struct JsRuntime {
     /// every junction and unwinds until a `try` catches it or the call
     /// finishes.
     exception: Option<JsValue>,
-    /// API base URL used by URL-accepting JavaScript APIs. This may be a
-    /// `<base href>` URL and therefore must not double as the document's
-    /// referrer source or security origin.
-    pub url: crate::net::url::Url,
-    /// URL of the committed document that owns this runtime.
+    /// The URL the document was loaded from: who the page *is*.
+    ///
+    /// Every security decision reads this — the origin `fetch()` is checked
+    /// against, `location`, `document.cookie` — so it is fixed when the
+    /// runtime is created and a `<base href>` never changes it.
+    pub(super) url: crate::net::url::Url,
+    /// Where relative references resolve: `<base href>`, or `url`. Only ever
+    /// used to turn a reference into a URL, never to authorize one.
+    pub(super) base_url: crate::net::url::Url,
+    /// URL of the committed document whose referrer this runtime's requests
+    /// carry, when that differs from having none at all. Referrer only: the
+    /// security identity is `url`.
     pub referrer_source: Option<crate::net::url::Url>,
     /// Committed document Referrer-Policy inherited by Request values whose
     /// `referrerPolicy` member is the empty string.
@@ -415,6 +422,13 @@ impl Default for JsRuntime {
 
 impl JsRuntime {
     pub fn new() -> Self {
+        let url = crate::net::url::Url::parse("demo:///index.html").unwrap();
+        Self::for_document(url.clone(), url)
+    }
+
+    /// A runtime for the document loaded from `url`, resolving relative
+    /// references against `base_url`.
+    pub fn for_document(url: crate::net::url::Url, base_url: crate::net::url::Url) -> Self {
         Self {
             global: Scope::new(None),
             listeners: Vec::new(),
@@ -431,12 +445,23 @@ impl JsRuntime {
             scheduler: Scheduler::new(),
             now_ms: 0.0,
             fetches: FetchRegistry::new(),
-            url: crate::net::url::Url::parse("demo:///index.html").unwrap(),
+            url,
+            base_url,
             referrer_source: None,
             referrer_policy: crate::referrer_policy::ReferrerPolicy::default(),
             detached: Vec::new(),
             depth: 0,
         }
+    }
+
+    /// The document's own URL, as loaded.
+    pub fn url(&self) -> &crate::net::url::Url {
+        &self.url
+    }
+
+    /// The base relative references resolve against.
+    pub fn base_url(&self) -> &crate::net::url::Url {
+        &self.base_url
     }
 
     // ── Exceptions ────────────────────────────────────────────────────────
