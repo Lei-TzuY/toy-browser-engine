@@ -105,6 +105,34 @@ fn https_element_redirect_to_http_is_blocked_before_second_hop() {
 }
 
 #[test]
+fn crossorigin_element_redirect_to_http_never_reaches_plaintext_transport() {
+    // The normal Browser::open path must enforce policy in the separate
+    // credentials-aware redirect loop, not merely fail a later CORS check.
+    for html in [
+        r#"<script crossorigin src="/redirect.js"></script>"#,
+        r#"<script crossorigin="use-credentials" src="/redirect.js"></script>"#,
+        r#"<link rel="stylesheet" crossorigin href="/redirect.js">"#,
+        r#"<img crossorigin src="/redirect.js">"#,
+    ] {
+        let (loader, requests) = ElementLoader::new(html);
+        let browser = Browser::open(
+            Box::new(loader), &u("https://page.test/index.html")
+        ).expect("HTTPS document survives blocked mixed-content redirect");
+
+        let actual = requests.lock().unwrap().clone();
+        assert_eq!(
+            actual, ["https://page.test/redirect.js"],
+            "HTTP redirect must not dispatch for {html}"
+        );
+        assert!(
+            browser.document().diagnostics.iter().any(|d| d.message.contains("mixed content")),
+            "diagnostic must explain blocked redirect for {html}: {:?}",
+            browser.document().diagnostics
+        );
+    }
+}
+
+#[test]
 fn insecure_top_level_navigation_remains_allowed() {
     let (loader, _) = ElementLoader::new("<p>plain user-directed navigation</p>");
     let browser = Browser::open(
