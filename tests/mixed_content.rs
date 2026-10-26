@@ -144,7 +144,7 @@ fn javascript_https_fetch_redirect_is_blocked_before_http_hop() {
     );
     response.headers.insert_raw("location", "http://page.test/secret");
     network.respond("https://page.test/first", response);
-    let mut browser = Browser::open_with_network(
+    let mut browser = Browser::open_with_single_hop_network(
         Box::new(loader), network.clone(), &u("https://page.test/index.html"),
         Rc::new(ManualClock::new())
     ).expect("HTTPS document");
