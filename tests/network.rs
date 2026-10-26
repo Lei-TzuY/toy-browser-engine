@@ -324,16 +324,16 @@ fn a_malformed_response_is_a_network_error() {
 }
 
 #[test]
-fn https_is_refused_with_an_explanation_rather_than_downgraded() {
+fn https_is_not_downgraded_to_plaintext() {
+    let port = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
     let error = HttpLoader::default()
-        .fetch(&FetchRequest::get(
-            Url::parse("https://example.com/").unwrap(),
-        ))
-        .expect_err("there is no TLS stack");
-    assert!(
-        error.to_string().contains("https is not supported"),
-        "{error}"
-    );
+        .fetch(&FetchRequest::get(Url::parse(&format!("https://127.0.0.1:{port}/")).unwrap()))
+        .expect_err("no HTTPS server is listening");
+    assert!(error.to_string().starts_with("TypeError"), "{error}");
+    assert!(!error.to_string().contains("unsupported scheme"), "{error}");
 }
 
 // ── The threaded backend ──────────────────────────────────────────────────────

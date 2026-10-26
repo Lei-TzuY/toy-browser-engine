@@ -544,13 +544,8 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FetchError::InvalidUrl(url) => write!(f, "TypeError: invalid URL: {url}"),
-            FetchError::UnsupportedScheme(scheme) => match scheme.as_str() {
-                "https" => write!(
-                    f,
-                    "TypeError: Failed to fetch: https is not supported \
-                     (this engine speaks plain HTTP only, with no TLS stack)"
-                ),
-                other => write!(f, "TypeError: Failed to fetch: unsupported scheme {other}:"),
+            FetchError::UnsupportedScheme(scheme) => {
+                write!(f, "TypeError: Failed to fetch: unsupported scheme {scheme}:")
             },
             FetchError::UnsupportedMethod(method) => {
                 write!(f, "TypeError: unsupported request method: {method}")

@@ -64,11 +64,6 @@ impl fmt::Display for LoadError {
         match self {
             LoadError::InvalidUrl(u) => write!(f, "invalid URL: {u}"),
             LoadError::UnsupportedScheme(scheme) => match scheme.as_str() {
-                // Worth explaining: the engine has no TLS stack at all.
-                "https" => write!(
-                    f,
-                    "https is not supported: this engine speaks plain HTTP only (no TLS stack)"
-                ),
                 other => write!(f, "unsupported scheme: {other}"),
             },
             LoadError::NotFound(p) => write!(f, "not found: {p}"),
@@ -467,8 +462,7 @@ impl ResourceLoader for FileLoader {
 
 // ── http: ─────────────────────────────────────────────────────────────────────
 
-/// Fetches `http:` URLs. `https:` is reported as unsupported rather than
-/// silently downgraded.
+/// Fetches HTTP/1.1 over plain TCP or verified TLS (HTTPS).
 #[derive(Default)]
 pub struct HttpLoader {
     pub config: HttpConfig,
@@ -477,14 +471,14 @@ pub struct HttpLoader {
 impl ResourceLoader for HttpLoader {
     fn load(&self, url: &Url) -> Result<Resource, LoadError> {
         match url.scheme() {
-            "http" => http::get(url, &self.config),
+            "http" | "https" => http::get(url, &self.config),
             other => Err(LoadError::UnsupportedScheme(other.to_string())),
         }
     }
 
     fn load_response(&self, url: &Url) -> Result<FetchResponse, LoadError> {
         match url.scheme() {
-            "http" => load_response_from_fetch(
+            "http" | "https" => load_response_from_fetch(
                 url,
                 http::send(&FetchRequest::get(url.clone()), &self.config),
             ),
@@ -497,7 +491,7 @@ impl ResourceLoader for HttpLoader {
         request: &FetchRequest,
     ) -> Result<Option<FetchResponse>, LoadError> {
         match request.url.scheme() {
-            "http" => single_hop_load_response_from_fetch(
+            "http" | "https" => single_hop_load_response_from_fetch(
                 &request.url,
                 http::send_once(request, &self.config),
             )
@@ -510,14 +504,14 @@ impl ResourceLoader for HttpLoader {
     /// an error status comes back as a response.
     fn fetch(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         match request.url.scheme() {
-            "http" => http::send(request, &self.config),
+            "http" | "https" => http::send(request, &self.config),
             other => Err(FetchError::UnsupportedScheme(other.to_string())),
         }
     }
 
     fn fetch_once(&self, request: &FetchRequest) -> Result<FetchResponse, FetchError> {
         match request.url.scheme() {
-            "http" => http::send_once(request, &self.config),
+            "http" | "https" => http::send_once(request, &self.config),
             other => Err(FetchError::UnsupportedScheme(other.to_string())),
         }
     }
@@ -567,7 +561,7 @@ impl ResourceLoader for DefaultLoader {
         }
         match url.scheme() {
             "file" => self.file.load(url),
-            // `https` reaches the HTTP loader so it can explain itself.
+            // Both protocols share the policy-aware transport path.
             "http" | "https" => self.http.load(url),
             // Any other scheme can only be served from embedded resources, so
             // a miss there is a missing file rather than an unknown protocol.
@@ -746,13 +740,10 @@ mod tests {
     }
 
     #[test]
-    fn default_loader_rejects_https_with_an_explanation() {
-        let url = Url::parse("https://example.com/").unwrap();
+    fn default_loader_has_an_https_transport() {
+        let url = Url::parse("https://127.0.0.1:1/").unwrap();
         let error = DefaultLoader::new().load(&url).unwrap_err();
-        assert!(
-            error.to_string().contains("https is not supported"),
-            "{error}"
-        );
+        assert!(!error.to_string().contains("unsupported scheme"), "{error}");
     }
 
     #[test]
