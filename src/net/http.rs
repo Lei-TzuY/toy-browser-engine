@@ -17,9 +17,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use super::fetch::{
-    reason_phrase, FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin,
-};
+use super::fetch::{reason_phrase, FetchError, FetchRequest, FetchResponse, HeaderMap, Method};
 use super::url::Url;
 use super::{LoadError, Resource};
 
@@ -31,23 +29,6 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// Ceiling on the header block, for the same reason.
 pub const MAX_HEADER_BYTES: usize = 64 * 1024;
-
-/// Credentials meant for the origin the caller chose, dropped when a redirect
-/// leaves it (and not restored if a later one comes back). Fetch drops
-/// `Authorization`; `Cookie` and `Proxy-Authorization` go too, because this
-/// engine has no cookie jar or proxy to recompute them for the new origin, so
-/// any value here was written for the first one.
-const CROSS_ORIGIN_REDIRECT_DROPPED_HEADERS: &[&str] =
-    &["authorization", "proxy-authorization", "cookie"];
-
-/// Fetch's request-body-header names: they describe a body, so they leave
-/// with it when a redirect turns the request into a GET.
-const REQUEST_BODY_HEADERS: &[&str] = &[
-    "content-type",
-    "content-encoding",
-    "content-language",
-    "content-location",
-];
 
 #[derive(Debug, Clone)]
 pub struct HttpConfig {
@@ -81,11 +62,17 @@ struct RawResponse {
 ///
 /// An error status is *not* an error: 404 and 500 come back as responses. Only
 /// a failure to obtain an answer at all produces a [`FetchError`].
+///
+/// Redirects are deliberately conservative about browser-owned credentials.
+/// The current transport still follows redirects below CookieNetwork, so it
+/// cannot correctly re-select path/domain/SameSite cookies for the next hop.
+/// Until redirect orchestration moves above browser policy, every redirected
+/// hop drops Cookie rather than risking sending a cookie outside its scope.
 pub fn send(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse, FetchError> {
     let mut current = request.url.clone();
     let mut method = request.method;
-    let mut headers = request.headers.clone();
     let mut body = request.body.clone();
+    let mut headers = request.headers.clone();
     let mut redirected = false;
 
     for _ in 0..=config.max_redirects {
@@ -105,23 +92,25 @@ pub fn send(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse
                     )));
                 }
             }
-            if Origin::of(&current) != Origin::of(&next) {
-                for name in CROSS_ORIGIN_REDIRECT_DROPPED_HEADERS {
-                    headers.delete(name);
-                }
+
+            // CookieNetwork selected Cookie for `current`, not `next`. Reusing
+            // it even on a same-origin redirect can violate Path scoping, so
+            // drop it on every hop until redirect policy can re-run per URL.
+            headers.delete("cookie");
+
+            // Credentials tied to one origin must never be forwarded to a new
+            // origin merely because that origin appeared in Location.
+            if !same_origin(&current, &next) {
+                headers.delete("authorization");
+                headers.delete("proxy-authorization");
             }
-            // 303, and 301/302 in practice, turn everything into a GET; 307 and
-            // 308 exist precisely to preserve the method and body.
-            if !matches!(raw.status, 307 | 308) && method != Method::Head {
-                if method.allows_body() {
-                    // The body is dropped, so the headers describing it go too.
-                    for name in REQUEST_BODY_HEADERS {
-                        headers.delete(name);
-                    }
-                }
+
+            if redirect_rewrites_to_get(raw.status, method) {
                 method = Method::Get;
                 body = None;
+                remove_request_body_headers(&mut headers);
             }
+
             current = next;
             redirected = true;
             continue;
@@ -144,12 +133,72 @@ pub fn send(request: &FetchRequest, config: &HttpConfig) -> Result<FetchResponse
     Err(FetchError::TooManyRedirects(request.url.to_string()))
 }
 
-/// The `Location` of a redirect response, if this is one.
+/// Perform exactly one HTTP request/response exchange.
+///
+/// Unlike [`send`], this does not inspect `Location` and never follows a
+/// redirect. A 3xx response is returned exactly like any other response with
+/// `redirected == false`, preserving its headers for a higher policy layer to
+/// process. This is the transport primitive needed to move redirect
+/// orchestration above HSTS/cookie policy without changing today's public
+/// redirect-following API yet.
+pub fn send_once(
+    request: &FetchRequest,
+    config: &HttpConfig,
+) -> Result<FetchResponse, FetchError> {
+    let raw = exchange(
+        &request.url,
+        request.method,
+        &request.headers,
+        request.body.as_deref(),
+        config,
+    )?;
+    let body = if request.method.wants_body() {
+        raw.body
+    } else {
+        Vec::new()
+    };
+    Ok(FetchResponse {
+        url: request.url.clone(),
+        status: raw.status,
+        status_text: raw.status_text,
+        headers: raw.headers,
+        body,
+        redirected: false,
+    })
+}
+
+/// The `Location` of a Fetch redirect response, if this is one.
 fn redirect_target(raw: &RawResponse) -> Option<String> {
-    if !(300..400).contains(&raw.status) {
+    if !matches!(raw.status, 301 | 302 | 303 | 307 | 308) {
         return None;
     }
     raw.headers.get("location")
+}
+
+/// Fetch redirect method normalization.
+///
+/// 301/302 historically rewrite POST to GET; 303 rewrites every method except
+/// GET/HEAD; 307/308 preserve method and body.
+fn redirect_rewrites_to_get(status: u16, method: Method) -> bool {
+    matches!(status, 301 | 302) && method == Method::Post
+        || status == 303 && !matches!(method, Method::Get | Method::Head)
+}
+
+fn remove_request_body_headers(headers: &mut HeaderMap) {
+    for name in [
+        "content-encoding",
+        "content-language",
+        "content-location",
+        "content-type",
+    ] {
+        headers.delete(name);
+    }
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host().eq_ignore_ascii_case(right.host())
+        && left.port_or_default() == right.port_or_default()
 }
 
 /// Fetch `url` over HTTP for navigation and subresources.
@@ -460,5 +509,45 @@ mod tests {
 
         assert!(head.contains("user-agent: Custom/1.0\r\n"), "{head}");
         assert!(!head.contains("BrowserEngineToy"), "{head}");
+    }
+
+    #[test]
+    fn only_fetch_redirect_statuses_follow_location() {
+        for status in [301, 302, 303, 307, 308] {
+            let mut headers = HeaderMap::new();
+            headers.insert_raw("location", "/next");
+            let raw = RawResponse {
+                status,
+                status_text: String::new(),
+                headers,
+                body: Vec::new(),
+            };
+            assert_eq!(redirect_target(&raw).as_deref(), Some("/next"));
+        }
+        for status in [300, 304, 305, 306, 399] {
+            let mut headers = HeaderMap::new();
+            headers.insert_raw("location", "/next");
+            let raw = RawResponse {
+                status,
+                status_text: String::new(),
+                headers,
+                body: Vec::new(),
+            };
+            assert!(redirect_target(&raw).is_none(), "status {status}");
+        }
+    }
+
+    #[test]
+    fn redirect_method_rewrite_matches_fetch_rules() {
+        assert!(redirect_rewrites_to_get(301, Method::Post));
+        assert!(redirect_rewrites_to_get(302, Method::Post));
+        assert!(!redirect_rewrites_to_get(301, Method::Put));
+        assert!(!redirect_rewrites_to_get(302, Method::Patch));
+        assert!(redirect_rewrites_to_get(303, Method::Post));
+        assert!(redirect_rewrites_to_get(303, Method::Put));
+        assert!(!redirect_rewrites_to_get(303, Method::Get));
+        assert!(!redirect_rewrites_to_get(303, Method::Head));
+        assert!(!redirect_rewrites_to_get(307, Method::Post));
+        assert!(!redirect_rewrites_to_get(308, Method::Post));
     }
 }

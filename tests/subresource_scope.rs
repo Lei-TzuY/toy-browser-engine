@@ -452,12 +452,17 @@ fn a_missing_file_inside_the_site_is_still_not_found() {
     );
     let browser = fixture.open("site/index.html");
 
+    // A missing file is a 404, not a refusal. The Browser's subresource
+    // path reports it as the response status ("HTTP 404 at …"), the
+    // standalone loader as "not found: …".
     let diagnostics = &browser.document().diagnostics;
     assert_eq!(diagnostics.len(), 1);
+    let message = &diagnostics[0].message;
     assert!(
-        diagnostics[0].message.starts_with("not found"),
+        message.starts_with("not found") || message.starts_with("HTTP 404"),
         "{diagnostics:?}"
     );
+    assert!(!message.contains("blocked"), "{diagnostics:?}");
 }
 
 /// A demo page with demo-scheme assets, and an http page with assets on

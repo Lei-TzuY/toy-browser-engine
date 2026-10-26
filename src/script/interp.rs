@@ -386,6 +386,13 @@ pub struct JsRuntime {
     /// Where relative references resolve: `<base href>`, or `url`. Only ever
     /// used to turn a reference into a URL, never to authorize one.
     pub(super) base_url: crate::net::url::Url,
+    /// URL of the committed document whose referrer this runtime's requests
+    /// carry, when that differs from having none at all. Referrer only: the
+    /// security identity is `url`.
+    pub referrer_source: Option<crate::net::url::Url>,
+    /// Committed document Referrer-Policy inherited by Request values whose
+    /// `referrerPolicy` member is the empty string.
+    pub referrer_policy: crate::referrer_policy::ReferrerPolicy,
     /// Promise reactions and `queueMicrotask` callbacks, drained to empty at
     /// every checkpoint.
     pub microtasks: MicrotaskQueue<Microtask>,
@@ -440,6 +447,8 @@ impl JsRuntime {
             fetches: FetchRegistry::new(),
             url,
             base_url,
+            referrer_source: None,
+            referrer_policy: crate::referrer_policy::ReferrerPolicy::default(),
             detached: Vec::new(),
             depth: 0,
         }
@@ -2575,24 +2584,21 @@ impl JsRuntime {
                     JsValue::Host(Rc::new(HostObject::AbortSignal(state)))
                 }
                 "any" => {
-                    let state = AbortState::new();
-                    if let Some(JsValue::Array(arr)) = args.first() {
-                        let signals: Vec<Rc<AbortState>> = arr
+                    let sources = match args.first() {
+                        Some(JsValue::Array(arr)) => arr
                             .borrow()
                             .iter()
-                            .filter_map(|val| match val {
-                                JsValue::Host(h) => h.as_abort_state().cloned(),
+                            .filter_map(|value| match value {
+                                JsValue::Host(host) => host.as_abort_state().cloned(),
                                 _ => None,
                             })
-                            .collect();
-                        for s in &signals {
-                            s.check_timeout(self.now_ms);
-                        }
-                        if signals.iter().any(|s| s.aborted()) {
-                            state.abort();
-                        }
-                    }
-                    JsValue::Host(Rc::new(HostObject::AbortSignal(state)))
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    JsValue::Host(Rc::new(HostObject::AbortSignal(AbortState::any(
+                        sources,
+                        self.now_ms,
+                    ))))
                 }
                 _ => JsValue::Undefined,
             },

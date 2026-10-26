@@ -722,6 +722,9 @@ const REPORT_TEXT: &str = r#"
     }); })
     .catch(function (e) { document.getElementById("status").textContent = "rejected: " + e; });"#;
 
+/// A same-origin-mode fetch never reaches another origin: the hop is refused
+/// before it is sent. (The default mode is CORS, where the hop is sent without
+/// credentials and its response stays unreadable; see the test below.)
 #[test]
 fn a_page_fetch_does_not_follow_a_redirect_to_another_origin() {
     let other = TestServer::serving(vec![ok_json(r#"{"secret":"other origin"}"#)]);
@@ -731,7 +734,7 @@ fn a_page_fetch_does_not_follow_a_redirect_to_another_origin() {
     let mut browser = open_page_on(
         &page_origin,
         &format!(
-            r#"fetch("/api/data.json", {{ headers: {{ "Authorization": "Bearer page-token" }} }}){REPORT_TEXT}"#
+            r#"fetch("/api/data.json", {{ mode: "same-origin", headers: {{ "Authorization": "Bearer page-token" }} }}){REPORT_TEXT}"#
         ),
     );
     browser.settle_network(200);
@@ -755,6 +758,47 @@ fn a_page_fetch_does_not_follow_a_redirect_to_another_origin() {
     );
 }
 
+/// In the default CORS mode a cross-origin hop is followed, as Fetch does, but
+/// it carries the page's own origin and none of its credentials, and the
+/// response stays unreadable unless the other origin opts in.
+#[test]
+fn a_cors_fetch_redirected_to_another_origin_is_unreadable_and_uncredentialed() {
+    let other = TestServer::serving(vec![ok_json(r#"{"secret":"other origin"}"#)]);
+    let page_origin =
+        TestServer::serving(vec![redirect(302, &other.url("/secret.json").to_string())]);
+    let page = format!("http://127.0.0.1:{}", page_origin.port);
+
+    let mut browser = open_page_on(
+        &page_origin,
+        &format!(
+            r#"fetch("/api/data.json", {{ headers: {{ "Authorization": "Bearer page-token" }} }}){REPORT_TEXT}"#
+        ),
+    );
+    browser.settle_network(200);
+
+    let status = text_of(&browser, "#status");
+    assert!(status.starts_with("rejected: TypeError"), "{status}");
+    assert!(
+        !status.contains("other origin"),
+        "the other origin's body leaked: {status}"
+    );
+
+    page_origin.finish();
+    for hop in finish_possibly_unused(other) {
+        assert_eq!(
+            hop.header("authorization"),
+            None,
+            "credential forwarded: {hop:?}"
+        );
+        assert_eq!(hop.header("cookie"), None, "cookie forwarded: {hop:?}");
+        assert_eq!(
+            hop.header("origin").as_deref(),
+            Some(page.as_str()),
+            "{hop:?}"
+        );
+    }
+}
+
 #[test]
 fn a_page_fetch_still_follows_a_same_origin_redirect() {
     let origin = TestServer::serving(vec![
@@ -776,10 +820,11 @@ fn a_page_fetch_still_follows_a_same_origin_redirect() {
 
 #[test]
 fn a_page_fetch_redirect_loop_still_stops_at_the_limit() {
-    // DEFAULT_MAX_REDIRECTS hops are followed, so one more answer is asked for.
-    let hops = (0..=browser_engine::net::http::DEFAULT_MAX_REDIRECTS)
-        .map(|_| redirect(302, "/loop"))
-        .collect();
+    // A page's fetch is redirected by the Browser session, which applies
+    // Fetch's limit (`FETCH_MAX_REDIRECTS`, 20) rather than the transport's.
+    // That many hops are followed, so one more answer is asked for.
+    let limit = browser_engine::redirect_policy::FETCH_MAX_REDIRECTS;
+    let hops = (0..=limit).map(|_| redirect(302, "/loop")).collect();
     let origin = TestServer::serving(hops);
 
     let mut browser = open_page_on(&origin, &format!(r#"fetch("/loop"){REPORT_TEXT}"#));
@@ -787,10 +832,7 @@ fn a_page_fetch_redirect_loop_still_stops_at_the_limit() {
 
     let status = text_of(&browser, "#status");
     assert!(status.contains("too many redirects"), "{status}");
-    assert_eq!(
-        origin.finish().len(),
-        usize::from(browser_engine::net::http::DEFAULT_MAX_REDIRECTS) + 1
-    );
+    assert_eq!(origin.finish().len(), usize::from(limit) + 1);
 }
 
 #[test]

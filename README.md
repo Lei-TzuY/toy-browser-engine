@@ -551,12 +551,17 @@ means it never starts; aborting after it completes does nothing.
 
 ### Origins
 
-The engine enforces same-origin and does not implement CORS. There is no
-preflight, no `Access-Control-Allow-Origin` handling, and no opaque response.
+A page's `fetch()` follows its request `mode`. Between `http:`/`https:`
+origins, `"cors"` (the default) sends a CORS request carrying the page's
+`Origin` (with an `OPTIONS` preflight when the method or headers are not
+CORS-safelisted) and lets the script read the response only if the other
+origin allows it; `"no-cors"` returns an opaque response; `"same-origin"`
+refuses another origin before anything is sent. Local pages never cross
+origins:
 
 | Document | May fetch |
 | --- | --- |
-| `http://host:port/…` | the same scheme, host and port, and nothing else |
+| `http://host:port/…` | its own origin; another `http(s)` origin only as above |
 | `file:` / `demo:` | the same scheme, confined to its own directory subtree |
 
 "Document" is the URL the page was loaded from, after redirects. A `<base
@@ -609,19 +614,18 @@ junction swapped in between the two is refused. As for subresources, that
 second check is made by the engine after the open, not enforced by the
 kernel.
 
-The rule holds at every redirect hop, not only for the URL the script wrote: a
-`fetch()` whose redirect leads to another origin rejects as blocked before the
-redirected request is sent. Navigation is not a script reading a response, so
-it may still be redirected anywhere. Whoever made the request, a redirect that
-changes origin drops `Authorization`, `Proxy-Authorization` and `Cookie`, and
-one that turns the request into a `GET` drops the body and its `Content-*`
-headers.
+The mode is applied at every redirect hop, not only to the URL the script
+wrote: a `"same-origin"` fetch whose redirect leads to another origin rejects
+as blocked before the redirected request is sent, and a `"cors"` fetch
+redirected to another origin is checked as a CORS request there. Navigation is
+not a script reading a response, so it may still be redirected anywhere. A
+redirect that changes origin drops `Authorization` and `Proxy-Authorization`;
+`Cookie` is never copied from one hop to the next; and a redirect that turns the request into a
+`GET` drops the body and its `Content-*` headers.
 
-`mode` accepts `"cors"` and `"same-origin"` — both enforced as same-origin,
-because there is no preflight to make `cors` mean more — and rejects anything
-else rather than pretending. `credentials` accepts `"same-origin"` and
-`"omit"`; `"include"` is rejected, because there are **no cookies at all** in
-this engine: no jar, no `Set-Cookie`, no `document.cookie`.
+`credentials` accepts `"omit"`, `"same-origin"` and `"include"`. Cookies come
+from the browsing session's jar (`Set-Cookie`, `document.cookie`, `SameSite`);
+`"include"` is limited to `http(s)` requests.
 
 ### Errors
 

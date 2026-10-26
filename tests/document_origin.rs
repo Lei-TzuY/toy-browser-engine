@@ -71,10 +71,15 @@ fn open(loader: DefaultLoader, url: &Url) -> Browser {
 /// A page whose head is `head` and whose only script logs what
 /// `fetch(reference)` produced.
 fn page_fetching(head: &str, reference: &str) -> String {
+    page_fetching_with(head, reference, "{}")
+}
+
+/// As [`page_fetching`], with `init` as the fetch's second argument.
+fn page_fetching_with(head: &str, reference: &str, init: &str) -> String {
     format!(
         r#"<head>{head}</head>
            <script>
-             fetch("{reference}")
+             fetch("{reference}", {init})
                  .then(function (r) {{ return r.text().then(function (t) {{
                      console.log(r.status + " " + r.url + " " + t); }}); }},
                        function (e) {{ console.log("rejected: " + e); }});
@@ -194,6 +199,41 @@ fn a_base_href_on_another_port_does_not_make_that_origin_fetchable() {
 
     // The document comes from memory, so the only network traffic is the
     // page's own fetch.
+    // Same-origin mode: the base's origin is not the page's, so nothing is
+    // sent there at all. (In the default CORS mode a request may be sent; see
+    // the next test for what it must carry.)
+    let mut memory = MemoryLoader::new();
+    memory.insert(
+        page_url.to_string(),
+        page_fetching_with(
+            &format!(r#"<base href="{}">"#, other_origin.url("/")),
+            "secret.txt",
+            r#"{ mode: "same-origin" }"#,
+        ),
+    );
+    let mut browser = open(DefaultLoader::new().with_memory(memory), &page_url);
+
+    let logs = logs_after_network(&mut browser);
+    assert!(logs.starts_with("rejected: TypeError"), "{logs}");
+    assert!(!logs.contains("synthetic other origin"), "{logs}");
+
+    assert_eq!(
+        other_origin.finish(),
+        None,
+        "the other origin must not receive a request"
+    );
+    assert_eq!(page_origin.finish(), None);
+}
+
+/// In the default CORS mode the request to the base's origin is a CORS
+/// request from the *page's* origin: the base does not change who is asking,
+/// and without the other origin's opt-in the response stays unreadable.
+#[test]
+fn a_base_href_on_another_port_is_not_the_cors_origin() {
+    let page_origin = OneShotServer::answering(ok_text("page origin"));
+    let other_origin = OneShotServer::answering(ok_text("synthetic other origin"));
+    let page_url = page_origin.url("/index.html");
+
     let mut memory = MemoryLoader::new();
     memory.insert(
         page_url.to_string(),
@@ -208,11 +248,13 @@ fn a_base_href_on_another_port_does_not_make_that_origin_fetchable() {
     assert!(logs.starts_with("rejected: TypeError"), "{logs}");
     assert!(!logs.contains("synthetic other origin"), "{logs}");
 
-    assert_eq!(
-        other_origin.finish(),
-        None,
-        "the other origin must not receive a request"
-    );
+    let page = format!("origin: http://127.0.0.1:{}", page_origin.port);
+    if let Some(request) = other_origin.finish() {
+        assert!(
+            request.lines().any(|line| line.eq_ignore_ascii_case(&page)),
+            "the request must name the page's origin, not the base's: {request}"
+        );
+    }
     assert_eq!(page_origin.finish(), None);
 }
 
