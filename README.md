@@ -10,11 +10,12 @@ cargo run                     # render the built-in demo site
 cargo run -- --window         # open it in an interactive window
 ```
 
-In the interactive window, press **Ctrl+L** to edit the current URL in the
-window title, type an explicit `http://`, `https://`, or `file://` URL
-(or a local file path), and press **Enter** to navigate. Press **Esc** to cancel
-editing; outside editing, Esc still closes the window. This is a keyboard-first
-interim address entry, not a full browser toolbar.
+The interactive window has a toolbar with Back, Forward and Reload buttons and
+an address field. Click the field or press **Ctrl+L** to edit the current URL,
+type an explicit `http://`, `https://`, or `file://` URL (or a local file
+path), and press **Enter** to navigate. Press **Esc** to cancel editing; outside
+editing, Esc still closes the window. A failed navigation keeps the field open
+with the typed text and leaves the current page on screen.
 
 ## Architecture
 
@@ -687,8 +688,9 @@ browser_engine [options] [<url-or-file> [<out.ppm>]]
   --help          usage
 ```
 
-In the window, keystrokes go to the **page** — click a field and type. Browser
-chrome is on `Alt`:
+In the window, keystrokes go to the **page** — click a field and type — unless
+the toolbar's address field is focused, in which case they stay in the toolbar.
+Browser chrome is on the toolbar and on `Alt`:
 
 | Key | Action |
 | --- | --- |
@@ -701,6 +703,7 @@ chrome is on `Alt`:
 | — | timers and animations run on their own, at 60fps |
 | `Alt`+`←` / `Alt`+`→` | back / forward |
 | `Alt`+`R` | reload |
+| click the address field / `Ctrl`+`L` | edit the URL (Enter: go, Esc: cancel) |
 | `Alt`+`↑` / `Alt`+`↓` | scroll by a page step |
 | `Esc` | quit |
 
@@ -844,8 +847,8 @@ cargo clippy --all-targets  # 0 warnings
 - Layout omits floats, multi-column, writing modes, `vertical-align` beyond the
   baseline default, and `grid-template-areas`.
 - Images are decoded eagerly and never re-fetched; there is no HTTP cache.
-- The window has no editable address bar — the title bar shows URL, title and
-  history position.
+- The toolbar's address field has no clipboard, undo or IME support, and a
+  bare host such as `example.com` is treated as a local file path.
 - **Forms**: `POST` is recognised but refused rather than half-implemented (the
   loader only issues GETs); there is no `<select>` dropdown UI (the element is
   focusable and submits its `value`), no file inputs, no `multipart/form-data`,
