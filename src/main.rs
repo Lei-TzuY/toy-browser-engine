@@ -19,7 +19,10 @@ use browser_engine::{
 use minifb::{Key, Window, WindowOptions};
 
 mod demo;
+mod location_input;
 mod platform;
+
+use location_input::{LocationAction, LocationInput};
 
 const USAGE: &str = "\
 Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
@@ -28,7 +31,7 @@ Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
   <out.ppm>       write the rendered page here (default: output.ppm)
 
 Options:
-  --window        open an interactive window (click links, scroll, Backspace to go back)
+  --window        interactive window (Ctrl+L: URL, Enter: go, Esc: cancel/close)
   --size WxH      canvas and viewport size (default 800x600)
   --viewport WxH  alias for --size WxH
   --stats         print engine performance and node count diagnostics
@@ -448,8 +451,16 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
     let mut scroll_y: f32 = 0.0;
     let mut was_mouse_down = false;
     let mut title = String::new();
+    let mut location_input: Option<LocationInput> = None;
 
-    while window.is_open() && !window.is_key_down(Key::Escape) {
+    while window.is_open() {
+        // Escape cancels address entry; outside entry it retains the window's
+        // existing Escape-to-close shortcut.
+        if location_input.is_none()
+            && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No)
+        {
+            break;
+        }
         // ── Browser chrome shortcuts ──────────────────────────────────────
         // These are the window's own keys; everything else goes to the page.
         if let Some((_, wheel_y)) = window.get_scroll_wheel() {
@@ -458,7 +469,14 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
             }
         }
         let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
-        if chrome {
+        let ctrl = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
+        let address_opened = ctrl && window.is_key_pressed(Key::L, minifb::KeyRepeat::No);
+        if address_opened {
+            // The current URL starts selected, like a familiar address field.
+            // All editor keys stay in window chrome, never in the page's DOM.
+            location_input = Some(LocationInput::new(browser.url().to_string()));
+        }
+        if chrome && location_input.is_none() {
             if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) && browser.back() {
                 scroll_y = 0.0;
             }
@@ -478,18 +496,48 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
             }
         }
 
-        // ── Keyboard → page ───────────────────────────────────────────────
-        if !chrome {
-            for event in input.drain(&window) {
-                match browser.press_key(&event) {
-                    ClickOutcome::Navigated(url) => {
-                        println!("→ {url}");
-                        scroll_y = 0.0;
+        // ── Keyboard → location editor or page ───────────────────────────
+        // Consume once per frame, even for Alt shortcuts, so old text input
+        // cannot leak into a document on a later frame.
+        let events = input.drain(&window);
+        if !address_opened {
+            if location_input.is_some() {
+                for event in events {
+                    let action = location_input.as_mut().expect("address entry").handle(&event);
+                    match action {
+                        LocationAction::Continue => {}
+                        LocationAction::Cancel => {
+                            location_input = None;
+                            break;
+                        }
+                        LocationAction::Go(target) => {
+                            let url = url_from_argument(&target);
+                            match browser.navigate(&url) {
+                                Ok(()) => {
+                                    println!("→ {}", browser.url());
+                                    scroll_y = 0.0;
+                                    location_input = None;
+                                }
+                                Err(error) => {
+                                    eprintln!("could not open {url}: {error}");
+                                }
+                            }
+                            break;
+                        }
                     }
-                    ClickOutcome::NavigationFailed { url, error } => {
-                        eprintln!("could not open {url}: {error}");
+                }
+            } else if !chrome {
+                for event in events {
+                    match browser.press_key(&event) {
+                        ClickOutcome::Navigated(url) => {
+                            println!("→ {url}");
+                            scroll_y = 0.0;
+                        }
+                        ClickOutcome::NavigationFailed { url, error } => {
+                            eprintln!("could not open {url}: {error}");
+                        }
+                        ClickOutcome::Script | ClickOutcome::Ignored => {}
                     }
-                    ClickOutcome::Script | ClickOutcome::Ignored => {}
                 }
             }
         }
@@ -500,7 +548,11 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
 
         // ── Click ─────────────────────────────────────────────────────────
         if is_mouse_down && !was_mouse_down {
-            if let Some((x, y)) = page_point {
+            if location_input.is_some() {
+                // A click outside the address edit cancels it without also
+                // activating the underlying page's link or button.
+                location_input = None;
+            } else if let Some((x, y)) = page_point {
                 match browser.click_at(x, y, width as f32) {
                     ClickOutcome::Navigated(url) => {
                         println!("→ {url}");
@@ -535,8 +587,12 @@ fn run_window(browser: &mut Browser, width: usize, height: usize) -> Result<(), 
         let canvas = browser.render(width, height, scroll_y, &pointer);
         window.update_with_buffer(&canvas.to_u32_buffer(), width, height)?;
 
-        // The title bar is the address bar: URL, title and history position.
-        let status = browser.status_line();
+        // minifb has no editable native address widget. Give the title bar
+        // an explicit editing mode while preserving the normal page title.
+        let status = match &location_input {
+            Some(entry) => entry.title(),
+            None => browser.status_line(),
+        };
         if status != title {
             window.set_title(&status);
             title = status;
