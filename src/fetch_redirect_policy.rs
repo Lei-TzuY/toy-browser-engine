@@ -23,6 +23,16 @@ pub enum FetchRedirectMode {
 }
 
 impl FetchRedirectMode {
+    /// Parse the exact Web IDL string accepted by RequestInit.redirect.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "follow" => Some(Self::Follow),
+            "error" => Some(Self::Error),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             FetchRedirectMode::Follow => "follow",
