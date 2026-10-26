@@ -703,11 +703,22 @@ mod tests {
         let mut wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
         wire.extend_from_slice(body);
         let url = Url::parse("http://localhost/overflow").unwrap();
+        // Plain HTTP historically accepts EOF-delimited responses even with
+        // broken chunk framing; the decoder must still never panic.
+        let plain = read_http_message(
+            &mut std::io::Cursor::new(wire.clone()),
+            &url,
+            Method::Get,
+            false,
+        ).expect("legacy plaintext EOF is tolerated");
+        assert!(parse_response(&plain).unwrap().body.is_empty());
+
+        // Under TLS, an incomplete explicitly framed body must not be trusted.
         assert!(read_http_message(
             &mut std::io::Cursor::new(wire),
             &url,
             Method::Get,
-            false,
+            true,
         ).is_err());
     }
 
