@@ -68,6 +68,30 @@ fn verified_https_get_loads_a_real_tls_page_without_close_notify() {
 }
 
 #[test]
+fn clean_tls_close_delimits_body_without_length_headers() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<p>hi</p>";
+    let (port, handle) = tls_server(response, true);
+    let url = Url::parse(&format!("https://localhost:{port}/close-delimited")).unwrap();
+    let resource = verified_loader()
+        .load(&url)
+        .expect("TLS close_notify must terminate an unframed HTTP response");
+    assert_eq!(resource.text(), "<p>hi</p>");
+    handle.join().unwrap();
+}
+
+#[test]
+fn unclean_tls_close_must_not_delimit_body_without_length_headers() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<p>hi</p>";
+    let (port, handle) = tls_server(response, false);
+    let url = Url::parse(&format!("https://localhost:{port}/unclean-close")).unwrap();
+    let error = verified_loader()
+        .fetch(&FetchRequest::get(url))
+        .expect_err("a missing close_notify must not certify a complete response");
+    assert!(error.to_string().starts_with("TypeError"), "{error}");
+    handle.join().unwrap();
+}
+
+#[test]
 fn public_roots_reject_a_private_test_ca() {
     let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
     let (port, handle) = tls_server(response, true);

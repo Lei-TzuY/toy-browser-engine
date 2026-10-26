@@ -272,86 +272,221 @@ fn tls_config(config: &HttpConfig) -> Result<Arc<ClientConfig>, FetchError> {
 /// True only when a response with explicit HTTP/1.1 framing has arrived
 /// completely. TLS peers can legitimately omit close_notify on socket close:
 /// we never accept such an EOF unless the declared response is complete.
-fn http_message_complete(raw: &[u8], method: Method) -> bool {
-    let Some(split) = find_subslice(raw, b"\r\n\r\n") else { return false };
-    if split > MAX_HEADER_BYTES { return false; }
-    let Ok(head) = std::str::from_utf8(&raw[..split]) else { return false };
-    let mut lines = head.split("\r\n");
-    let status = lines.next()
+/// Parse response framing once; do not repeatedly rescan a growing body.
+/// Close-delimited TLS requires a *clean* close_notify, not a raw socket EOF.
+#[derive(Clone, Copy, Debug)]
+enum BodyFraming {
+    NoBody,
+    ContentLength(usize),
+    Chunked,
+    CloseDelimited,
+}
+
+fn response_framing(head: &[u8], method: Method) -> Result<BodyFraming, ()> {
+    let text = std::str::from_utf8(head).map_err(|_| ())?;
+    let mut lines = text.split("\r\n");
+    let status = lines
+        .next()
         .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|s| s.parse::<u16>().ok());
-    if method == Method::Head || matches!(status, Some(204 | 304)) {
-        return true;
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or(())?;
+    if method == Method::Head || matches!(status, 204 | 304) || (100..200).contains(&status) {
+        return Ok(BodyFraming::NoBody);
     }
-    let mut length = None;
+    let mut length: Option<usize> = None;
+    let mut has_transfer_encoding = false;
     let mut chunked = false;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("transfer-encoding") {
+                has_transfer_encoding = true;
                 chunked |= value.to_ascii_lowercase().contains("chunked");
             }
             if name.eq_ignore_ascii_case("content-length") {
-                let Ok(n) = value.trim().parse::<usize>() else { return false };
-                if let Some(previous) = length {
-                    if previous != n { return false; }
+                let n = value.trim().parse::<usize>().map_err(|_| ())?;
+                if length.is_some_and(|previous| previous != n) {
+                    return Err(());
                 }
                 length = Some(n);
             }
         }
     }
-    let body = &raw[split + 4..];
-    if chunked { return complete_chunked_body(body); }
-    length.is_some_and(|n| body.len() >= n)
-}
-
-fn complete_chunked_body(body: &[u8]) -> bool {
-    let mut at = 0usize;
-    loop {
-        let Some(end) = find_subslice(&body[at..], b"\r\n") else { return false };
-        let Some(header) = std::str::from_utf8(&body[at..at + end]).ok() else { return false };
-        let Ok(size) = usize::from_str_radix(header.split(';').next().unwrap_or("").trim(), 16) else {
-            return false;
-        };
-        at += end + 2;
-        if size == 0 {
-            if body.get(at..at + 2) == Some(b"\r\n") { return true; }
-            return find_subslice(&body[at..], b"\r\n\r\n").is_some();
-        }
-        let Some(next) = at.checked_add(size) else { return false };
-        if body.get(next..next + 2) != Some(b"\r\n") { return false; }
-        at = next + 2;
-        if at >= body.len() { return false; }
+    if chunked {
+        Ok(BodyFraming::Chunked)
+    } else if has_transfer_encoding {
+        // Unsupported transfer codings must not be mistaken for a
+        // close-delimited unencoded response.
+        Err(())
+    } else if let Some(length) = length {
+        Ok(BodyFraming::ContentLength(length))
+    } else {
+        Ok(BodyFraming::CloseDelimited)
     }
 }
 
-fn read_http_message(stream: &mut dyn Transport, url: &Url, method: Method, tls: bool) -> Result<Vec<u8>, FetchError> {
+/// Incremental chunk scanner: each input byte is visited O(1) times,
+/// regardless of TLS record and TCP read fragmentation.
+#[derive(Clone, Copy, Debug)]
+enum ChunkState {
+    Size,
+    Data(usize),
+    DataEnd,
+    Trailers,
+    Done,
+}
+struct ChunkScanner {
+    cursor: usize,
+    line_start: usize,
+    state: ChunkState,
+}
+impl ChunkScanner {
+    fn new(start: usize) -> Self {
+        Self { cursor: start, line_start: start, state: ChunkState::Size }
+    }
+
+    fn advance(&mut self, raw: &[u8]) -> Result<bool, ()> {
+        loop {
+            match self.state {
+                ChunkState::Size | ChunkState::Trailers => {
+                    // Keep the last byte if it could be the first half of CRLF.
+                    let mut end = self.cursor;
+                    while end + 1 < raw.len() && &raw[end..end + 2] != b"\r\n" {
+                        end += 1;
+                    }
+                    if end + 1 >= raw.len() {
+                        self.cursor = end;
+                        return Ok(false);
+                    }
+                    let line = &raw[self.line_start..end];
+                    self.cursor = end + 2;
+                    self.line_start = self.cursor;
+                    if matches!(self.state, ChunkState::Trailers) {
+                        if line.is_empty() {
+                            self.state = ChunkState::Done;
+                            return Ok(true);
+                        }
+                        // Ignore trailer fields; their bytes remain bounded by
+                        // the common wire-size cap and are never executed.
+                    } else {
+                        let header = std::str::from_utf8(line).map_err(|_| ())?;
+                        let size = usize::from_str_radix(
+                            header.split(';').next().unwrap_or("").trim(), 16,
+                        ).map_err(|_| ())?;
+                        self.state = if size == 0 {
+                            ChunkState::Trailers
+                        } else {
+                            ChunkState::Data(size)
+                        };
+                    }
+                }
+                ChunkState::Data(remaining) => {
+                    let available = raw.len() - self.cursor;
+                    let consumed = available.min(remaining);
+                    self.cursor += consumed;
+                    let left = remaining - consumed;
+                    if left != 0 {
+                        self.state = ChunkState::Data(left);
+                        return Ok(false);
+                    }
+                    self.state = ChunkState::DataEnd;
+                }
+                ChunkState::DataEnd => {
+                    let Some(after_end) = self.cursor.checked_add(2) else {
+                        return Err(());
+                    };
+                    if after_end > raw.len() {
+                        return Ok(false);
+                    }
+                    if &raw[self.cursor..after_end] != b"\r\n" {
+                        return Err(());
+                    }
+                    self.cursor = after_end;
+                    self.line_start = self.cursor;
+                    self.state = ChunkState::Size;
+                }
+                ChunkState::Done => return Ok(true),
+            }
+        }
+    }
+}
+
+fn read_http_message(
+    stream: &mut dyn Transport,
+    url: &Url,
+    method: Method,
+    tls: bool,
+) -> Result<Vec<u8>, FetchError> {
     let mut raw = Vec::new();
     let mut buf = [0u8; 8192];
-    // Bound input before parsing; large or malformed bodies must not grow memory without limit.
+    let mut framing: Option<BodyFraming> = None;
+    let mut body_start = 0usize;
+    let mut chunk: Option<ChunkScanner> = None;
     const MAX_WIRE_BYTES: usize = MAX_BODY_BYTES + MAX_HEADER_BYTES * 4;
+
     loop {
-        if http_message_complete(&raw, method) { return Ok(raw); }
+        if let Some(kind) = framing {
+            let complete = match kind {
+                BodyFraming::NoBody => true,
+                BodyFraming::ContentLength(n) => raw.len() - body_start >= n,
+                BodyFraming::Chunked => chunk
+                    .as_mut()
+                    .expect("chunk scanner created with framing")
+                    .advance(&raw)
+                    .map_err(|_| FetchError::MalformedResponse(url.to_string()))?,
+                BodyFraming::CloseDelimited => false,
+            };
+            if complete {
+                return Ok(raw);
+            }
+        }
         match stream.read(&mut buf) {
             Ok(0) => {
-                if tls && !http_message_complete(&raw, method) {
-                    return Err(FetchError::Io(format!("{url}: TLS closed before a complete HTTP response")));
+                // rustls returns Ok(0) after an authenticated close_notify.
+                // Raw TCP also allows EOF framing; a TLS UnexpectedEof does not.
+                if matches!(framing, Some(BodyFraming::CloseDelimited)) {
+                    return Ok(raw);
                 }
-                return Ok(raw);
+                if tls {
+                    return Err(FetchError::Io(format!(
+                        "{url}: TLS closed before a complete HTTP response"
+                    )));
+                }
+                // Preserve plain-HTTP behavior for EOF, but reject malformed
+                // headers and incomplete explicitly framed responses.
+                return if framing.is_some() {
+                    Err(FetchError::MalformedResponse(url.to_string()))
+                } else {
+                    Ok(raw)
+                };
             }
             Ok(n) => {
                 if raw.len().saturating_add(n) > MAX_WIRE_BYTES {
                     return Err(FetchError::Io(format!("{url}: response exceeds size limit")));
                 }
                 raw.extend_from_slice(&buf[..n]);
-                if raw.len() > MAX_HEADER_BYTES && find_subslice(&raw, b"\r\n\r\n").is_none() {
-                    return Err(FetchError::MalformedResponse(url.to_string()));
+                if framing.is_none() {
+                    if let Some(split) = find_subslice(&raw, b"\r\n\r\n") {
+                        if split > MAX_HEADER_BYTES {
+                            return Err(FetchError::MalformedResponse(url.to_string()));
+                        }
+                        let kind = response_framing(&raw[..split], method)
+                            .map_err(|_| FetchError::MalformedResponse(url.to_string()))?;
+                        body_start = split + 4;
+                        if matches!(kind, BodyFraming::Chunked) {
+                            chunk = Some(ChunkScanner::new(body_start));
+                        }
+                        framing = Some(kind);
+                    } else if raw.len() > MAX_HEADER_BYTES {
+                        return Err(FetchError::MalformedResponse(url.to_string()));
+                    }
                 }
             }
-            Err(e) if tls && e.kind() == std::io::ErrorKind::UnexpectedEof
-                && http_message_complete(&raw, method) => return Ok(raw),
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-                return Err(FetchError::Timeout(url.to_string()));
-            }
+            Err(e) if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => return Err(FetchError::Timeout(url.to_string())),
+            // UnexpectedEof from rustls is an unclean transport close. It must
+            // never finish a body without explicit length/chunk framing.
             Err(e) => return Err(FetchError::Io(format!("{url}: {e}"))),
         }
     }
@@ -520,15 +655,14 @@ fn decode_chunked(mut input: &[u8]) -> Vec<u8> {
         if size == 0 {
             break;
         }
-        let start = line_end + 2;
-        let end = (start + size).min(input.len());
+        let Some(start) = line_end.checked_add(2) else { break };
+        let Some(end) = start.checked_add(size) else { break };
+        let Some(after_chunk) = end.checked_add(2) else { break };
+        if after_chunk > input.len() || input.get(end..after_chunk) != Some(b"\r\n") {
+            break;
+        }
         out.extend_from_slice(&input[start..end]);
-        // Skip the chunk and its trailing CRLF.
-        input = if end + 2 <= input.len() {
-            &input[end + 2..]
-        } else {
-            &[]
-        };
+        input = &input[after_chunk..];
     }
     out
 }
@@ -542,6 +676,43 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_fragmented_chunked_message_is_scanned_incrementally() {
+        let mut body = Vec::new();
+        for _ in 0..131_072 {
+            body.extend_from_slice(b"1\r\nx\r\n");
+        }
+        body.extend_from_slice(b"0\r\n\r\n");
+        let mut wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        wire.extend_from_slice(&body);
+        let url = Url::parse("http://localhost/stream").unwrap();
+        let raw = read_http_message(
+            &mut std::io::Cursor::new(wire),
+            &url,
+            Method::Get,
+            false,
+        )
+        .expect("many tiny chunks must be linear and valid");
+        let response = parse_response(&raw).expect("decode complete chunked body");
+        assert_eq!(response.body.len(), 131_072);
+        assert!(response.body.iter().all(|byte| *byte == b'x'));
+    }
+
+    #[test]
+    fn huge_chunk_size_never_overflows_or_panics() {
+        let body = b"ffffffffffffffff\r\nx\r\n0\r\n\r\n";
+        assert!(decode_chunked(body).is_empty());
+        let mut wire = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+        wire.extend_from_slice(body);
+        let url = Url::parse("http://localhost/overflow").unwrap();
+        assert!(read_http_message(
+            &mut std::io::Cursor::new(wire),
+            &url,
+            Method::Get,
+            false,
+        ).is_err());
+    }
 
     #[test]
     fn parses_status_headers_and_body() {
