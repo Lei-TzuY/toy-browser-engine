@@ -98,7 +98,7 @@ pipeline never touches a socket or the filesystem directly.
 | --- | --- |
 | `file:` | Full read access; CLI paths are converted to `file://` URLs |
 | `http:` | Built-in HTTP/1.1 client (redirects, chunked encoding, status handling, timeouts) |
-| `https:` | **Not supported** — reported as a typed error rather than downgraded (no TLS stack) |
+| `https:` | TLS 1.2/1.3 over rustls with Mozilla CA roots and hostname verification; no insecure fallback |
 | in-memory | `MemoryLoader`, used by the embedded demo site and by tests |
 
 URL handling covers absolute URLs, protocol-relative `//host/p`, root-relative
@@ -634,7 +634,7 @@ These, and only these, reject:
 | Rejection | When |
 | --- | --- |
 | invalid URL | it cannot be resolved against the document |
-| unsupported scheme | anything outside `http:`/`file:`/the document's own — including `https:`, which has no TLS stack |
+| unsupported scheme | schemes outside those supported by the active resource loader; `https:` is supported with verified TLS |
 | blocked | the same-origin policy said no |
 | bad request | a body on a `GET`, an unusable header, an unsupported `mode` |
 | unsupported method | `TRACE`, `CONNECT`, anything not in the list above |
@@ -821,7 +821,7 @@ cargo clippy --all-targets  # 0 warnings
 
 ## Known limitations
 
-- **No TLS**, so `https:` URLs are refused with a clear error.
+- **HTTPS uses verified TLS**, with a fixed trust-store release and no insecure fallback; HTTP/2 and QUIC are not implemented.
 - **No streaming or incremental rendering**: a document is fully loaded, then
   laid out.
 - There is no module system and no network API for scripts, and `Math.random`

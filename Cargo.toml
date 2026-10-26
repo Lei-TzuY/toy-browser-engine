@@ -24,6 +24,10 @@ png = "0.18.1"
 # time, so the single-threaded build keeps the dependency tree small.
 jpeg-decoder = { version = "0.3.2", default-features = false }
 sha2 = "0.10.9"
+# Keep certificate/hostname verification mandatory. ring works on Linux/macOS/Windows.
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring", "tls12"] }
+# >=1.0.10 removes distrusted emSign roots (RUSTSEC-2026-0381).
+webpki-roots = "1.0.11"
 
 [profile.dev]
 opt-level = 0

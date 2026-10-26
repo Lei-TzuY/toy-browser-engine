@@ -1,0 +1,23 @@
+name: TLS candidate lockfile preflight
+on:
+  push:
+    branches:
+      - feature/https-tls-verified-20261026
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve dependencies
+        run: cargo fetch
+      - name: Expose generated lockfile for exact recovery
+        run: |
+          echo 'TLS_LOCK_BEGIN'
+          base64 -w0 Cargo.lock
+          echo
+          echo 'TLS_LOCK_END'
+      - name: Test candidate on Linux
+        run: cargo test --locked

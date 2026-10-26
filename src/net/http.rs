@@ -4,8 +4,8 @@
 //
 //  Enough of HTTP to fetch a page, its subresources and anything a script
 //  asks for over a plain TCP socket: request line, headers, request bodies,
-//  status parsing, redirects, and chunked transfer decoding. No TLS — see
-//  `net::LoadError::UnsupportedScheme`.
+//  status parsing, redirects, and chunked transfer decoding. HTTPS is TLS
+//  1.2/1.3 with rustls and verified certificate/host-name trust.
 //
 //  There is one request path. [`send`] is the whole client and speaks the
 //  fetch vocabulary; [`get`] is navigation's view of the same code, mapping a
@@ -15,7 +15,11 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use super::fetch::{reason_phrase, FetchError, FetchRequest, FetchResponse, HeaderMap, Method};
 use super::url::Url;
@@ -35,6 +39,9 @@ pub struct HttpConfig {
     pub timeout: Duration,
     pub max_redirects: u8,
     pub user_agent: String,
+    /// Additional application-trusted DER CA roots; empty means Mozilla roots only.
+    /// Never supplied by a web page. Useful for private PKI and loopback tests.
+    pub extra_tls_roots: Vec<Vec<u8>>,
 }
 
 impl Default for HttpConfig {
@@ -43,6 +50,7 @@ impl Default for HttpConfig {
             timeout: DEFAULT_TIMEOUT,
             max_redirects: DEFAULT_MAX_REDIRECTS,
             user_agent: format!("BrowserEngineToy/{}", env!("CARGO_PKG_VERSION")),
+            extra_tls_roots: Vec::new(),
         }
     }
 }
@@ -231,6 +239,124 @@ fn load_error_for(url: &Url) -> impl Fn(FetchError) -> LoadError + '_ {
     }
 }
 
+/// I/O is always through one transport: plain TCP for HTTP, verified TLS
+/// for HTTPS. Browser policy (redirects, cookies, CORS) stays above this layer.
+trait Transport: Read + Write {}
+impl<T: Read + Write> Transport for T {}
+
+fn tls_config(config: &HttpConfig) -> Result<Arc<ClientConfig>, FetchError> {
+    static DEFAULT: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+    if config.extra_tls_roots.is_empty() {
+        return Ok(DEFAULT
+            .get_or_init(|| {
+                let roots = RootCertStore::from_iter(
+                    webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+                );
+                Arc::new(ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth())
+            })
+            .clone());
+    }
+
+    let mut roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for der in &config.extra_tls_roots {
+        roots.add(CertificateDer::from(der.clone()))
+            .map_err(|e| FetchError::Io(format!("invalid additional TLS CA root: {e}")))?;
+    }
+    Ok(Arc::new(ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()))
+}
+
+/// True only when a response with explicit HTTP/1.1 framing has arrived
+/// completely. TLS peers can legitimately omit close_notify on socket close:
+/// we never accept such an EOF unless the declared response is complete.
+fn http_message_complete(raw: &[u8], method: Method) -> bool {
+    let Some(split) = find_subslice(raw, b"\r\n\r\n") else { return false };
+    if split > MAX_HEADER_BYTES { return false; }
+    let Ok(head) = std::str::from_utf8(&raw[..split]) else { return false };
+    let mut lines = head.split("\r\n");
+    let status = lines.next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok());
+    if method == Method::Head || matches!(status, Some(204 | 304)) {
+        return true;
+    }
+    let mut length = None;
+    let mut chunked = false;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("transfer-encoding") {
+                chunked |= value.to_ascii_lowercase().contains("chunked");
+            }
+            if name.eq_ignore_ascii_case("content-length") {
+                let Ok(n) = value.trim().parse::<usize>() else { return false };
+                if let Some(previous) = length {
+                    if previous != n { return false; }
+                }
+                length = Some(n);
+            }
+        }
+    }
+    let body = &raw[split + 4..];
+    if chunked { return complete_chunked_body(body); }
+    length.is_some_and(|n| body.len() >= n)
+}
+
+fn complete_chunked_body(body: &[u8]) -> bool {
+    let mut at = 0usize;
+    loop {
+        let Some(end) = find_subslice(&body[at..], b"\r\n") else { return false };
+        let Some(header) = std::str::from_utf8(&body[at..at + end]).ok() else { return false };
+        let Ok(size) = usize::from_str_radix(header.split(';').next().unwrap_or("").trim(), 16) else {
+            return false;
+        };
+        at += end + 2;
+        if size == 0 {
+            if body.get(at..at + 2) == Some(b"\r\n") { return true; }
+            return find_subslice(&body[at..], b"\r\n\r\n").is_some();
+        }
+        let Some(next) = at.checked_add(size) else { return false };
+        if body.get(next..next + 2) != Some(b"\r\n") { return false; }
+        at = next + 2;
+        if at >= body.len() { return false; }
+    }
+}
+
+fn read_http_message(stream: &mut dyn Transport, url: &Url, method: Method, tls: bool) -> Result<Vec<u8>, FetchError> {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    // Bound input before parsing; large or malformed bodies must not grow memory without limit.
+    const MAX_WIRE_BYTES: usize = MAX_BODY_BYTES + MAX_HEADER_BYTES * 4;
+    loop {
+        if http_message_complete(&raw, method) { return Ok(raw); }
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                if tls && !http_message_complete(&raw, method) {
+                    return Err(FetchError::Io(format!("{url}: TLS closed before a complete HTTP response")));
+                }
+                return Ok(raw);
+            }
+            Ok(n) => {
+                if raw.len().saturating_add(n) > MAX_WIRE_BYTES {
+                    return Err(FetchError::Io(format!("{url}: response exceeds size limit")));
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if raw.len() > MAX_HEADER_BYTES && find_subslice(&raw, b"\r\n\r\n").is_none() {
+                    return Err(FetchError::MalformedResponse(url.to_string()));
+                }
+            }
+            Err(e) if tls && e.kind() == std::io::ErrorKind::UnexpectedEof
+                && http_message_complete(&raw, method) => return Ok(raw),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                return Err(FetchError::Timeout(url.to_string()));
+            }
+            Err(e) => return Err(FetchError::Io(format!("{url}: {e}"))),
+        }
+    }
+}
+
 /// One request/response exchange over a fresh connection.
 fn exchange(
     url: &Url,
@@ -239,45 +365,55 @@ fn exchange(
     body: Option<&[u8]>,
     config: &HttpConfig,
 ) -> Result<RawResponse, FetchError> {
-    if url.scheme() != "http" {
+    if !matches!(url.scheme(), "http" | "https") {
         return Err(FetchError::UnsupportedScheme(url.scheme().to_string()));
     }
-    let host = url.host();
+    // URL authority stores an IPv6 host including brackets; address resolution
+    // and ServerName both require the underlying literal without brackets.
+    let host = url.host().trim_start_matches('[').trim_end_matches(']');
     let port = url.port_or_default().unwrap_or(80);
     if host.is_empty() {
         return Err(FetchError::InvalidUrl(format!("{url} has no host")));
     }
 
-    let address = (host, port)
+    let addresses = (host, port)
         .to_socket_addrs()
-        .map_err(|e| FetchError::Io(format!("{url}: {e}")))?
-        .next()
-        .ok_or_else(|| FetchError::Io(format!("could not resolve {host}")))?;
-
-    let mut stream = TcpStream::connect_timeout(&address, config.timeout)
         .map_err(|e| FetchError::Io(format!("{url}: {e}")))?;
-    stream.set_read_timeout(Some(config.timeout)).ok();
-    stream.set_write_timeout(Some(config.timeout)).ok();
+    let mut last_error = None;
+    let mut tcp = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, config.timeout) {
+            Ok(stream) => { tcp = Some(stream); break; }
+            Err(e) => last_error = Some(e),
+        }
+    }
+    let tcp = tcp.ok_or_else(|| FetchError::Io(format!("{url}: {}", last_error
+        .map_or_else(|| "no address resolved".to_string(), |e| e.to_string()))))?;
+    tcp.set_read_timeout(Some(config.timeout)).ok();
+    tcp.set_write_timeout(Some(config.timeout)).ok();
+
+    let is_tls = url.scheme() == "https";
+    let mut stream: Box<dyn Transport> = if is_tls {
+        let server_name = ServerName::try_from(host.to_string())
+            .map_err(|_| FetchError::InvalidUrl(format!("{url}: invalid TLS server name")))?;
+        let connection = ClientConnection::new(tls_config(config)?, server_name)
+            .map_err(|e| FetchError::Io(format!("{url}: TLS configuration: {e}")))?;
+        Box::new(StreamOwned::new(connection, tcp))
+    } else {
+        Box::new(tcp)
+    };
 
     let head = request_head(url, method, headers, body, config);
-    stream
-        .write_all(head.as_bytes())
+    stream.write_all(head.as_bytes())
         .map_err(|e| FetchError::Io(format!("{url}: {e}")))?;
     if let Some(body) = body {
-        stream
-            .write_all(body)
+        stream.write_all(body)
             .map_err(|e| FetchError::Io(format!("{url}: {e}")))?;
     }
+    stream.flush()
+        .map_err(|e| FetchError::Io(format!("{url}: {e}")))?;
 
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
-            FetchError::Timeout(url.to_string())
-        } else {
-            FetchError::Io(format!("{url}: {e}"))
-        }
-    })?;
-
+    let raw = read_http_message(&mut *stream, url, method, is_tls)?;
     parse_response(&raw).ok_or_else(|| FetchError::MalformedResponse(url.to_string()))
 }
 
@@ -289,8 +425,9 @@ fn request_head(
     body: Option<&[u8]>,
     config: &HttpConfig,
 ) -> String {
+    let default_port = if url.scheme() == "https" { 443 } else { 80 };
     let host_header = match url.port_or_default() {
-        Some(port) if port != 80 => format!("{}:{}", url.host(), port),
+        Some(port) if port != default_port => format!("{}:{}", url.host(), port),
         _ => url.host().to_string(),
     };
 
