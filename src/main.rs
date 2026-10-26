@@ -27,7 +27,7 @@ use location_input::{LocationAction, LocationInput};
 const USAGE: &str = "\
 Usage: browser_engine [options] [<url-or-file> [<out.ppm>]]
 
-  <url-or-file>   file path, file:// or http:// URL (default: the built-in demo site)
+  <url-or-file>   file path, file://, http:// or https:// URL (default: the built-in demo site)
   <out.ppm>       write the rendered page here (default: output.ppm)
 
 Options:
