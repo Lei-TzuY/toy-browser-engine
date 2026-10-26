@@ -38,6 +38,21 @@ use std::path::Path;
 use super::fetch::Origin;
 use super::{FetchRequest, FetchResponse, LoadError, Resource, ResourceLoader, Url};
 
+/// Conservative active/passive mixed-content boundary. The committed page URL,
+/// never <base href> or a Referrer header, owns the security context.
+/// No 'localhost' exemption yet: never send plaintext subresources from an
+/// HTTPS document, even when the endpoint would be loopback.
+pub fn is_mixed_content(document: &Url, target: &Url) -> bool {
+    document.scheme() == "https" && target.scheme() == "http"
+}
+
+/// Same rule for a request tagged with a browser-owned document origin.
+pub fn is_mixed_content_origin(document: &Origin, target: &Url) -> bool {
+    matches!(document, Origin::Tuple { scheme, .. } if scheme == "https")
+        && target.scheme() == "http"
+}
+
+
 /// The page a subresource is loaded for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Requester {
@@ -84,6 +99,11 @@ impl Requester {
     /// Only `file:` targets are restricted. This is the check on the URL's
     /// spelling; [`SubresourceLoader`] checks the opened file as well.
     pub fn authorize(&self, target: &Url) -> Result<(), LoadError> {
+        if is_mixed_content(&self.document, target) {
+            return Err(LoadError::Blocked(format!(
+                "mixed content: HTTPS document {} cannot load insecure {}", self.document, target
+            )));
+        }
         if target.scheme() != "file" {
             return Ok(());
         }

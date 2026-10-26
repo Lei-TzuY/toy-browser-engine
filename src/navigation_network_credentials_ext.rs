@@ -44,6 +44,9 @@ impl NavigationNetwork {
     ) -> Result<FetchResponse, FetchError> {
         let mut planner = RedirectPlanner::default();
         let mut current = request.clone();
+        // Stable identity: never derive the initiator from a redirect response
+        // or a caller-controlled Referer header.
+        let initiator = request.initiator.clone();
         let mut hop_context = SameSiteRequestContext::new(
             context.same_site,
             context.top_level_navigation,
@@ -57,6 +60,16 @@ impl NavigationNetwork {
                 credentials_mode,
                 credential_source,
             );
+            // HSTS has already upgraded effective.url; block plaintext *before*
+            // fetch_once, including redirects with crossorigin credentials.
+            if initiator.as_ref().is_some_and(|source| {
+                crate::net::scope::is_mixed_content_origin(source, &effective.url)
+            }) {
+                return Err(FetchError::Blocked(format!(
+                    "mixed content: secure document cannot fetch insecure {}",
+                    effective.url
+                )));
+            }
             if let Some(state) = referrer.as_ref() {
                 state.prepare_request(&mut effective);
             }

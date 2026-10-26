@@ -17,6 +17,7 @@ use crate::hsts_network::HstsCacheRef;
 use crate::net::{
     FetchError, FetchRequest, FetchResponse, LoadError, Method, ResourceLoader, Url,
 };
+use crate::net::scope::is_mixed_content_origin;
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
 use crate::referrer_policy::RedirectReferrerState;
 
@@ -201,6 +202,9 @@ impl NavigationNetwork {
     ) -> Result<FetchResponse, FetchError> {
         let mut planner = RedirectPlanner::default();
         let mut current = request.clone();
+        // Preserve the document identity across every redirect, regardless
+        // of what a transport or redirect planner does to current headers.
+        let initiator = request.initiator.clone();
         let mut hop_context = SameSiteRequestContext::new(
             context.same_site,
             context.top_level_navigation,
@@ -209,6 +213,14 @@ impl NavigationNetwork {
 
         loop {
             let mut effective = self.prepare_request(&current, hop_context);
+            if initiator.as_ref().is_some_and(|source| {
+                is_mixed_content_origin(source, &effective.url)
+            }) {
+                return Err(FetchError::Blocked(format!(
+                    "mixed content: secure document cannot fetch insecure {}",
+                    effective.url
+                )));
+            }
             if let Some(state) = referrer.as_ref() {
                 state.prepare_request(&mut effective);
             }

@@ -33,6 +33,7 @@ use crate::net::fetch::{
     Origin,
 };
 use crate::net::Url;
+use crate::net::scope::is_mixed_content;
 use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 
 use super::host::{
@@ -472,6 +473,17 @@ impl JsRuntime {
         // The document's own URL is the security identity, never its <base href>
         // and never its referrer source.
         let environment_url = &self.url;
+        // Standalone runtimes have no HSTS-aware browser session: reject now.
+        // Browser sessions enforce this at the actual post-HSTS dispatch
+        // boundary, where a Known HSTS Host can be safely upgraded first.
+        if is_mixed_content(environment_url, &request.url)
+            && cors_redirect_policy_registry_for_jar(&self.cookie_jar).is_none()
+        {
+            return Err(FetchError::Blocked(format!(
+                "mixed content: HTTPS document cannot fetch insecure {}",
+                request.url
+            )));
+        }
         let source_origin = Origin::of(environment_url);
         let same_origin = source_origin.can_fetch(&request.url);
         let cross_origin_web = matches!(environment_url.scheme(), "http" | "https")

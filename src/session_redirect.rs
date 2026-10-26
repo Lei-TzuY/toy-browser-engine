@@ -28,6 +28,7 @@ use crate::fetch_cors_redirect::{
 use crate::fetch_redirect_policy::{FetchRedirectMode, FetchRedirectPolicyRegistry};
 use crate::hsts_network::HstsCacheRef;
 use crate::net::{FetchCompletion, FetchError, FetchId, FetchRequest, NetworkBackend, Origin, Url};
+use crate::net::scope::{is_mixed_content, is_mixed_content_origin};
 use crate::redirect_policy::{RedirectError, RedirectPlanner};
 use crate::referrer_policy::RedirectReferrerState;
 
@@ -66,6 +67,9 @@ pub(crate) struct SessionRedirectNetwork {
     redirect_policies: FetchRedirectPolicyRegistry,
     cors_redirect_policies: FetchCorsRedirectPolicyRegistry,
     chains: RefCell<HashMap<FetchId, RedirectChain>>,
+    /// Rejections that must settle as normal asynchronous Fetch completions,
+    /// without dispatching any bytes to the wrapped network transport.
+    blocked: RefCell<Vec<FetchCompletion>>,
 }
 
 impl SessionRedirectNetwork {
@@ -87,6 +91,7 @@ impl SessionRedirectNetwork {
             redirect_policies,
             cors_redirect_policies,
             chains: RefCell::new(HashMap::new()),
+            blocked: RefCell::new(Vec::new()),
         }
     }
 
@@ -210,6 +215,25 @@ impl NetworkBackend for SessionRedirectNetwork {
             .map(|policy| policy.referrer.clone())
             .unwrap_or_else(RedirectReferrerState::no_referrer);
         let effective_url = self.effective_url(&request);
+        // The authoritative mixed-content boundary is after HSTS, so an
+        // http: spelling for a Known HSTS Host is allowed only when the
+        // actual wire request is upgraded to https:. Reject before any
+        // Cookie, preflight or transport dispatch.
+        if request_policy.as_ref().is_some_and(|policy| {
+            is_mixed_content(&policy.source_url, &effective_url)
+        }) || request.initiator.as_ref().is_some_and(|source| {
+            is_mixed_content_origin(source, &effective_url)
+        }) {
+            self.cookie_policies.remove(id);
+            self.blocked.borrow_mut().push(FetchCompletion {
+                id,
+                result: Err(FetchError::Blocked(format!(
+                    "mixed content: HTTPS document cannot fetch insecure {}",
+                    effective_url
+                ))),
+            });
+            return;
+        }
         Self::prepare_referrer_for_effective_target(&referrer, &mut request, &effective_url);
         let mut effective_request = request.clone();
         effective_request.url = effective_url;
@@ -245,7 +269,8 @@ impl NetworkBackend for SessionRedirectNetwork {
     }
 
     fn poll(&self) -> Vec<FetchCompletion> {
-        let completions = self.inner.poll();
+        let mut completions = std::mem::take(&mut *self.blocked.borrow_mut());
+        completions.extend(self.inner.poll());
         let mut visible = Vec::new();
 
         for mut completion in completions {
@@ -420,6 +445,19 @@ impl NetworkBackend for SessionRedirectNetwork {
                     }
 
                     let effective_next = self.effective_url(&next_request);
+                    // HSTS is applied first. An HTTPS page must not fetch
+                    // http: on a later redirect, before cookies or preflight.
+                    if chain.request_policy.as_ref().is_some_and(|policy| {
+                        is_mixed_content(&policy.source_url, &effective_next)
+                    }) {
+                        completion.result = Err(FetchError::Blocked(format!(
+                            "mixed content: HTTPS document cannot follow redirect to {}",
+                            effective_next
+                        )));
+                        self.clear_current_preflight_tuple(&chain);
+                        visible.push(completion);
+                        continue;
+                    }
                     let next_origin = Origin::of(&effective_next);
                     let mut redirect_preflight: Option<Vec<String>> = None;
 
@@ -574,6 +612,7 @@ impl NetworkBackend for SessionRedirectNetwork {
     }
 
     fn cancel(&self, id: FetchId) {
+        self.blocked.borrow_mut().retain(|completion| completion.id != id);
         self.chains.borrow_mut().remove(&id);
         self.redirect_policies.remove(id);
         self.cors_redirect_policies.remove(id);
@@ -582,10 +621,12 @@ impl NetworkBackend for SessionRedirectNetwork {
     }
 
     fn is_busy(&self) -> bool {
-        !self.chains.borrow().is_empty() || self.inner.is_busy()
+        !self.blocked.borrow().is_empty()
+            || !self.chains.borrow().is_empty()
+            || self.inner.is_busy()
     }
 
     fn wait(&self, timeout: Duration) -> bool {
-        self.inner.wait(timeout)
+        !self.blocked.borrow().is_empty() || self.inner.wait(timeout)
     }
 }
