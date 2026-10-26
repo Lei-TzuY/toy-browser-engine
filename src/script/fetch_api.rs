@@ -28,7 +28,10 @@ use crate::fetch_cors_redirect::{
     FetchRequestMode,
 };
 use crate::fetch_redirect_policy::{redirect_policy_registry_for_jar, FetchRedirectMode};
-use crate::net::fetch::{FetchError, FetchRequest, FetchResponse, HeaderMap, Method, Origin};
+use crate::net::fetch::{
+    file_target_stays_in_directory, FetchError, FetchRequest, FetchResponse, HeaderMap, Method,
+    Origin,
+};
 use crate::net::Url;
 use crate::referrer_policy::{RedirectReferrerState, ReferrerPolicy};
 
@@ -110,7 +113,7 @@ impl JsRuntime {
             Ok((request, cookie_policy, cors, opaque)) => {
                 let signal = request.signal.clone();
                 let redirect = request.redirect;
-                let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url).clone();
+                let environment_url = self.url.clone();
                 let referrer = request_referrer_state(
                     &request,
                     self.referrer_source.as_ref(),
@@ -131,6 +134,7 @@ impl JsRuntime {
                     let queued = if needs_preflight {
                         let cors = cors.expect("preflight requires CORS state");
                         let mut preflight = build_cors_preflight_request(&request, &cors);
+                        preflight.initiator = Some(Origin::of(&self.url));
                         redirect_context.referrer.prepare_request(&mut preflight);
                         let pending = PendingFetch {
                             promise: promise.clone(),
@@ -148,6 +152,7 @@ impl JsRuntime {
                         let integrity = request.integrity.clone();
                         let method = request.method;
                         let mut wire = request.to_wire();
+                        wire.initiator = Some(Origin::of(&self.url));
                         redirect_context.referrer.prepare_request(&mut wire);
                         let pending = PendingFetch {
                             promise: promise.clone(),
@@ -451,6 +456,8 @@ impl JsRuntime {
             ));
         }
 
+        // Policy, applied once, on the URL that will actually be requested,
+        // for the document's own URL — never its `<base href>`.
         let scheme = request.url.scheme();
         if !FETCHABLE_SCHEMES.contains(&scheme) && scheme != self.url.scheme() {
             return Err(FetchError::UnsupportedScheme(scheme.to_string()));
@@ -462,7 +469,9 @@ impl JsRuntime {
             ));
         }
 
-        let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url);
+        // The document's own URL is the security identity, never its <base href>
+        // and never its referrer source.
+        let environment_url = &self.url;
         let source_origin = Origin::of(environment_url);
         let same_origin = source_origin.can_fetch(&request.url);
         let cross_origin_web = matches!(environment_url.scheme(), "http" | "https")
@@ -575,6 +584,15 @@ impl JsRuntime {
             SameSiteRequestContext::cross_site_subresource(request.method)
         };
         let cookie_policy = CookieRequestPolicy::new(credentials, same_site);
+
+        if request.url.scheme() == "file"
+            && !file_target_stays_in_directory(&self.url, &request.url)
+        {
+            return Err(FetchError::Blocked(format!(
+                "{} resolves outside this page's directory",
+                request.url
+            )));
+        }
 
         Ok((request, cookie_policy, cors, opaque))
     }
@@ -727,7 +745,7 @@ impl JsRuntime {
         }
 
         let mut url = self.resolve_fetch_url(value)?;
-        let environment_url = self.referrer_source.as_ref().unwrap_or(&self.url);
+        let environment_url = &self.url;
         if !Origin::of(environment_url).can_fetch(&url) {
             return Err(FetchError::BadRequest(format!(
                 "referrer URL {} is not same-origin with {}",
@@ -738,12 +756,15 @@ impl JsRuntime {
         Ok(RequestReferrer::Url(url))
     }
 
+    /// Resolve a fetch URL against the document's base, as a relative
+    /// reference. Resolution only: `prepare_request` still authorizes the
+    /// result against the document's own URL.
     fn resolve_fetch_url(&self, reference: &str) -> Result<Url, FetchError> {
         let trimmed = reference.trim();
         if trimmed.is_empty() {
             return Err(FetchError::InvalidUrl("(empty)".into()));
         }
-        self.url
+        self.base_url
             .join(trimmed)
             .map_err(|_| FetchError::InvalidUrl(trimmed.to_string()))
     }
