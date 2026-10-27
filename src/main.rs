@@ -26,7 +26,7 @@ mod tabs;
 mod toolbar;
 
 use tab_strip::{route_window, TabStrip, WindowPoint, TAB_STRIP_HEIGHT};
-use tabs::{Applied, ShortcutKeyFilter, TabCommand, Tabs};
+use tabs::{Applied, TabCommand, Tabs};
 use toolbar::{compose, Command, TOOLBAR_HEIGHT};
 
 const USAGE: &str = "\
@@ -508,7 +508,6 @@ fn run_window(
     // A window-level message, such as a new tab that failed to load. It
     // leads the title until the next tab action.
     let mut notice: Option<String> = None;
-    let mut shortcut_keys = ShortcutKeyFilter::default();
 
     while window.is_open() {
         let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
@@ -517,7 +516,7 @@ fn run_window(
 
         // ── Tab shortcuts ─────────────────────────────────────────────────
         // First, so the rest of the frame already works on the tab they
-        // pick. A frame with one hands no keys to any tab.
+        // pick. The adapter removes only the keys owned by the shortcut.
         let mut tab_key = None;
         if ctrl && !chrome {
             if window.is_key_pressed(Key::T, minifb::KeyRepeat::No) {
@@ -597,8 +596,8 @@ fn run_window(
         // Consume once per frame, even for Alt shortcuts, so old text input
         // cannot leak into a document on a later frame. Tab shortcut keys,
         // including their auto-repeats, never reach a tab.
-        let events = shortcut_keys.filter(ctrl, input.drain(&window));
-        if !address_opened && tab_key.is_none() {
+        let events = input.drain(&window);
+        if !address_opened {
             command = command.or(tab.handle_keys(events, chrome));
         }
 

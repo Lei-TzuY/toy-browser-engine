@@ -14,7 +14,7 @@
 
 use browser_engine::{
     browser::{Browser, ClickOutcome},
-    input::{Key, KeyEvent},
+    input::KeyEvent,
     net::{url_from_argument, LoadError},
 };
 
@@ -326,44 +326,44 @@ impl Tabs {
     }
 }
 
-/// Whether `event` is half of a tab shortcut (Ctrl+T, Ctrl+W, Ctrl+Tab,
-/// Ctrl+1…9). Those keys belong to the window and never reach the address
-/// field or the page, including auto-repeats and the character a platform
-/// may report alongside the physical key.
-///
-/// `ctrl_recent` says Ctrl was held this frame or the one before, for an
-/// event stamped without Ctrl because Ctrl came up in the same frame.
-pub(crate) fn is_tab_shortcut_key(event: &KeyEvent, ctrl_recent: bool) -> bool {
-    let modifiers = event.modifiers;
-    if !(modifiers.ctrl || ctrl_recent) || modifiers.alt {
-        return false;
-    }
-    match &event.key {
-        Key::Tab => true,
-        Key::Character(c) => matches!(c, 't' | 'T' | 'w' | 'W' | '1'..='9'),
-        _ => false,
-    }
+/// The physical keys used by tab shortcuts. Text is never mapped back to
+/// these names: e.g. a layout can produce `1` from a different physical key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShortcutKey {
+    Tab,
+    T,
+    W,
+    Key1,
+    Key2,
+    Key3,
+    Key4,
+    Key5,
+    Key6,
+    Key7,
+    Key8,
+    Key9,
 }
 
-/// Removes tab shortcut keys from each frame's key events.
-///
-/// Events are stamped with the modifiers sampled once per frame, so the last
-/// auto-repeat of a held Ctrl+Tab or Ctrl+digit can arrive without Ctrl when
-/// Ctrl is released in the same frame. Remembering whether Ctrl was down in
-/// the previous frame keeps that stray repeat out of the page and the address
-/// field; Tab and digits typed after that one-frame boundary pass through.
+/// A key used with Ctrl (without Alt/AltGr) belongs to chrome until its
+/// physical release. The callback processes characters before that release,
+/// so queued text keeps its ownership decision even if drained much later.
 #[derive(Debug, Default)]
 pub(crate) struct ShortcutKeyFilter {
-    ctrl_last_frame: bool,
+    owned: [bool; 12],
 }
 
 impl ShortcutKeyFilter {
-    /// Filter one frame's events, with `ctrl_held` sampled this frame.
-    pub(crate) fn filter(&mut self, ctrl_held: bool, mut events: Vec<KeyEvent>) -> Vec<KeyEvent> {
-        let ctrl_recent = ctrl_held || self.ctrl_last_frame;
-        self.ctrl_last_frame = ctrl_held;
-        events.retain(|event| !is_tab_shortcut_key(event, ctrl_recent));
-        events
+    pub(crate) fn key_state(&mut self, key: ShortcutKey, down: bool, ctrl: bool, alt: bool) {
+        let owned = &mut self.owned[key as usize];
+        if !down {
+            *owned = false;
+        } else if ctrl && !alt {
+            *owned = true;
+        }
+    }
+
+    pub(crate) fn owns(&self, key: ShortcutKey) -> bool {
+        self.owned[key as usize]
     }
 }
 
@@ -373,7 +373,7 @@ impl ShortcutKeyFilter {
 mod tests {
     use super::*;
     use browser_engine::{
-        input::Modifiers,
+        input::{Key, Modifiers},
         net::{MemoryLoader, Url},
         script::dom_api,
     };
@@ -750,91 +750,47 @@ mod tests {
     // ── Shortcut keys ─────────────────────────────────────────────────────
 
     #[test]
-    fn tab_shortcut_keys_are_recognised_and_nothing_else() {
-        let ctrl = Modifiers {
-            ctrl: true,
-            ..Modifiers::NONE
-        };
-        let ctrl_shift = Modifiers {
-            shift: true,
-            ..ctrl
-        };
-        let alt_gr = Modifiers { alt: true, ..ctrl };
-        let with = |k, m| KeyEvent::with_modifiers(k, m);
-        for event in [
-            with(Key::Tab, ctrl),
-            with(Key::Tab, ctrl_shift),
-            with(Key::Character('t'), ctrl),
-            with(Key::Character('W'), ctrl_shift),
-            with(Key::Character('1'), ctrl),
-            with(Key::Character('9'), ctrl),
-        ] {
-            assert!(is_tab_shortcut_key(&event, false), "{event:?}");
+    fn shortcut_ownership_is_per_physical_key_and_lasts_until_release() {
+        let mut filter = ShortcutKeyFilter::default();
+        filter.key_state(ShortcutKey::Tab, true, true, false);
+        for _ in 0..4 {
+            // Repeats after Ctrl and Shift are up do not relinquish Tab.
+            filter.key_state(ShortcutKey::Tab, true, false, false);
+            assert!(filter.owns(ShortcutKey::Tab));
+            assert!(!filter.owns(ShortcutKey::W));
+            assert!(!filter.owns(ShortcutKey::Key1));
         }
-        for event in [
-            key(Key::Tab),
-            key(Key::Character('t')),
-            with(Key::Character('l'), ctrl),
-            with(Key::Character('a'), ctrl),
-            with(Key::Character('0'), ctrl),
-            with(Key::Enter, ctrl),
-            // AltGr reports Ctrl+Alt; its characters are text.
-            with(Key::Character('w'), alt_gr),
-        ] {
-            assert!(!is_tab_shortcut_key(&event, false), "{event:?}");
-        }
+        filter.key_state(ShortcutKey::Tab, false, false, false);
+        filter.key_state(ShortcutKey::Tab, true, false, false);
+        assert!(!filter.owns(ShortcutKey::Tab), "a new ordinary press");
     }
 
     #[test]
-    fn a_repeat_stamped_after_ctrl_came_up_is_still_dropped() {
-        let ctrl = Modifiers {
-            ctrl: true,
-            ..Modifiers::NONE
-        };
-        let mut filter = ShortcutKeyFilter::default();
-        // Ctrl+Tab and Ctrl+1 held: their repeats carry Ctrl and are dropped.
-        let held = vec![
-            KeyEvent::with_modifiers(Key::Tab, ctrl),
-            KeyEvent::with_modifiers(Key::Character('1'), ctrl),
+    fn shortcut_keys_have_independent_ownership_and_altgr_stays_text() {
+        let keys = [
+            ShortcutKey::Tab,
+            ShortcutKey::T,
+            ShortcutKey::W,
+            ShortcutKey::Key1,
+            ShortcutKey::Key2,
+            ShortcutKey::Key3,
+            ShortcutKey::Key4,
+            ShortcutKey::Key5,
+            ShortcutKey::Key6,
+            ShortcutKey::Key7,
+            ShortcutKey::Key8,
+            ShortcutKey::Key9,
         ];
-        assert!(filter.filter(true, held).is_empty());
-        // Ctrl and the key come up in the same frame: the last queued repeat
-        // is stamped without Ctrl (the modifiers are sampled after release).
-        let stale = vec![
-            key(Key::Tab),
-            key(Key::Character('1')),
-            key(Key::Character('7')),
-        ];
-        assert!(filter.filter(false, stale).is_empty(), "release frame");
-        // From the next frame on, Tab and digits are ordinary input again.
-        let typed = vec![key(Key::Tab), key(Key::Character('1'))];
-        assert_eq!(filter.filter(false, typed.clone()), typed);
-    }
-
-    #[test]
-    fn ordinary_typing_passes_the_shortcut_filter_untouched() {
         let mut filter = ShortcutKeyFilter::default();
-        let mut typed = chars("tw 1234567890 Tab");
-        typed.push(key(Key::Tab));
-        typed.push(KeyEvent::with_modifiers(
-            Key::Tab,
-            Modifiers {
-                shift: true,
-                ..Modifiers::NONE
-            },
-        ));
-        for _ in 0..3 {
-            assert_eq!(filter.filter(false, typed.clone()), typed);
+        for key in keys {
+            filter.key_state(key, true, true, true);
+            assert!(!filter.owns(key), "AltGr: {key:?}");
+            filter.key_state(key, true, true, false);
         }
-        // Other Ctrl keys are not tab shortcuts, held or just released.
-        let ctrl_l = KeyEvent::with_modifiers(
-            Key::Character('l'),
-            Modifiers {
-                ctrl: true,
-                ..Modifiers::NONE
-            },
-        );
-        assert_eq!(filter.filter(true, vec![ctrl_l.clone()]), vec![ctrl_l]);
-        assert_eq!(filter.filter(false, chars("ab")), chars("ab"));
+        for key in keys {
+            assert!(filter.owns(key));
+            filter.key_state(key, false, false, false);
+            assert!(!filter.owns(key));
+        }
     }
 }

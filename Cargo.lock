@@ -55,6 +55,7 @@ dependencies = [
  "jpeg-decoder",
  "minifb",
  "png",
+ "raw-window-handle",
  "rustls",
  "sha2",
  "webpki-roots",
