@@ -349,21 +349,38 @@ pub(crate) enum ShortcutKey {
 /// so queued text keeps its ownership decision even if drained much later.
 #[derive(Debug, Default)]
 pub(crate) struct ShortcutKeyFilter {
-    owned: [bool; 12],
+    owned: std::collections::BTreeMap<u32, ShortcutKey>,
 }
 
 impl ShortcutKeyFilter {
+    #[cfg(test)]
     pub(crate) fn key_state(&mut self, key: ShortcutKey, down: bool, ctrl: bool, alt: bool) {
-        let owned = &mut self.owned[key as usize];
+        self.native_key_state(key as u32, Some(key), down, ctrl, alt);
+    }
+
+    pub(crate) fn native_key_state(
+        &mut self,
+        code: u32,
+        key: Option<ShortcutKey>,
+        down: bool,
+        ctrl: bool,
+        alt: bool,
+    ) {
         if !down {
-            *owned = false;
+            self.owned.remove(&code);
         } else if ctrl && !alt {
-            *owned = true;
+            if let Some(key) = key {
+                self.owned.insert(code, key);
+            }
         }
     }
 
+    pub(crate) fn owns_physical(&self, code: u32) -> bool {
+        self.owned.contains_key(&code)
+    }
+
     pub(crate) fn owns(&self, key: ShortcutKey) -> bool {
-        self.owned[key as usize]
+        self.owned.values().any(|owned| *owned == key)
     }
 }
 

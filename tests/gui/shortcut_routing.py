@@ -11,11 +11,13 @@ to a local capture URL. No DNS, OCR, clipboard or product instrumentation.
 """
 import argparse
 import contextlib
+import ctypes
 import http.server
 import json
 import os
 from pathlib import Path
 import queue
+import signal
 import socket
 import subprocess
 import threading
@@ -74,7 +76,7 @@ class Harness:
             self.xlog = open(out / 'xvfb.log', 'w')
             self.xvfb = subprocess.Popen([
                 'Xvfb', f':{number}', '-screen', '0', '1024x768x24',
-                '-nolisten', 'local', '-nolisten', 'unix', '-listen', 'tcp', '-ac',
+                '-nolisten', 'local', '-nolisten', 'unix', '-listen', 'tcp', '-ac', '-noreset',
             ], stdout=self.xlog, stderr=subprocess.STDOUT)
             time.sleep(0.4)
             if self.xvfb.poll() is None:
@@ -110,6 +112,7 @@ class Harness:
                                  self.base + ('/slow' if slow else '/keys')],
                                 env=self.env, cwd=self.out, stdout=log,
                                 stderr=subprocess.STDOUT)
+        self.process = proc
         try:
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
@@ -250,6 +253,84 @@ class Harness:
                     sum(not any('RoutingKeys tw123456789Tab' in t for t in d) for d in details),
                     len(details), details)
 
+    def unicode_repeats(self):
+        # Unmapped X11 Unicode key: text arrives without set_key_state.
+        x = ctypes.CDLL('libX11.so.6')
+        xt = ctypes.CDLL('libXtst.so.6')
+        x.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x.XOpenDisplay.restype = ctypes.c_void_p
+        x.XChangeKeyboardMapping.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                            ctypes.c_int,
+                                            ctypes.POINTER(ctypes.c_ulong), ctypes.c_int]
+        x.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        x.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        xt.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                       ctypes.c_int, ctypes.c_ulong]
+        display = x.XOpenDisplay(self.env['DISPLAY'].encode())
+        if not display:
+            raise RuntimeError('Unicode probe cannot open its X display')
+        details = []
+        try:
+            x.XChangeKeyboardMapping(display, 200, 1,
+                                    (ctypes.c_ulong * 1)(0x01005b57), 1)
+            x.XSync(display, 0)
+            for owned in [False, True]:
+                for _ in range(self.trials):
+                    with self.window():
+                        if owned:
+                            self.xdo('keydown', 'ctrl+1')
+                            time.sleep(0.15)
+                            self.xdo('keyup', 'ctrl')
+                            time.sleep(0.12)
+                        os.kill(self.process.pid, signal.SIGSTOP)
+                        try:
+                            # Real server repeats queue while the browser is
+                            # paused. A duplicate XTest down alone is NOT a
+                            # reliable repeat reproduction.
+                            time.sleep(0.75)
+                            for code, down in [(10, True), (200, True),
+                                               (200, False), (10, False)]:
+                                xt.XTestFakeKeyEvent(display, code, down, 0)
+                            x.XSync(display, 0)
+                        finally:
+                            os.kill(self.process.pid, signal.SIGCONT)
+                        time.sleep(0.4)
+                        actual = self.title()
+                        expected = 'RoutingKeys ' + ('字' if owned else '1字') + ' —'
+                        details.append(dict(owned_repeat=owned, expected_prefix=expected,
+                                            actual=actual, passed=actual.startswith(expected)))
+        finally:
+            x.XCloseDisplay(display)
+        self.record('unmapped Unicode after queued shortcut repeats',
+                    sum(not d['passed'] for d in details), len(details), details)
+
+    def shift_and_altgr(self):
+        details = []
+        with self.window():
+            self.text('TW!tw123')
+            self.key('shift+Tab')
+            actual = self.title()
+            details.append(dict(expected='RoutingKeys TW!tw123Tab', actual=actual,
+                                passed=actual.startswith('RoutingKeys TW!tw123Tab —')))
+        # Native XKB AltGr, rather than pretending Ctrl+Alt text is plain input.
+        subprocess.run(['setxkbmap', '-layout', 'de'], env=self.env, check=True,
+                       capture_output=True)
+        try:
+            with self.window():
+                self.xdo('keydown', 'ISO_Level3_Shift')
+                self.key('q')
+                self.xdo('keyup', 'ISO_Level3_Shift')
+                time.sleep(0.15)
+                actual = self.title()
+                details.append(dict(expected='RoutingKeys @', actual=actual,
+                                    passed=actual.startswith('RoutingKeys @ —')))
+        finally:
+            self.xdo('keyup', 'ISO_Level3_Shift')
+            subprocess.run(['setxkbmap', '-layout', 'us'], env=self.env, check=True,
+                           capture_output=True)
+        self.record('ordinary Shift / native AltGr input',
+                    sum(not d['passed'] for d in details), len(details), details)
+
     def rapid_address_editing(self):
         expected = ['seed', 'seed']
         with self.window():
@@ -282,7 +363,7 @@ def main():
     parser.add_argument('binary')
     parser.add_argument('output', type=Path)
     parser.add_argument('--trials', type=int, default=3)
-    parser.add_argument('--case', choices=['all', 'slow', 'staggered'], default='all')
+    parser.add_argument('--case', choices=['all', 'slow', 'staggered', 'unicode', 'rapid', 'text'], default='all')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     harness = Harness(args.binary, args.output.resolve(), args.trials)
@@ -291,10 +372,15 @@ def main():
             harness.slow_load()
         if args.case in ('all', 'staggered'):
             harness.staggered()
+        if args.case in ('all', 'unicode'):
+            harness.unicode_repeats()
+        if args.case in ('all', 'text'):
+            harness.shift_and_altgr()
         if args.case == 'all':
             harness.simultaneous(False)
             harness.simultaneous(True)
             harness.ordinary_after_release()
+        if args.case in ('all', 'rapid'):
             harness.rapid_address_editing()
         (args.output / 'results.json').write_text(json.dumps(harness.results, indent=2) + '\n')
         return int(any(r['failures'] for r in harness.results))

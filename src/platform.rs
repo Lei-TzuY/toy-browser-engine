@@ -16,23 +16,17 @@ use std::rc::Rc;
 
 use browser_engine::input::{Key as EngineKey, KeyEvent, Modifiers};
 use minifb::{InputCallback, Key as MinifbKey, KeyRepeat, Window};
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::tabs::{ShortcutKey, ShortcutKeyFilter};
 
-/// Characters the platform produced since the last frame.
+/// Callback-time text and ownership. Native backends supply each character's
+/// source explicitly; add_char alone means unassociated/IME text. There is no
+/// adjacency latch, pending character pairing, or frame-duration assumption.
 #[derive(Default)]
 struct CharacterQueue {
     characters: Vec<KeyEvent>,
     shortcut_keys: ShortcutKeyFilter,
     modifier_keys: [bool; 6],
-    // minifb 0.28 X11/macOS call set_key_state before add_char. Wayland
-    // calls them in the opposite order; hold its text until the key callback.
-    text_first: bool,
-    pending_text: Vec<u32>,
-    // Snapshot at key-down, rather than looking at ownership when draining:
-    // a final character can be queued before release but drained after it.
-    text_owned: bool,
 }
 
 impl CharacterQueue {
@@ -45,26 +39,24 @@ impl CharacterQueue {
     }
 
     fn push_char(&mut self, uni_char: u32) {
-        if self.text_owned {
-            return;
-        }
         if let Some(character) = char::from_u32(uni_char) {
             if !character.is_control() {
+                let mut modifiers = self.modifiers();
+                // AltGr produces text, including on systems reporting Ctrl+
+                // right Alt. The text channel has already applied the layout.
+                if self.modifier_keys[5] {
+                    modifiers.ctrl = false;
+                    modifiers.alt = false;
+                }
                 self.characters.push(KeyEvent::with_modifiers(
                     EngineKey::Character(character),
-                    self.modifiers(),
+                    modifiers,
                 ));
             }
         }
     }
 
     fn drain(&mut self, pressed: Vec<MinifbKey>, modifiers: Modifiers) -> Vec<KeyEvent> {
-        // Unassociated text (e.g. an IME commit) is ordinary text. Never infer
-        // its physical origin from the character or from another held key.
-        self.text_owned = false;
-        for character in std::mem::take(&mut self.pending_text) {
-            self.push_char(character);
-        }
         let mut events = std::mem::take(&mut self.characters);
         for key in pressed {
             if shortcut_key(key).is_some_and(|key| self.shortcut_keys.owns(key)) {
@@ -80,14 +72,33 @@ impl CharacterQueue {
 
 impl InputCallback for CharacterQueue {
     fn add_char(&mut self, uni_char: u32) {
-        if self.text_first {
-            self.pending_text.push(uni_char);
-        } else {
-            self.push_char(uni_char);
+        // No source means no shortcut ownership, even while another key is
+        // owned. Capture modifiers NOW, never when a later key/drain arrives.
+        self.push_char(uni_char);
+    }
+
+    fn add_char_with_key(&mut self, uni_char: u32, source: Option<MinifbKey>, code: Option<u32>) {
+        if let Some(code) = code {
+            let modifiers = self.modifiers();
+            self.shortcut_keys.native_key_state(
+                code,
+                source.and_then(shortcut_key),
+                true,
+                modifiers.ctrl,
+                modifiers.alt,
+            );
+            if self.shortcut_keys.owns_physical(code) {
+                return;
+            }
         }
+        self.push_char(uni_char);
     }
 
     fn set_key_state(&mut self, key: MinifbKey, down: bool) {
+        self.set_key_state_with_code(key, down, key as u32);
+    }
+
+    fn set_key_state_with_code(&mut self, key: MinifbKey, down: bool, code: u32) {
         let modifier = match key {
             MinifbKey::LeftCtrl => Some(0),
             MinifbKey::RightCtrl => Some(1),
@@ -101,29 +112,13 @@ impl InputCallback for CharacterQueue {
             self.modifier_keys[index] = down;
         }
         let modifiers = self.modifiers();
-        let shortcut = shortcut_key(key);
-        if let Some(shortcut) = shortcut {
-            self.shortcut_keys
-                .key_state(shortcut, down, modifiers.ctrl, modifiers.alt);
-        }
-        // End the previous callback's text group. In particular, a later
-        // IME/unmapped character must not inherit a released key's owner.
-        self.text_owned = false;
-        if down && modifier.is_none() {
-            // Associate text with the producing physical key, not its Unicode
-            // value. Shift+1 and a layout's unrelated '1' stay distinct.
-            let mut pending = std::mem::take(&mut self.pending_text);
-            // Wayland handle_key emits one codepoint before set_key_state.
-            // Earlier text without a key callback has no physical source.
-            let associated = pending.pop();
-            for character in pending {
-                self.push_char(character);
-            }
-            self.text_owned = shortcut.is_some_and(|key| self.shortcut_keys.owns(key));
-            if let Some(character) = associated {
-                self.push_char(character);
-            }
-        }
+        self.shortcut_keys.native_key_state(
+            code,
+            shortcut_key(key),
+            down,
+            modifiers.ctrl,
+            modifiers.alt,
+        );
     }
 }
 
@@ -135,13 +130,7 @@ pub struct InputAdapter {
 impl InputAdapter {
     /// Attach to a window's character input.
     pub fn attach(window: &mut Window) -> InputAdapter {
-        let text_first = window
-            .window_handle()
-            .is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)));
-        let characters = Rc::new(RefCell::new(CharacterQueue {
-            text_first,
-            ..CharacterQueue::default()
-        }));
+        let characters = Rc::new(RefCell::new(CharacterQueue::default()));
         window.set_input_callback(Box::new(SharedQueue(characters.clone())));
         InputAdapter { characters }
     }
@@ -174,9 +163,16 @@ impl InputCallback for SharedQueue {
     fn add_char(&mut self, uni_char: u32) {
         self.0.borrow_mut().add_char(uni_char);
     }
-
     fn set_key_state(&mut self, key: MinifbKey, down: bool) {
         self.0.borrow_mut().set_key_state(key, down);
+    }
+    fn set_key_state_with_code(&mut self, key: MinifbKey, down: bool, code: u32) {
+        self.0.borrow_mut().set_key_state_with_code(key, down, code);
+    }
+    fn add_char_with_key(&mut self, uni_char: u32, source: Option<MinifbKey>, code: Option<u32>) {
+        self.0
+            .borrow_mut()
+            .add_char_with_key(uni_char, source, code);
     }
 }
 
@@ -231,34 +227,56 @@ mod tests {
         script::dom_api,
     };
 
-    fn queue(text_first: bool) -> CharacterQueue {
-        CharacterQueue {
-            text_first,
-            ..CharacterQueue::default()
+    struct TestQueue {
+        inner: CharacterQueue,
+        text_first: bool,
+    }
+
+    impl std::ops::Deref for TestQueue {
+        type Target = CharacterQueue;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+    impl std::ops::DerefMut for TestQueue {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
         }
     }
 
-    // Exercise minifb's callback contract directly, including a full press
-    // and release between drains. No sleeps or elapsed-frame assumptions.
-    fn press(queue: &mut CharacterQueue, key: MinifbKey, character: char) {
+    fn queue(text_first: bool) -> TestQueue {
+        TestQueue {
+            inner: CharacterQueue::default(),
+            text_first,
+        }
+    }
+
+    // Replay either native callback order, with source from the same event.
+    fn press(queue: &mut TestQueue, key: MinifbKey, character: char) {
         if queue.text_first {
-            queue.add_char(character as u32);
+            queue.add_char_with_key(character as u32, Some(key), Some(key as u32));
         }
         queue.set_key_state(key, true);
         if !queue.text_first {
-            queue.add_char(character as u32);
+            queue.add_char_with_key(character as u32, Some(key), Some(key as u32));
         }
     }
 
-    fn drain(queue: &mut CharacterQueue, keys: Vec<MinifbKey>) -> Vec<KeyEvent> {
-        queue.drain(keys, queue.modifiers())
+    fn drain(queue: &mut TestQueue, keys: Vec<MinifbKey>) -> Vec<KeyEvent> {
+        {
+            let modifiers = queue.modifiers();
+            queue.inner.drain(keys, modifiers)
+        }
     }
 
     fn text(events: &[KeyEvent]) -> String {
-        events.iter().filter_map(|e| e.key.printable()).collect()
+        events
+            .iter()
+            .filter_map(KeyEvent::typed_character)
+            .collect()
     }
 
-    fn type_aw1b(queue: &mut CharacterQueue) {
+    fn type_aw1b(queue: &mut TestQueue) {
         for (key, ch) in [
             (MinifbKey::A, 'a'),
             (MinifbKey::W, 'w'),
@@ -452,6 +470,189 @@ mod tests {
         assert!(
             dom_api::outer_html(&tabs.get(0).unwrap().browser.document().dom)
                 .contains(">empty</p>")
+        );
+    }
+
+    #[test]
+    fn identical_key_names_and_characters_do_not_alias_physical_ownership() {
+        let mut q = CharacterQueue::default();
+        q.set_key_state(MinifbKey::LeftCtrl, true);
+        q.set_key_state_with_code(MinifbKey::Key1, true, 1000);
+        q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(1000));
+        q.set_key_state(MinifbKey::LeftCtrl, false);
+        q.set_key_state_with_code(MinifbKey::Key1, true, 1001);
+        q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(1001));
+        q.set_key_state_with_code(MinifbKey::Key1, false, 1001);
+        q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(1000));
+        assert_eq!(
+            q.drain(vec![], Modifiers::NONE)
+                .iter()
+                .filter_map(KeyEvent::typed_character)
+                .collect::<String>(),
+            "1"
+        );
+        assert!(q.shortcut_keys.owns_physical(1000));
+        q.set_key_state_with_code(MinifbKey::Unknown, false, 1000);
+        assert!(!q.shortcut_keys.owns_physical(1000));
+    }
+
+    #[test]
+    fn multi_scalar_events_never_borrow_another_physical_keys_owner() {
+        for text_first in [false, true] {
+            let mut queue = queue(text_first);
+            queue.set_key_state(MinifbKey::LeftCtrl, true);
+            press(&mut queue, MinifbKey::Key1, '1');
+            queue.set_key_state(MinifbKey::LeftCtrl, false);
+            press(&mut queue, MinifbKey::Key1, '1');
+            for c in "你好🙂".chars() {
+                queue.add_char_with_key(c as u32, None, None);
+            }
+            for c in "é漢字".chars() {
+                queue.add_char_with_key(c as u32, Some(MinifbKey::Q), Some(MinifbKey::Q as u32));
+            }
+            // Identical text from the owned key is entirely suppressed,
+            // including all scalars; no first-character token/Unicode guess.
+            for c in "你好🙂".chars() {
+                queue.add_char_with_key(
+                    c as u32,
+                    Some(MinifbKey::Key1),
+                    Some(MinifbKey::Key1 as u32),
+                );
+            }
+            assert_eq!(text(&drain(&mut queue, vec![])), "你好🙂é漢字");
+            queue.set_key_state(MinifbKey::Key1, false);
+            press(&mut queue, MinifbKey::Key1, '1');
+            assert_eq!(text(&drain(&mut queue, vec![])), "1");
+        }
+    }
+
+    #[test]
+    fn unassociated_ime_text_keeps_its_own_modifier_snapshot() {
+        let mut queue = queue(true);
+        queue.add_char('字' as u32);
+        queue.set_key_state(MinifbKey::LeftShift, true);
+        queue.add_char('漢' as u32);
+        queue.set_key_state(MinifbKey::LeftCtrl, true);
+        press(&mut queue, MinifbKey::Tab, '\t');
+        queue.set_key_state(MinifbKey::LeftCtrl, false);
+        queue.set_key_state(MinifbKey::LeftShift, false);
+        let events = drain(&mut queue, vec![]);
+        assert_eq!(text(&events), "字漢");
+        assert_eq!(events[0].modifiers, Modifiers::NONE);
+        assert_eq!(events[1].modifiers, Modifiers::shift());
+    }
+
+    #[test]
+    fn unmapped_unicode_reaches_only_the_active_address_editor_then_dom() {
+        let mut tabs = Tabs::new(browser(), 800);
+        tabs.active_mut().toolbar.focus_address("old draft");
+        let mut queue = queue(false);
+        queue.set_key_state(MinifbKey::LeftCtrl, true);
+        press(&mut queue, MinifbKey::T, '\u{14}');
+        tabs.apply(TabCommand::New, 10, || Ok(browser()));
+        queue.set_key_state(MinifbKey::LeftCtrl, false);
+        // T is still owned; IME text has no key-state callback at all.
+        for c in "你好🙂".chars() {
+            queue.add_char(c as u32);
+        }
+        tabs.active_mut()
+            .handle_keys(drain(&mut queue, vec![]), false);
+        assert_eq!(tabs.active().toolbar.editor().unwrap().value(), "你好🙂");
+        assert_eq!(
+            tabs.get(0).unwrap().toolbar.editor().unwrap().value(),
+            "old draft"
+        );
+        for tab in tabs.iter_mut() {
+            assert!(dom_api::outer_html(&tab.browser.document().dom).contains(">empty</p>"));
+        }
+        tabs.active_mut().toolbar.cancel();
+        queue.add_char('字' as u32);
+        tabs.active_mut()
+            .handle_keys(drain(&mut queue, vec![]), false);
+        assert!(dom_api::outer_html(&tabs.active().browser.document().dom).contains(">字</p>"));
+        assert!(
+            dom_api::outer_html(&tabs.get(0).unwrap().browser.document().dom)
+                .contains(">empty</p>")
+        );
+    }
+}
+
+#[cfg(test)]
+mod reviewer_c_regressions {
+    use super::*;
+
+    fn ordinary_text(events: &[KeyEvent]) -> String {
+        events
+            .iter()
+            .filter_map(KeyEvent::typed_character)
+            .collect()
+    }
+
+    #[test]
+    fn wayland_unmapped_unicode_before_no_text_ctrl_tab_is_preserved() {
+        let mut q = CharacterQueue::default();
+        // minifb wayland handle_key emits Unicode for an unrecognized keysym,
+        // then returns without set_key_state. Tab emits NO add_char (<32).
+        q.add_char('字' as u32);
+        q.set_key_state(MinifbKey::LeftCtrl, true);
+        q.set_key_state(MinifbKey::Tab, true);
+        q.set_key_state(MinifbKey::Tab, false);
+        q.set_key_state(MinifbKey::LeftCtrl, false);
+        let events = q.drain(vec![], Modifiers::NONE);
+        assert_eq!(
+            ordinary_text(&events),
+            "字",
+            "queued ordinary Unicode must not become Tab's text: {events:?}"
+        );
+    }
+
+    #[test]
+    fn wayland_unmapped_unicode_keeps_callback_time_modifiers() {
+        let mut q = CharacterQueue::default();
+        q.add_char('字' as u32);
+        q.set_key_state(MinifbKey::LeftCtrl, true);
+        q.add_char_with_key(
+            '1' as u32,
+            Some(MinifbKey::Key1),
+            Some(MinifbKey::Key1 as u32),
+        );
+        q.set_key_state(MinifbKey::Key1, true);
+        q.set_key_state(MinifbKey::Key1, false);
+        q.set_key_state(MinifbKey::LeftCtrl, false);
+        let events = q.drain(vec![], Modifiers::NONE);
+        assert_eq!(
+            ordinary_text(&events),
+            "字",
+            "ordinary Unicode must not gain a later Ctrl modifier: {events:?}"
+        );
+    }
+
+    #[test]
+    fn x11_unmapped_unicode_after_owned_repeat_is_preserved() {
+        let mut q = CharacterQueue::default();
+        q.set_key_state(MinifbKey::LeftCtrl, true);
+        q.set_key_state(MinifbKey::Key1, true);
+        q.add_char_with_key(
+            '1' as u32,
+            Some(MinifbKey::Key1),
+            Some(MinifbKey::Key1 as u32),
+        );
+        q.set_key_state(MinifbKey::LeftCtrl, false);
+        // Held 1 repeats after Ctrl release. Next Unicode keysym has no
+        // recognized key callback in X11 update_key_state, only add_char.
+        q.set_key_state(MinifbKey::Key1, true);
+        q.add_char_with_key(
+            '1' as u32,
+            Some(MinifbKey::Key1),
+            Some(MinifbKey::Key1 as u32),
+        );
+        q.add_char('字' as u32);
+        q.set_key_state(MinifbKey::Key1, false);
+        let events = q.drain(vec![], Modifiers::NONE);
+        assert_eq!(
+            ordinary_text(&events),
+            "字",
+            "unmapped Unicode must not inherit held digit ownership: {events:?}"
         );
     }
 }
