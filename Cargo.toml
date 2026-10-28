@@ -34,3 +34,7 @@ opt-level = 0
 
 [profile.release]
 opt-level = 3
+
+# Locked 0.28.0 plus explicit native character provenance; see PATCH.md.
+[patch.crates-io]
+minifb = { path = "vendor/minifb" }
