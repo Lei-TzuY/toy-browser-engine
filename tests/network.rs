@@ -982,44 +982,209 @@ fn credentials_still_follow_a_same_origin_redirect() {
 
 #[test]
 fn redirect_status_codes_keep_or_drop_the_method_and_body() {
-    // 301/302 rewrite a POST, 303 rewrites anything but GET/HEAD; both drop
-    // the body and the headers that describe it. 307/308 change nothing.
-    for (status, method_after, keeps_body) in [
-        (301, "GET", false),
-        (302, "GET", false),
-        (303, "GET", false),
-        (307, "POST", true),
-        (308, "POST", true),
+    use Method::{Delete, Get, Head, Options, Patch, Post, Put};
+
+    // Explicit expected wire methods, in the input order below. In particular,
+    // GET/HEAD under 303 retain their existing representation headers even
+    // though neither request has a body.
+    // https://fetch.spec.whatwg.org/#http-redirect-fetch
+    for (status, methods_after) in [
+        (
+            301,
+            ["GET", "HEAD", "GET", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        ),
+        (
+            302,
+            ["GET", "HEAD", "GET", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        ),
+        (303, ["GET", "HEAD", "GET", "GET", "GET", "GET", "GET"]),
+        (
+            307,
+            ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        ),
+        (
+            308,
+            ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        ),
     ] {
-        let origin = TestServer::serving(vec![redirect(status, "/next"), ok_json("{}")]);
-        let mut headers = HeaderMap::new();
-        headers.set("Content-Type", "text/plain").unwrap();
-        headers.set("X-Trace", "kept").unwrap();
+        for (method, method_after) in [Get, Head, Post, Put, Delete, Patch, Options]
+            .into_iter()
+            .zip(methods_after)
+        {
+            let origin = TestServer::serving(vec![redirect(status, "/next"), ok_json("{}")]);
+            let body = method
+                .allows_body()
+                .then(|| "payload=字".as_bytes().to_vec());
+            let request = FetchRequest::new(
+                origin.url("/form"),
+                method,
+                redirect_test_headers(),
+                body.clone(),
+            );
+
+            let response = HttpLoader::default().fetch(&request).expect("a response");
+            assert_eq!(response.status, 200);
+            assert!(response.redirected);
+            assert_eq!(response.url, origin.url("/next"));
+            let sent = origin.finish();
+            assert_eq!(sent.len(), 2);
+            assert_eq!(sent[0].request_line(), format!("{method} /form HTTP/1.1"));
+            let original_body = std::str::from_utf8(body.as_deref().unwrap_or_default()).unwrap();
+            assert_redirect_payload(&sent[0], original_body, true);
+            assert_eq!(
+                sent[1].request_line(),
+                format!("{method_after} /next HTTP/1.1"),
+                "{status} from {method}"
+            );
+            let retained = method.as_str() == method_after;
+            assert_redirect_payload(
+                &sent[1],
+                if retained { original_body } else { "" },
+                retained,
+            );
+        }
+    }
+}
+
+const REDIRECT_BODY_HEADERS: &[(&str, &str)] = &[
+    ("Content-Type", "text/plain;charset=utf-8"),
+    ("Content-Encoding", "identity"),
+    ("Content-Language", "en"),
+    ("Content-Location", "/representation"),
+];
+
+fn redirect_test_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for (name, value) in REDIRECT_BODY_HEADERS {
+        headers.set(name, value).unwrap();
+    }
+    headers.set("X-Trace", "kept").unwrap();
+    headers
+}
+
+fn assert_redirect_payload(sent: &Received, body: &str, retained: bool) {
+    assert_eq!(sent.body, body, "request body: {sent:?}");
+    assert_eq!(
+        sent.header("content-length"),
+        (!body.is_empty()).then(|| body.len().to_string()),
+        "body framing: {sent:?}"
+    );
+    for (name, value) in REDIRECT_BODY_HEADERS {
+        assert_eq!(
+            sent.header(name).as_deref(),
+            retained.then_some(*value),
+            "{name}: {sent:?}"
+        );
+    }
+    assert_eq!(sent.header("x-trace").as_deref(), Some("kept"));
+}
+
+#[test]
+fn redirect_chain_preserves_put_until_303_then_never_restores_the_body() {
+    let mut responses: Vec<String> = [301, 302, 307, 308, 303, 307]
+        .into_iter()
+        .enumerate()
+        .map(|(index, status)| redirect(status, &format!("/hop{}", index + 1)))
+        .collect();
+    responses.push(ok_json("{}"));
+    let origin = TestServer::serving(responses);
+    let request = FetchRequest::new(
+        origin.url("/start"),
+        Method::Put,
+        redirect_test_headers(),
+        Some(b"payload".to_vec()),
+    );
+    let loader = HttpLoader {
+        config: HttpConfig {
+            max_redirects: 6,
+            ..HttpConfig::default()
+        },
+    };
+    let response = loader.fetch(&request).expect("six redirects are allowed");
+    assert_eq!(response.url, origin.url("/hop6"));
+    let sent = origin.finish();
+    assert_eq!(sent.len(), 7);
+    for (index, received) in sent.iter().enumerate() {
+        let path = if index == 0 {
+            "/start".to_string()
+        } else {
+            format!("/hop{index}")
+        };
+        let (method, body, retained) = if index < 5 {
+            ("PUT", "payload", true)
+        } else {
+            ("GET", "", false)
+        };
+        assert_eq!(received.request_line(), format!("{method} {path} HTTP/1.1"));
+        assert_redirect_payload(received, body, retained);
+    }
+}
+
+#[test]
+fn redirect_limit_does_not_rewrite_a_preserved_patch_request() {
+    let origin = TestServer::serving(vec![redirect(301, "/loop"); 3]);
+    let request = FetchRequest::new(
+        origin.url("/loop"),
+        Method::Patch,
+        redirect_test_headers(),
+        Some(b"payload".to_vec()),
+    );
+    let loader = HttpLoader {
+        config: HttpConfig {
+            max_redirects: 2,
+            ..HttpConfig::default()
+        },
+    };
+    let error = loader
+        .fetch(&request)
+        .expect_err("redirect budget must be enforced");
+    assert!(error.to_string().contains("too many redirects"), "{error}");
+    let sent = origin.finish();
+    assert_eq!(sent.len(), 3);
+    for received in sent {
+        assert_eq!(received.request_line(), "PATCH /loop HTTP/1.1");
+        assert_redirect_payload(&received, "payload", true);
+    }
+}
+
+#[test]
+fn redirect_method_preservation_does_not_forward_cross_origin_credentials() {
+    for (status, method, method_after) in [
+        (301, Method::Put, "PUT"),
+        (302, Method::Delete, "DELETE"),
+        (302, Method::Patch, "PATCH"),
+        (303, Method::Put, "GET"),
+        (307, Method::Post, "POST"),
+        (308, Method::Put, "PUT"),
+    ] {
+        let target = TestServer::serving(vec![ok_json("{}")]);
+        let origin = TestServer::serving(vec![redirect(status, &target.url("/next").to_string())]);
+        let mut headers = redirect_test_headers();
+        for name in ["Authorization", "Proxy-Authorization", "Cookie"] {
+            headers.set(name, "secret").unwrap();
+        }
         let request = FetchRequest::new(
-            origin.url("/form"),
-            Method::Post,
+            origin.url("/start"),
+            method,
             headers,
             Some(b"payload".to_vec()),
         );
-
-        HttpLoader::default().fetch(&request).expect("a response");
-        let sent = origin.finish();
-        let second = &sent[1];
+        HttpLoader::default()
+            .fetch(&request)
+            .expect("redirect succeeds");
+        let first = origin.finish();
+        let second = target.finish();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
         assert_eq!(
-            second.request_line(),
-            format!("{method_after} /next HTTP/1.1"),
-            "{status}"
+            second[0].request_line(),
+            format!("{method_after} /next HTTP/1.1")
         );
-        assert_eq!(second.body.is_empty(), !keeps_body, "{status}: body");
-        assert_eq!(
-            second.header("content-type").is_some(),
-            keeps_body,
-            "{status}: content-type must go with the body"
-        );
-        assert_eq!(
-            second.header("x-trace").as_deref(),
-            Some("kept"),
-            "{status}"
-        );
+        let retained = method.as_str() == method_after;
+        assert_redirect_payload(&second[0], if retained { "payload" } else { "" }, retained);
+        for name in ["Authorization", "Proxy-Authorization", "Cookie"] {
+            assert_eq!(first[0].header(name).as_deref(), Some("secret"));
+            assert_eq!(second[0].header(name), None, "{status} {method}: {name}");
+        }
     }
 }
