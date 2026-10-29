@@ -1023,3 +1023,258 @@ fn redirect_status_codes_keep_or_drop_the_method_and_body() {
         );
     }
 }
+
+// Fetch's request guard belongs at the script boundary. These socket tests
+// distinguish it from the transport's smaller set of self-generated headers.
+// https://fetch.spec.whatwg.org/#forbidden-request-header
+const SCRIPT_FORBIDDEN_NAMES: &[&str] = &[
+    "Accept-Charset",
+    "Accept-Encoding",
+    "Access-Control-Request-Headers",
+    "Access-Control-Request-Method",
+    "Connection",
+    "Content-Length",
+    "CoOkIe",
+    "cOoKiE2",
+    "Date",
+    "DNT",
+    "Expect",
+    "Host",
+    "Keep-Alive",
+    "oRiGiN",
+    "rEfErEr",
+    "Set-Cookie",
+    "TE",
+    "Trailer",
+    "Transfer-Encoding",
+    "Upgrade",
+    "Via",
+    "PrOxY-Attacker",
+    "sEc-Attacker",
+    "Proxy-",
+    "Sec-",
+];
+
+fn forbidden_header_record() -> String {
+    let mut fields: Vec<String> = SCRIPT_FORBIDDEN_NAMES
+        .iter()
+        .map(|name| format!("'{name}': 'forged'"))
+        .collect();
+    for name in [
+        "X-HTTP-Method",
+        "X-HTTP-Method-Override",
+        "X-Method-Override",
+    ] {
+        fields.push(format!("'{name}': 'GET, TrAcE'"));
+    }
+    fields.push("'X-Allowed': 'kept'".into());
+    format!("{{ {} }}", fields.join(", "))
+}
+
+fn assert_script_headers_not_forged(sent: &Received) {
+    for name in SCRIPT_FORBIDDEN_NAMES {
+        assert_ne!(
+            sent.header(name).as_deref(),
+            Some("forged"),
+            "script-controlled {name} reached the socket: {sent:?}"
+        );
+        // Only these fields can legitimately be regenerated for this GET.
+        if !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "host" | "connection" | "accept-encoding" | "origin" | "referer"
+        ) {
+            assert_eq!(sent.header(name), None, "{name}: {sent:?}");
+        }
+    }
+    for name in [
+        "x-http-method",
+        "x-http-method-override",
+        "x-method-override",
+    ] {
+        assert_eq!(sent.header(name), None, "{name}: {sent:?}");
+    }
+    assert_eq!(sent.header("x-allowed").as_deref(), Some("kept"));
+    assert_eq!(sent.header("accept-encoding").as_deref(), Some("identity"));
+    assert_eq!(sent.header("connection").as_deref(), Some("close"));
+}
+
+#[test]
+fn forbidden_script_headers_never_reach_same_origin_sockets() {
+    // Exercise the issue's direct fetch(init) path as well as Headers input and
+    // Request cloning/mutation. Both CORS and explicit same-origin mode apply
+    // the guard before any browser-owned metadata is generated.
+    for mode in ["cors", "same-origin"] {
+        for input in ["record", "headers", "request"] {
+            let origin = TestServer::serving(vec![ok_json("{}")]);
+            let record = forbidden_header_record();
+            let call = match input {
+                "record" => format!("fetch('/api', {{ mode: '{mode}', headers: {record} }})"),
+                "headers" => {
+                    format!("fetch('/api', {{ mode: '{mode}', headers: new Headers({record}) }})")
+                }
+                _ => format!(
+                    "var r = new Request('/api', {{ mode: '{mode}', headers: {record} }});\
+                     r.headers.set('Cookie', 'forged');\
+                     r.headers.append('Cookie2', 'forged');\
+                     r.headers.set('X-Method-Override', 'CONNECT');\
+                     fetch(r.clone())"
+                ),
+            };
+            let mut browser = open_page_on(&origin, &format!("{call}{REPORT_TEXT}"));
+            browser.settle_network(200);
+            let status = text_of(&browser, "#status");
+            assert!(status.starts_with("read 200"), "{mode}/{input}: {status}");
+            let received = origin.finish();
+            assert_eq!(received.len(), 1);
+            assert_eq!(received[0].request_line(), "GET /api HTTP/1.1");
+            assert_script_headers_not_forged(&received[0]);
+            assert_eq!(
+                received[0].header("referer"),
+                Some(browser.url().to_string()),
+                "browser-generated referrer survives the script guard"
+            );
+        }
+    }
+}
+
+#[test]
+fn forbidden_script_headers_cannot_forge_cors_preflight_or_metadata() {
+    let origin = TestServer::serving(Vec::new());
+    let page_origin = format!("http://127.0.0.1:{}", origin.port);
+    let target = TestServer::serving(vec![
+        format!(
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {page_origin}\r\n\
+             Access-Control-Allow-Methods: GET\r\nAccess-Control-Allow-Headers: x-allowed\r\n\r\n"
+        ),
+        format!(
+            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {page_origin}\r\n\
+             Content-Length: 2\r\n\r\nok"
+        ),
+    ]);
+    let mut browser = open_page_on(
+        &origin,
+        &format!(
+            "fetch('{}', {{ headers: {} }}){REPORT_TEXT}",
+            target.url("/api"),
+            forbidden_header_record()
+        ),
+    );
+    browser.settle_network(200);
+    assert!(text_of(&browser, "#status").starts_with("read 200"));
+    origin.finish();
+    let received = target.finish();
+    assert_eq!(received.len(), 2);
+    assert_eq!(received[0].request_line(), "OPTIONS /api HTTP/1.1");
+    assert_eq!(
+        received[0].header("origin").as_deref(),
+        Some(page_origin.as_str())
+    );
+    assert_eq!(
+        received[0]
+            .header("access-control-request-method")
+            .as_deref(),
+        Some("GET")
+    );
+    assert_eq!(
+        received[0]
+            .header("access-control-request-headers")
+            .as_deref(),
+        Some("x-allowed")
+    );
+    assert_eq!(received[1].request_line(), "GET /api HTTP/1.1");
+    assert_script_headers_not_forged(&received[1]);
+    assert_eq!(
+        received[1].header("origin").as_deref(),
+        Some(page_origin.as_str())
+    );
+    assert_eq!(
+        received[1].header("referer"),
+        Some(format!("{page_origin}/"))
+    );
+}
+
+#[test]
+fn forbidden_script_origin_cannot_make_a_cross_origin_response_readable() {
+    let origin = TestServer::serving(Vec::new());
+    let target = TestServer::serving(vec![
+        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: http://forged.test\r\n\
+         Content-Length: 6\r\n\r\nsecret"
+            .to_string(),
+    ]);
+    let mut browser = open_page_on(
+        &origin,
+        &format!(
+            "fetch('{}', {{ headers: {{ Origin: 'http://forged.test', Cookie: 'forged' }} }}){REPORT_TEXT}",
+            target.url("/api")
+        ),
+    );
+    browser.settle_network(200);
+    assert!(text_of(&browser, "#status").starts_with("rejected: TypeError"));
+    let received = target.finish();
+    assert_eq!(
+        received.len(),
+        1,
+        "forbidden fields must not trigger preflight"
+    );
+    assert_eq!(received[0].header("cookie"), None);
+    assert_eq!(
+        received[0].header("origin"),
+        Some(format!("http://127.0.0.1:{}", origin.port))
+    );
+    origin.finish();
+}
+
+#[test]
+fn forbidden_script_header_rules_do_not_strip_network_owned_headers() {
+    let origin = TestServer::serving(vec![ok_json("{}")]);
+    let mut request = FetchRequest::get(origin.url("/api"));
+    for (name, value) in [
+        ("Cookie", "session=browser-selected"),
+        ("Origin", "http://browser.test"),
+        ("Referer", "http://browser.test/page"),
+        ("Sec-Fetch-Site", "same-origin"),
+        ("Sec-Fetch-Mode", "cors"),
+    ] {
+        request.headers.insert_raw(name, value);
+    }
+    HttpLoader::default()
+        .fetch(&request)
+        .expect("browser-owned request succeeds");
+    let received = origin.finish();
+    for (name, value) in request.headers.iter() {
+        assert_eq!(received[0].header(name).as_deref(), Some(value), "{name}");
+    }
+}
+
+#[test]
+fn forbidden_method_overrides_are_value_sensitive_on_the_wire() {
+    for name in [
+        "X-HTTP-Method",
+        "x-HtTp-MeThOd-OvErRiDe",
+        "X-Method-Override",
+    ] {
+        for (value, allowed) in [
+            ("PATCH", true),
+            ("GETTRACE", true),
+            ("GET,track", false),
+            ("cOnNeCt", false),
+            ("GET,\tTrAcE\t", false),
+            ("\"GET, TRACE, POST\"", true),
+            ("GET, \"TRACE\"", true),
+        ] {
+            let origin = TestServer::serving(vec![ok_json("{}")]);
+            let mut browser = open_page_on(
+                &origin,
+                &format!("fetch('/api', {{ headers: {{ '{name}': '{value}' }} }}){REPORT_TEXT}"),
+            );
+            browser.settle_network(200);
+            assert!(text_of(&browser, "#status").starts_with("read 200"));
+            let received = origin.finish();
+            assert_eq!(
+                received[0].header(name),
+                allowed.then(|| value.trim_matches([' ', '\t']).to_string()),
+                "{name}: {value:?}"
+            );
+        }
+    }
+}
