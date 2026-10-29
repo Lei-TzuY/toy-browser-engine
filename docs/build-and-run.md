@@ -9,9 +9,17 @@ renderer sandbox; these instructions are not safe arbitrary-web browsing advice.
   binary uses this environment's glibc/shared libraries. Older distributions are
   not binary-compatibility promises; build from source there.
 - Native Windows x86-64: measured on Windows 11, MSVC Rust 1.96.0. Source builds
-  need the Rust MSVC toolchain and Microsoft C++ build tools. System DLLs/UCRT and
-  installed Segoe UI/Arial fonts are used. Runtime import/launch receipts accompany
-  packages. WSL does not satisfy the Windows gate.
+  need the Rust MSVC toolchain and Microsoft C++ build tools. The downloaded EXE
+  also requires the **Microsoft Visual C++ v14 x64 Redistributable**, including
+  `VCRUNTIME140.dll`; this is separate from the Windows UCRT/system DLLs. Use
+  Microsoft's [latest supported runtime guidance](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)
+  and [official x64 download](https://aka.ms/vc14/vc_redist.x64.exe). The runtime
+  must be at least as recent as the MSVC Build Tools used to build the application;
+  the latest supported x64 v14 package is recommended. It is not bundled here.
+  Installed Segoe UI/Arial fonts are used. Runtime import/launch receipts accompany
+  packages, but the test host has development tools/runtime installed; stock
+  Windows without this prerequisite was not tested. WSL does not satisfy the
+  Windows gate.
 - Python 3.11+ is needed for packaging/CLI verification. Windows GUI smoke uses
   Python's standard library, Win32 and an already loaded US English layout. It
   targets its own browser window and restores its original input context.
@@ -55,8 +63,11 @@ a downloaded executable.
 2. Check SHA-256 before extraction: `sha256sum <archive>` on Linux or
    `Get-FileHash .\<archive>.zip -Algorithm SHA256` in PowerShell. Compare the
    published value. `sha256sum -c SHA256SUMS` works when both listed archives exist.
-3. Extract into a new writable user directory. No installer/admin access is needed.
-   Keep `LICENSE`, `THIRD-PARTY-NOTICES.json` and `third-party/`.
+3. Extract into a new writable user directory. Extraction and browser launch need
+   no administrator access once runtime prerequisites are available. Installing
+   Microsoft's runtime may require administrator approval under host policy;
+   this preview does not install it or bypass that policy. Keep `LICENSE`,
+   `THIRD-PARTY-NOTICES.json` and `third-party/`.
 4. Run `./browser_engine --window --quiet` or
    `.\browser_engine.exe --window --quiet` for the trusted built-in demo.
 5. Close normally. Uninstall by deleting only this extracted directory after exit.
