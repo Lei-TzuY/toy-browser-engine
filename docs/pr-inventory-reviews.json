@@ -1,0 +1,48 @@
+{
+  "main_commit": "181f4a10287701e3615c4406f7acd24c0efe5ed4",
+  "reviews": [
+    {
+      "number": 105,
+      "head_sha": "26a3bce76104b7618e53b72b2c48883076067d62",
+      "classification": "still_independently_valuable",
+      "confidence": "medium",
+      "independent_still_useful_changes": true,
+      "rationale": "Unique clean-merging CI-only proposal adds a macOS runner. M1 covers Ubuntu/Windows, so macOS CI remains a useful later proposal; this exact historical head was not tested and is not merge-approved.",
+      "evidence": {
+        "reviewed_file": ".github/workflows/tests.yml",
+        "head_source_url": "https://github.com/Lei-TzuY/toy-browser-engine/blob/26a3bce76104b7618e53b72b2c48883076067d62/.github/workflows/tests.yml",
+        "observed_delta": "Adds ubuntu-latest, macos-latest and windows-latest test matrix with 30-minute bound; current main has Ubuntu only.",
+        "retention": "Keep open; macOS build/test and GUI scope need separate evidence. Do not merge solely because the YAML is small."
+      }
+    }
+  ],
+  "closeouts": [
+    {
+      "number": 176,
+      "head": "96a7e691a38be3952489e1420cab62c6c592ec6d",
+      "branch": "agent/fetch-response-type",
+      "comment_url": "https://github.com/Lei-TzuY/toy-browser-engine/pull/176#issuecomment-6488304084",
+      "closed_in_this_batch": true,
+      "branch_preserved": true,
+      "verification": "Live GitHub branch ref verified at the recorded exact HEAD after closure."
+    },
+    {
+      "number": 196,
+      "head": "11657bb1e665178c096c548b2b3feb1e6c7dc8b6",
+      "branch": "agent/fetch-subresource-integrity",
+      "comment_url": "https://github.com/Lei-TzuY/toy-browser-engine/pull/196#issuecomment-6488304670",
+      "closed_in_this_batch": true,
+      "branch_preserved": true,
+      "verification": "Live GitHub branch ref verified at the recorded exact HEAD after closure."
+    },
+    {
+      "number": 233,
+      "head": "96b996f24b3c577191c3b26252bbcecf5cad2153",
+      "branch": "agent/reporting-suppress-post-410-inflight-retries",
+      "comment_url": "https://github.com/Lei-TzuY/toy-browser-engine/pull/233#issuecomment-6488305304",
+      "closed_in_this_batch": true,
+      "branch_preserved": true,
+      "verification": "Live GitHub branch ref verified at the recorded exact HEAD after closure."
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-name: Tests
+name: Research Preview checks
 
 on:
   push:
@@ -8,10 +8,78 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  native:
+    name: Native ${{ matrix.os }} locked tests and CLI
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: browser_engine
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: browser_engine.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: cargo build --locked
       - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Package, extract, hash-check and run native CLI fixtures
+        shell: bash
+        run: |
+          python scripts/package_release.py \
+            --binary target/release/${{ matrix.binary }} \
+            --metadata metadata.json --revision "$(git rev-parse HEAD)" \
+            --target ${{ matrix.target }} --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: research-preview-${{ matrix.target }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/*.receipt.json
+
+  x11-gui:
+    name: Actual Linux X11 GUI smoke (not Windows GUI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install isolated runner GUI test dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb xdotool x11-xkb-utils libxtst6 imagemagick python3-pil fonts-dejavu-core
+      - run: cargo build --release --locked
+      - name: Real X11 tab window checks
+        run: env -u WAYLAND_DISPLAY xvfb-run -a python3 tests/gui/tabs_window.py target/release/browser_engine gui-tabs
+      - name: Real X11 shortcut routing (bounded two trials)
+        run: env -u WAYLAND_DISPLAY python3 tests/gui/shortcut_routing.py target/release/browser_engine gui-routing --trials 2
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: actual-linux-x11-gui-receipts
+          retention-days: 14
+          path: |
+            gui-tabs/
+            gui-routing/
