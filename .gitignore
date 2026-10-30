@@ -11,3 +11,7 @@ output.ppm
 .DS_Store
 Thumbs.db
 
+__pycache__/
+*.py[cod]
+dist/
+metadata.json

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "A minimal browser engine built from scratch in Rust"
 authors = ["CS Projects"]
+license = "MIT"
+repository = "https://github.com/Lei-TzuY/toy-browser-engine"
 
 [[bin]]
 name = "browser_engine"
