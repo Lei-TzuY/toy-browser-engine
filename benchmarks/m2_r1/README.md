@@ -31,3 +31,7 @@ Verify the downloaded SHA-256 before extracting. The script writes to a local ba
 - This is a **partial M2 baseline**, NOT the full M2 milestone or a release candidate.
 
 Gate: independent review, richer GUI/loopback controlled scenarios, bounded verified fixes with before/after, and exact-head CI before merge. Preserve main and published release.
+
+## Verified color-only background fix (pending independent review)
+
+See after-background-summary.md for the immutable before/after contrast, unchanged fixture hashes and remaining FAIL cases. This is not a claim of completed M2 or a standards-complete CSS background shorthand.

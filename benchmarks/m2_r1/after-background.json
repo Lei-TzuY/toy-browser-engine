@@ -1,0 +1,1309 @@
+{
+  "schema": "controlled-m2-r1-v1",
+  "release_tag": null,
+  "release_sha": null,
+  "binary_sha256": "6e04a9bb47bfb3bf7a55ac6fb3561267aa28e5ee82773d3a75c03f6a23896551",
+  "platform": "Ubuntu 26.04 WSL2 headless CLI; no GUI evidence",
+  "safety": "local trusted fixtures only; no live untrusted sites",
+  "limitation": "not representative of real sites; no navigation GUI/HTTPS/IME tests",
+  "total": 29,
+  "status": {
+    "PASS": 25,
+    "FAIL": 4
+  },
+  "areas": {
+    "CSS/paint": {
+      "total": 8,
+      "passed": 7,
+      "failed": 1
+    },
+    "HTML": {
+      "total": 5,
+      "passed": 4,
+      "failed": 1
+    },
+    "JS/DOM": {
+      "total": 13,
+      "passed": 12,
+      "failed": 1
+    },
+    "JS/async": {
+      "total": 2,
+      "passed": 1,
+      "failed": 1
+    },
+    "images": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "H01",
+      "area": "HTML",
+      "inputs_sha256": "593689abbb0057745dfb2894a2aa42d6663f5cd19e99893b23b5b2ddc84c32a2",
+      "expected_dom": [
+        "H01_HEADING",
+        "H01_PARAGRAPH"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/H01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/H01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "f8cd929f7a22dea0638fb83c48fe0c5b4ea0691eddc30c5d839837df4b15d2f1",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/H01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><h1>H01_HEADING</h1><p>H01_PARAGRAPH</p></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "0267fb42d19c600b2702416ce52d9a371727bac1234b6ebbc755ff2fae582bbe",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "H01_HEADING",
+          "found": true
+        },
+        {
+          "kind": "DOM",
+          "expected": "H01_PARAGRAPH",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.126
+    },
+    {
+      "id": "H02",
+      "area": "HTML",
+      "inputs_sha256": "e0c21b1484d9f0c8503a041585f0bd04e401d14385b0d0da95263829b1993166",
+      "expected_dom": [
+        "Tom &amp; Jerry",
+        "&lt;3"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/H02.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/H02.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "10d866f4fa749b754812be2420f66677b5634a1610599a3471c67dd62d37c6ac",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/H02.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><p>Tom & Jerry <3</p></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "e507e881a2f01496f8cde6e8ccf06622735682f8de4a35c35bca5e3a51feb576",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "Tom &amp; Jerry",
+          "found": false
+        },
+        {
+          "kind": "DOM",
+          "expected": "&lt;3",
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.125
+    },
+    {
+      "id": "H03",
+      "area": "HTML",
+      "inputs_sha256": "8dd2d1755d092aefb212da17775d3f7d49f21384a7a4c3fab5c1a0d6c92d8053",
+      "expected_dom": [
+        "id=\"out\">3</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/H03.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/H03.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "67abef7b167f54aff8637dbd49acdea39415a17da9926e47868ba896c00210dc",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/H03.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><ul><li>A</li><li>B</li><li>C</li></ul><div id=\"out\">3</div><script>document.getElementById(\"out\").textContent = document.querySelectorAll(\"li\").length;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "f12448e29dbdb1c0054ef3c27d05c519edbd932fbbb8b4816bab05d68522b227",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">3</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.12
+    },
+    {
+      "id": "H04",
+      "area": "HTML",
+      "inputs_sha256": "bd5032f6b28f949786d7b0e940bdef2792e77337e556396022f16fd7630abefc",
+      "expected_dom": [
+        "id=\"out\">2</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/H04.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/H04.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "da620139ed333aa084e95dea68c48a90ef45ef3392798ce689f85ce7f7d244dd",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/H04.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div><p>first</p><p>second</p></div><div id=\"out\">2</div><script>document.getElementById(\"out\").textContent = document.querySelectorAll(\"p\").length;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "4deddd9e97cc041cd16c58f6f763cc8600cbabe4d883a1ef0640397b71b91513",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.125
+    },
+    {
+      "id": "H05",
+      "area": "HTML",
+      "inputs_sha256": "be53359178304661019e4be5c16df75475bae6efd5211a8182dc9ed8456aeda8",
+      "expected_dom": [
+        "value=\"guest\"",
+        "for=\"name\""
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/H05.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/H05.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "4370f08d06d1bd03f06220d232addb906ea3caba0c942a9c416a8c901b0427e5",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/H05.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><input id=\"name\" value=\"guest\"></input><label for=\"name\">Name</label></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "73b513f81fba902384064eadcfb8fb06b5a55e1b5a5ec63bc4be5ead8d42deef",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "value=\"guest\"",
+          "found": true
+        },
+        {
+          "kind": "DOM",
+          "expected": "for=\"name\"",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.12
+    },
+    {
+      "id": "C01",
+      "area": "CSS/paint",
+      "inputs_sha256": "e6f13b5019a35eeafd4065f867f64574b3dc6d083b67153fbca7a87d54a8c537",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          0,
+          0,
+          [
+            18,
+            52,
+            86
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "d64962a60dd72bdd9e589ff504df469b7b7037db3db506a4ec6e8e2f0eef87b4",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}html{background:#123456}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            0,
+            0
+          ],
+          "expected": [
+            18,
+            52,
+            86
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C02",
+      "area": "CSS/paint",
+      "inputs_sha256": "ae8d7280cc118c366448b4863fc14ddfd71d0b338545f24f697c153e0111eb0a",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            26,
+            43,
+            60
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C02.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C02.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "e5ba584593b2b4853f23693eb411e094592e6595ae593a98a8225736a445b7eb",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C02.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:#1a2b3c}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "e058e6141199b61260663b1a473ac3f8b8eec00414d2cfb84426aa8f783ab56b",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            26,
+            43,
+            60
+          ],
+          "actual": [
+            26,
+            43,
+            60
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C03",
+      "area": "CSS/paint",
+      "inputs_sha256": "d0e5cb826829d7c27e0f64041eb97cbc2986bcb00cbaa944fa1ec04907e722bc",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            255,
+            0,
+            0
+          ]
+        ],
+        [
+          25,
+          5,
+          [
+            0,
+            255,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C03.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C03.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "e8ccdf5f16cf14c407ee75a3fb3d117d4e1f0df2e973fec099217bf4a24f83c8",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C03.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.row{display:flex}.a,.b{width:20px;height:20px;flex-shrink:0}.a{background:#ff0000}.b{background:#00ff00}</style></head><body><div class=\"row\"><div class=\"a\"></div><div class=\"b\"></div></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "ebaaa9511328d331333e1f60f899f64818fe4dcddbc10dd37c6904b30d490c36",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            255,
+            0,
+            0
+          ],
+          "actual": [
+            255,
+            0,
+            0
+          ],
+          "found": true
+        },
+        {
+          "kind": "PIXEL",
+          "at": [
+            25,
+            5
+          ],
+          "expected": [
+            0,
+            255,
+            0
+          ],
+          "actual": [
+            0,
+            255,
+            0
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C04",
+      "area": "CSS/paint",
+      "inputs_sha256": "f80380f1f3f705030282d0a5956ad93fefd5bcbca7e5c67a9af1ec603b8efccb",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            255,
+            0,
+            0
+          ]
+        ],
+        [
+          25,
+          5,
+          [
+            0,
+            255,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C04.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C04.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "494b523b61b9f42a04154ecdcc139853c56e045c82668bb42afae1466d9821b2",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C04.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.grid{display:grid;grid-template-columns:20px 20px}.a,.b{height:20px}.a{background:#ff0000}.b{background:#00ff00}</style></head><body><div class=\"grid\"><div class=\"a\"></div><div class=\"b\"></div></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "ebaaa9511328d331333e1f60f899f64818fe4dcddbc10dd37c6904b30d490c36",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            255,
+            0,
+            0
+          ],
+          "actual": [
+            255,
+            0,
+            0
+          ],
+          "found": true
+        },
+        {
+          "kind": "PIXEL",
+          "at": [
+            25,
+            5
+          ],
+          "expected": [
+            0,
+            255,
+            0
+          ],
+          "actual": [
+            0,
+            255,
+            0
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C05",
+      "area": "CSS/paint",
+      "inputs_sha256": "0077c701550886b8ec5ff3b6909c0dd233226f5b601eeef525d1df4da34259ce",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            0,
+            0,
+            255
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C05.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C05.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "666016b89e091691474713e1aecd6c484cbd125123b10ea97fa7b02184ae7742",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C05.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.a,.b{position:absolute;left:0;top:0;width:30px;height:30px}.a{background:red;z-index:1}.b{background:blue;z-index:2}</style></head><body><div class=\"a\"></div><div class=\"b\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "ad35346e726361da92fdf6d164dea702c56b2351eee22702698fdf4ec82de844",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            0,
+            0,
+            255
+          ],
+          "actual": [
+            0,
+            0,
+            255
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C06",
+      "area": "CSS/paint",
+      "inputs_sha256": "cab9b93f37d5d8d776235f3f97ab4c518b8fa03225153fdece41c9f21bf3a588",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            0,
+            102,
+            204
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C06.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C06.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "5a365b72f08a2cb15d3d10e27baa2336263333151133421af97fbe4ca1ac8ac4",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C06.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}:root{--accent:#0066cc}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:var(--accent)}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "2b91cb6058e60629b49807b45f4ece776712d56558c077b256a5b88a2a2d8d3b",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            0,
+            102,
+            204
+          ],
+          "actual": [
+            0,
+            102,
+            204
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C07",
+      "area": "CSS/paint",
+      "inputs_sha256": "a49a8d5540941cf96da6f48d79a7404441f61b1400b3a50c57d990e7be888b2d",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            0,
+            170,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C07.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C07.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "31a0a96f714b8a42cbda71031956324408a62fd590b6c916d1db16be615f79e3",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C07.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:red}@media (min-width:100px){.box{background:#00aa00}}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "af1d0bfa8a84f6ce68461ccb816118855504f9833dc0550ad609f15e309eb53d",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            0,
+            170,
+            0
+          ],
+          "actual": [
+            0,
+            170,
+            0
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C08",
+      "area": "CSS/paint",
+      "inputs_sha256": "19b6997347d180f097a7c28d71a004ea6f66e6cb87905ded57ebfc1955a1952b",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          0,
+          0,
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        [
+          15,
+          15,
+          [
+            0,
+            255,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/C08.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/C08.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "87bac9491384ee087e0462fcd61ee2f78a7d350753d19d6fac2e4eb32c553b22",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/C08.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:#00ff00;border-radius:15px}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "4074834c791b057cbacdef5a7202e931628ab8ef19a5bc542ce4d5daae35b0c1",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            0,
+            0
+          ],
+          "expected": [
+            255,
+            255,
+            255
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": true
+        },
+        {
+          "kind": "PIXEL",
+          "at": [
+            15,
+            15
+          ],
+          "expected": [
+            0,
+            255,
+            0
+          ],
+          "actual": [
+            0,
+            255,
+            0
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "I01",
+      "area": "images",
+      "inputs_sha256": "370f868cb400d0c007912b2141602429441d06779cf4a2de61a60d7d45bcceec",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            200,
+            10,
+            30
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/I01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/I01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "66cac8181c8a03935508e1e971cf5564a71caa167199e47196da6fbb7f623032",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/I01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}</style></head><body><img src=\"tiny.ppm\" width=\"30\" height=\"30\"></img></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "310a383f04f7245e4243b79564bd0c697b90be2ca509ec2d48fe92286fcd5e2c",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            200,
+            10,
+            30
+          ],
+          "actual": [
+            200,
+            10,
+            30
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "J01",
+      "area": "JS/DOM",
+      "inputs_sha256": "b7927b3e66eb17a0a23079bbe43e34f959ae046d8f238f2a61c3f4f71594906d",
+      "expected_dom": [
+        "id=\"out\">J01_DONE</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "90ed50f8430d43eaaa79fce6f43b1f60b81b978f1e3b174b84508b60d346973c",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">J01_DONE</div><script>document.getElementById(\"out\").textContent=\"J01_DONE\";</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "0c9a5bc3d353e99bcbb09951f5363e020010ead13e550e4c071cabc4ec16f039",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">J01_DONE</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.122
+    },
+    {
+      "id": "J02",
+      "area": "JS/DOM",
+      "inputs_sha256": "4f2b6a9ed72e47fe0f48c7862812ac88f1f6503cc1cd2a2e3787ac242ffa6085",
+      "expected_dom": [
+        "<strong>J02_DONE</strong>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J02.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J02.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "05c629fc4fe3eaae10816ffb94da44268b01c643ab73854192dd0aabf83bb973",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J02.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\"><strong>J02_DONE</strong></div><script>document.getElementById(\"out\").innerHTML=\"<strong>J02_DONE</strong>\";</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "6056589ab0811d342cffc6fbec50aaebcbd77d3a16db1af55544444662c4d476",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "<strong>J02_DONE</strong>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.124
+    },
+    {
+      "id": "J03",
+      "area": "JS/DOM",
+      "inputs_sha256": "b9fc4e8b8fea2c477a44ba84717b03a38bbd76a9410cde6faa9ed367055e8d35",
+      "expected_dom": [
+        "<p>J03_DONE</p>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J03.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J03.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c0f25cc035fddbe16eb012068c7ba7d3c5f1ee6c4c5101d13196aa5e91678479",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J03.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">PENDING<p>J03_DONE</p></div><script>let p=document.createElement(\"p\"); p.textContent=\"J03_DONE\"; document.getElementById(\"out\").appendChild(p);</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "da0d625b09ad98cbd4cd6218dae73d9c6ba51054368c2be9ff40debbfe0bc5a9",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "<p>J03_DONE</p>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.12
+    },
+    {
+      "id": "J04",
+      "area": "JS/DOM",
+      "inputs_sha256": "9dfd94e793aab10da27e6d505dfb0f9a340ed362626e407133231dbefdf7fd5a",
+      "expected_dom": [
+        "id=\"out\">2</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J04.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J04.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "26e9e21daaa3e9272b93eaba422396b50f54d152ef13e4e9805f6c75a7419778",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J04.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div class=\"item\"></div><div class=\"item\"></div><div id=\"out\">2</div><script>document.getElementById(\"out\").textContent=document.querySelectorAll(\".item\").length;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "b627a3ad2f3e3de9cee86af6d6c456ec1b293a02f13abd27b06d59388c9abd73",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.129
+    },
+    {
+      "id": "J05",
+      "area": "JS/DOM",
+      "inputs_sha256": "063b2873b2a9f6ce34cb1b78abb86a947a4932932661f1458610c375b36638ef",
+      "expected_dom": [
+        "id=\"out\">2</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J05.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J05.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "e7d4acd3b3053fb5b501ffa5b5c86a2a0b8ea15fa6cbabc8294f469f4d81f330",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J05.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">2</div><script>let x=0;function inc(){x=x+1;}inc();inc();document.getElementById(\"out\").textContent=x;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "b627a3ad2f3e3de9cee86af6d6c456ec1b293a02f13abd27b06d59388c9abd73",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.122
+    },
+    {
+      "id": "J06",
+      "area": "JS/DOM",
+      "inputs_sha256": "70acb88b8598158b99973794449f1d572caa012e73773a13de817643ca2f25f6",
+      "expected_dom": [
+        "id=\"out\">2,4,6</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J06.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J06.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "00bf110022d046e706f93af88d45e69b80531a1a7d5aeb1f38727d037d575ff9",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J06.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">2,4,6</div><script>let a=[1,2,3];document.getElementById(\"out\").textContent=a.map(x=>x*2).join(\",\");</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "23f123dd81153c1ae08f4315b8ed7ef18328d2fc47dc4af87cfd38bc581fbb55",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2,4,6</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.12
+    },
+    {
+      "id": "J07",
+      "area": "JS/DOM",
+      "inputs_sha256": "e364a7bf2bbb16376743b75fb7ac797947b11175c57f998f38343e9489a8380e",
+      "expected_dom": [
+        "UNICODE_中文字😀"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J07.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J07.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "550967d026c9003fafa1834aab6d15a9d4d13c53824c20be7e8d93d54501b133",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J07.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">UNICODE_中文字😀</div><script>document.getElementById(\"out\").textContent=\"UNICODE_中文字😀\";</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "ae2025e4e5ce0b17d2a93bc9dbea315067e50c4b348b2ba862247b725a24873d",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "UNICODE_中文字😀",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.124
+    },
+    {
+      "id": "J08",
+      "area": "JS/DOM",
+      "inputs_sha256": "c1e86bf112279a85c0b9d1354123c416ea1491370878b21a754d4e6e73d22611",
+      "expected_dom": [
+        "class=\"active\""
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J08.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J08.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "351c8eb7517c96f0e63750c7cde2cb98ed59092f1fba241f1a9d433d6d7467b9",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J08.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\" class=\"active\">PENDING</div><script>document.getElementById(\"out\").classList.add(\"active\");</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "2ff2fef92b8da04c1942afcc0aa9f81d88b79c6b3b07ef2a8f6a3021204f0583",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "class=\"active\"",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.122
+    },
+    {
+      "id": "J09",
+      "area": "JS/DOM",
+      "inputs_sha256": "fa531cacdb3ffd6041954e822dc7d17a85d5e8fc0acdb88d435f6e6480f8d0ba",
+      "expected_dom": [
+        "id=\"out\">VALUE_OK</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J09.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J09.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "37934cf5ce74e9a043ed184c4d77a3b27113a758171f9d7e079d0631818a28de",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J09.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><input id=\"field\" value=\"VALUE_OK\"></input><div id=\"out\">VALUE_OK</div><script>document.getElementById(\"out\").textContent=document.getElementById(\"field\").value;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "6796f2a3b19d1912b6a4f20572e5055e3b43601b69f568e735531a1bac84205f",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">VALUE_OK</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.12
+    },
+    {
+      "id": "J10",
+      "area": "JS/DOM",
+      "inputs_sha256": "f0ebeacbeb3150734f64ad1b12e519793ac60df75041d3975f98d3b03b43dc77",
+      "expected_dom": [
+        "id=\"out\">EXTERNAL_OK</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J10.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J10.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "1c48de19f780f392927c33aedeabcb1572b0a5da74e3ac820a6920aa9ee7ec39",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J10.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">EXTERNAL_OK</div><script src=\"external.js\"></script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "de1b63acd5212edde36ca83128bda2a815fe904626a5a08609794307d63f901e",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">EXTERNAL_OK</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.12
+    },
+    {
+      "id": "J11",
+      "area": "JS/async",
+      "inputs_sha256": "51176eb466bb5f53d3d7ce4a6000ab181be3b5457aed778d66a300a6691da9a9",
+      "expected_dom": [
+        "id=\"out\">RESOLVED</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J11.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J11.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7b3be9cdee07bbfa6f0e6370f0b73cd3cdba7ce8f208a7baa400c98495973fec",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J11.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">RESOLVED</div><script>Promise.resolve(\"RESOLVED\").then(x=>{document.getElementById(\"out\").textContent=x;});</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "9107289e639e2db39132431d7b09e6193162d39871515d4df4554cfcc47bd3ba",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">RESOLVED</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.12
+    },
+    {
+      "id": "J12",
+      "area": "JS/async",
+      "inputs_sha256": "66ea158e83f0b419216290123bc675ae2b1876519c1b4b39f53ca098a715c74f",
+      "expected_dom": [
+        "id=\"out\">42</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J12.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J12.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "769df1d961571ec4c85d8f4923a61578a38277ff1c6baa03a32a2a75bb073989",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J12.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">PENDING</div><script>async function run(){return 42;}run().then(x=>{document.getElementById(\"out\").textContent=x;});</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "2ff2fef92b8da04c1942afcc0aa9f81d88b79c6b3b07ef2a8f6a3021204f0583",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">42</div>",
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.121
+    },
+    {
+      "id": "J13",
+      "area": "JS/DOM",
+      "inputs_sha256": "643634b4b405d163a6da6940fb41b5f5c4ded83abaa45499ab0b89fb85252937",
+      "expected_dom": [
+        "id=\"out\">6</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J13.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J13.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "74dadd5c46a3900d68e2fc8cf557fec2f4c4b5d127352deca02fd3f89ac9a25d",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J13.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">undefined</div><script>document.getElementById(\"out\").textContent=[1,2,3].reduce((a,b)=>a+b,0);</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "7fa56c478ba0772689c0bccf4bad935a8942c2ff7585a80636e50e96cd7eb35b",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">6</div>",
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.121
+    },
+    {
+      "id": "J14",
+      "area": "JS/DOM",
+      "inputs_sha256": "e1e2964e6772017f592aba05c6aa6aa98c41ec6bcce6af8869d17fca596f0ae5",
+      "expected_dom": [
+        "id=\"out\">7</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J14.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J14.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "d12b0d14450237a247ebc1ae387a998dbcbcbd77bb51bfaf1d5761b2ce5c01a0",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J14.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">7</div><script>document.getElementById(\"out\").textContent=String(Math.max(2,7));</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "fb9b1a63fdf7ae1845bfa09d20630b1d927ccc839292616abe35b80c106cad58",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">7</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.123
+    },
+    {
+      "id": "J15",
+      "area": "JS/DOM",
+      "inputs_sha256": "8a476300079e9519c9714fb08b995d3c53d21e4d469a329235304edbec0f80fa",
+      "expected_dom": [
+        "id=\"out\">1</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/source/target/debug/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/captures/J15.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/after-background/pages/J15.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "eabf5cf55077593ee5a5be1cba4783309c104c73edb5ec5320123de5e2901888",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/after-background/captures/J15.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">1</div><script>document.getElementById(\"out\").textContent=(({x:1})?.x)??7;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "48c43dc540eb800e94a87d42d3af033210768e278715e27c81804df39a342815",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">1</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.121
+    }
+  ],
+  "candidate_base_sha": "54283dec2a22e659a90a62ae97d9274d9facfcb1",
+  "candidate_changes": "src/style/mod.rs + src/paint/mod.rs uncommitted patch tested; exact commit identifies final diff",
+  "candidate_diff_sha256": "9a49513924cd89a083eb6237b377ac993cea817b57805abe7b0fedc2c6b80585",
+  "run_label": "post-fix untagged/debug binary, NOT published v0.1.0 binary",
+  "before_binary_sha256": "a5f5ed565cd8137d15f62793544a8b988c1cc3266f02e1046093545130ef020f",
+  "frozen_baseline_sha256": "9c2c2e07d26bc7e5322280db4338a4ad11bef379fa2638a3ae0351e1212686a9",
+  "delta": {
+    "new_passes": [
+      "C02",
+      "C03",
+      "C04",
+      "C05",
+      "C06",
+      "C07",
+      "C08"
+    ],
+    "regressions": [],
+    "baseline_pass": 18,
+    "after_pass": 25,
+    "total": 29
+  }
+}

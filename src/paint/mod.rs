@@ -1836,6 +1836,21 @@ mod tests {
     }
 
     #[test]
+    fn solid_background_shorthand_respects_cascade_and_paints() {
+        let cases = [
+            ("div { display: block; height: 50px; background: red; }", [255, 0, 0]),
+            ("div { display: block; height: 50px; background-color: blue; background: red; }", [255, 0, 0]),
+            ("div { display: block; height: 50px; background: red; background-color: blue; }", [0, 0, 255]),
+            ("div { display: block; height: 50px; background: red !important; background-color: blue; }", [255, 0, 0]),
+        ];
+        for (css, expected) in cases {
+            let canvas = render_to_canvas("<div></div>", css, 100, 100);
+            let idx = (25 * 100 + 25) * 3;
+            assert_eq!(&canvas.pixels[idx..idx + 3], &expected, "CSS: {css}");
+        }
+    }
+
+    #[test]
     fn ppm_header_correct() {
         let c = Canvas::new(4, 2, Color::rgb(0, 0, 0));
         let ppm = c.to_ppm();
