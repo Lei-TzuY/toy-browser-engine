@@ -1,0 +1,1288 @@
+{
+  "schema": "controlled-m2-r1-v1",
+  "release_tag": "v0.1.0",
+  "release_sha": "a065c9d3f37ac573e937b4606a4ee3007016b0b2",
+  "binary_sha256": "a5f5ed565cd8137d15f62793544a8b988c1cc3266f02e1046093545130ef020f",
+  "platform": "Ubuntu 26.04 WSL2 headless CLI; no GUI evidence",
+  "safety": "local trusted fixtures only; no live untrusted sites",
+  "limitation": "not representative of real sites; no navigation GUI/HTTPS/IME tests",
+  "total": 29,
+  "status": {
+    "PASS": 18,
+    "FAIL": 11
+  },
+  "areas": {
+    "CSS/paint": {
+      "total": 8,
+      "passed": 0,
+      "failed": 8
+    },
+    "HTML": {
+      "total": 5,
+      "passed": 4,
+      "failed": 1
+    },
+    "JS/DOM": {
+      "total": 13,
+      "passed": 12,
+      "failed": 1
+    },
+    "JS/async": {
+      "total": 2,
+      "passed": 1,
+      "failed": 1
+    },
+    "images": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    }
+  },
+  "cases": [
+    {
+      "id": "H01",
+      "area": "HTML",
+      "inputs_sha256": "593689abbb0057745dfb2894a2aa42d6663f5cd19e99893b23b5b2ddc84c32a2",
+      "expected_dom": [
+        "H01_HEADING",
+        "H01_PARAGRAPH"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/H01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "d06ecaf13936fbb619c2a4c4c0d7458b6ea12ed5059bc06fdb069f0ecd0dfa9d",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><h1>H01_HEADING</h1><p>H01_PARAGRAPH</p></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "0267fb42d19c600b2702416ce52d9a371727bac1234b6ebbc755ff2fae582bbe",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "H01_HEADING",
+          "found": true
+        },
+        {
+          "kind": "DOM",
+          "expected": "H01_PARAGRAPH",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.032
+    },
+    {
+      "id": "H02",
+      "area": "HTML",
+      "inputs_sha256": "e0c21b1484d9f0c8503a041585f0bd04e401d14385b0d0da95263829b1993166",
+      "expected_dom": [
+        "Tom &amp; Jerry",
+        "&lt;3"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H02.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/H02.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "9bdbc36cf723785e47580b983d9c039db28989e6ed298a700d24f39823fe3e1e",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H02.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><p>Tom & Jerry <3</p></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "e507e881a2f01496f8cde6e8ccf06622735682f8de4a35c35bca5e3a51feb576",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "Tom &amp; Jerry",
+          "found": false
+        },
+        {
+          "kind": "DOM",
+          "expected": "&lt;3",
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.021
+    },
+    {
+      "id": "H03",
+      "area": "HTML",
+      "inputs_sha256": "8dd2d1755d092aefb212da17775d3f7d49f21384a7a4c3fab5c1a0d6c92d8053",
+      "expected_dom": [
+        "id=\"out\">3</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H03.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/H03.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "0f41bb0a047cecab5cdbe1d040a4dfe2d78bbe06e777a0dd15b005fbf5d1b962",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H03.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><ul><li>A</li><li>B</li><li>C</li></ul><div id=\"out\">3</div><script>document.getElementById(\"out\").textContent = document.querySelectorAll(\"li\").length;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "f12448e29dbdb1c0054ef3c27d05c519edbd932fbbb8b4816bab05d68522b227",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">3</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.023
+    },
+    {
+      "id": "H04",
+      "area": "HTML",
+      "inputs_sha256": "bd5032f6b28f949786d7b0e940bdef2792e77337e556396022f16fd7630abefc",
+      "expected_dom": [
+        "id=\"out\">2</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H04.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/H04.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "24ea7f4d0f8f35b800c5c808526132ab893e322a796d9c7019a6d8b75ca67f3d",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H04.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div><p>first</p><p>second</p></div><div id=\"out\">2</div><script>document.getElementById(\"out\").textContent = document.querySelectorAll(\"p\").length;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "4deddd9e97cc041cd16c58f6f763cc8600cbabe4d883a1ef0640397b71b91513",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.021
+    },
+    {
+      "id": "H05",
+      "area": "HTML",
+      "inputs_sha256": "be53359178304661019e4be5c16df75475bae6efd5211a8182dc9ed8456aeda8",
+      "expected_dom": [
+        "value=\"guest\"",
+        "for=\"name\""
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H05.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/H05.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "04c48431c58c0d183b8e061c630189a54e707867eb653f1f521ada2aab3a8643",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/H05.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><input id=\"name\" value=\"guest\"></input><label for=\"name\">Name</label></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "73b513f81fba902384064eadcfb8fb06b5a55e1b5a5ec63bc4be5ead8d42deef",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "value=\"guest\"",
+          "found": true
+        },
+        {
+          "kind": "DOM",
+          "expected": "for=\"name\"",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "C01",
+      "area": "CSS/paint",
+      "inputs_sha256": "e6f13b5019a35eeafd4065f867f64574b3dc6d083b67153fbca7a87d54a8c537",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          0,
+          0,
+          [
+            18,
+            52,
+            86
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "19ffc4f1ac77164e91ea52bea02c8f73500a5dfe567cd936e23705d3b34d3bf9",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}html{background:#123456}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            0,
+            0
+          ],
+          "expected": [
+            18,
+            52,
+            86
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.001
+    },
+    {
+      "id": "C02",
+      "area": "CSS/paint",
+      "inputs_sha256": "ae8d7280cc118c366448b4863fc14ddfd71d0b338545f24f697c153e0111eb0a",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            26,
+            43,
+            60
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C02.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C02.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "fb7b83d0e7414aee5faa9093c5e72950975149d56f4da77739caeb4bf5c9cac1",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C02.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:#1a2b3c}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            26,
+            43,
+            60
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C03",
+      "area": "CSS/paint",
+      "inputs_sha256": "d0e5cb826829d7c27e0f64041eb97cbc2986bcb00cbaa944fa1ec04907e722bc",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            255,
+            0,
+            0
+          ]
+        ],
+        [
+          25,
+          5,
+          [
+            0,
+            255,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C03.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C03.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "01b772192cd7df416b09d3e718b14eabd36aa554e0e2b660b97f937eee5aa9e6",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C03.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.row{display:flex}.a,.b{width:20px;height:20px;flex-shrink:0}.a{background:#ff0000}.b{background:#00ff00}</style></head><body><div class=\"row\"><div class=\"a\"></div><div class=\"b\"></div></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            255,
+            0,
+            0
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        },
+        {
+          "kind": "PIXEL",
+          "at": [
+            25,
+            5
+          ],
+          "expected": [
+            0,
+            255,
+            0
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.001
+    },
+    {
+      "id": "C04",
+      "area": "CSS/paint",
+      "inputs_sha256": "f80380f1f3f705030282d0a5956ad93fefd5bcbca7e5c67a9af1ec603b8efccb",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            255,
+            0,
+            0
+          ]
+        ],
+        [
+          25,
+          5,
+          [
+            0,
+            255,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C04.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C04.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "339e89b8b4d4582fb8287fc72cb27bb44d6f93f81207666fea406b6e170ecd06",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C04.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.grid{display:grid;grid-template-columns:20px 20px}.a,.b{height:20px}.a{background:#ff0000}.b{background:#00ff00}</style></head><body><div class=\"grid\"><div class=\"a\"></div><div class=\"b\"></div></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            255,
+            0,
+            0
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        },
+        {
+          "kind": "PIXEL",
+          "at": [
+            25,
+            5
+          ],
+          "expected": [
+            0,
+            255,
+            0
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C05",
+      "area": "CSS/paint",
+      "inputs_sha256": "0077c701550886b8ec5ff3b6909c0dd233226f5b601eeef525d1df4da34259ce",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            0,
+            0,
+            255
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C05.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C05.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "eac4cd472b272189177b771eed829822c1800ec049ff0fd429b0261f86cac17c",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C05.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.a,.b{position:absolute;left:0;top:0;width:30px;height:30px}.a{background:red;z-index:1}.b{background:blue;z-index:2}</style></head><body><div class=\"a\"></div><div class=\"b\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            0,
+            0,
+            255
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.001
+    },
+    {
+      "id": "C06",
+      "area": "CSS/paint",
+      "inputs_sha256": "cab9b93f37d5d8d776235f3f97ab4c518b8fa03225153fdece41c9f21bf3a588",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            0,
+            102,
+            204
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C06.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C06.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "a189e0dc07cfa9992c22b34cc0dc5d724bf92b1f77f765372e04f15b31b2eb97",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C06.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}:root{--accent:#0066cc}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:var(--accent)}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            0,
+            102,
+            204
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.002
+    },
+    {
+      "id": "C07",
+      "area": "CSS/paint",
+      "inputs_sha256": "a49a8d5540941cf96da6f48d79a7404441f61b1400b3a50c57d990e7be888b2d",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            0,
+            170,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C07.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C07.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "3d03b842e816deaa12e05f3bcb092ffbff2d74f278596f2c8d83c67359552023",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C07.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:red}@media (min-width:100px){.box{background:#00aa00}}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            0,
+            170,
+            0
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.001
+    },
+    {
+      "id": "C08",
+      "area": "CSS/paint",
+      "inputs_sha256": "19b6997347d180f097a7c28d71a004ea6f66e6cb87905ded57ebfc1955a1952b",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          0,
+          0,
+          [
+            255,
+            255,
+            255
+          ]
+        ],
+        [
+          15,
+          15,
+          [
+            0,
+            255,
+            0
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C08.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/C08.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "19ac36f594964f80eaedc6ff411c5a832900a9f2c8b5e571928216b1e7286c4e",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/C08.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}.box{position:absolute;left:0;top:0;width:30px;height:30px;background:#00ff00;border-radius:15px}</style></head><body><div class=\"box\"></div></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            0,
+            0
+          ],
+          "expected": [
+            255,
+            255,
+            255
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": true
+        },
+        {
+          "kind": "PIXEL",
+          "at": [
+            15,
+            15
+          ],
+          "expected": [
+            0,
+            255,
+            0
+          ],
+          "actual": [
+            255,
+            255,
+            255
+          ],
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.001
+    },
+    {
+      "id": "I01",
+      "area": "images",
+      "inputs_sha256": "370f868cb400d0c007912b2141602429441d06779cf4a2de61a60d7d45bcceec",
+      "expected_dom": [],
+      "expected_pixels": [
+        [
+          5,
+          5,
+          [
+            200,
+            10,
+            30
+          ]
+        ]
+      ],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/I01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/I01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7252c25317be647541816243018b8ca36368a6f7f11e3e1a8d540fb632be93f2",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/I01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta><style>html,body{margin:0;padding:0}</style></head><body><img src=\"tiny.ppm\" width=\"30\" height=\"30\"></img></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "310a383f04f7245e4243b79564bd0c697b90be2ca509ec2d48fe92286fcd5e2c",
+      "checks": [
+        {
+          "kind": "PIXEL",
+          "at": [
+            5,
+            5
+          ],
+          "expected": [
+            200,
+            10,
+            30
+          ],
+          "actual": [
+            200,
+            10,
+            30
+          ],
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.001
+    },
+    {
+      "id": "J01",
+      "area": "JS/DOM",
+      "inputs_sha256": "b7927b3e66eb17a0a23079bbe43e34f959ae046d8f238f2a61c3f4f71594906d",
+      "expected_dom": [
+        "id=\"out\">J01_DONE</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J01.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J01.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "f3eedea9181b666245596656c4c7d472cb2990cf8454ff721acd0146f9ad2e5c",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J01.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">J01_DONE</div><script>document.getElementById(\"out\").textContent=\"J01_DONE\";</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "0c9a5bc3d353e99bcbb09951f5363e020010ead13e550e4c071cabc4ec16f039",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">J01_DONE</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J02",
+      "area": "JS/DOM",
+      "inputs_sha256": "4f2b6a9ed72e47fe0f48c7862812ac88f1f6503cc1cd2a2e3787ac242ffa6085",
+      "expected_dom": [
+        "<strong>J02_DONE</strong>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J02.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J02.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "70b0a87c04f86cf9bb339fc0cc6a9271673dd9828c4b1a8c8de8506e78d4795f",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J02.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\"><strong>J02_DONE</strong></div><script>document.getElementById(\"out\").innerHTML=\"<strong>J02_DONE</strong>\";</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "6056589ab0811d342cffc6fbec50aaebcbd77d3a16db1af55544444662c4d476",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "<strong>J02_DONE</strong>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J03",
+      "area": "JS/DOM",
+      "inputs_sha256": "b9fc4e8b8fea2c477a44ba84717b03a38bbd76a9410cde6faa9ed367055e8d35",
+      "expected_dom": [
+        "<p>J03_DONE</p>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J03.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J03.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "95e569a253c51c85854e395a90e931f4c332c1ab0c1532bd037690d5fa6e5f7e",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J03.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">PENDING<p>J03_DONE</p></div><script>let p=document.createElement(\"p\"); p.textContent=\"J03_DONE\"; document.getElementById(\"out\").appendChild(p);</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "da0d625b09ad98cbd4cd6218dae73d9c6ba51054368c2be9ff40debbfe0bc5a9",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "<p>J03_DONE</p>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J04",
+      "area": "JS/DOM",
+      "inputs_sha256": "9dfd94e793aab10da27e6d505dfb0f9a340ed362626e407133231dbefdf7fd5a",
+      "expected_dom": [
+        "id=\"out\">2</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J04.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J04.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7fea24e5d9f8deee8b396e44a389204ef6000133dd77c49f8289abbe79f29da6",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J04.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div class=\"item\"></div><div class=\"item\"></div><div id=\"out\">2</div><script>document.getElementById(\"out\").textContent=document.querySelectorAll(\".item\").length;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "b627a3ad2f3e3de9cee86af6d6c456ec1b293a02f13abd27b06d59388c9abd73",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J05",
+      "area": "JS/DOM",
+      "inputs_sha256": "063b2873b2a9f6ce34cb1b78abb86a947a4932932661f1458610c375b36638ef",
+      "expected_dom": [
+        "id=\"out\">2</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J05.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J05.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "2feded6bed59ea66c2a57cc25c5be4b997fa1b7614e6eedb3e2361717cc06ede",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J05.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">2</div><script>let x=0;function inc(){x=x+1;}inc();inc();document.getElementById(\"out\").textContent=x;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "b627a3ad2f3e3de9cee86af6d6c456ec1b293a02f13abd27b06d59388c9abd73",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J06",
+      "area": "JS/DOM",
+      "inputs_sha256": "70acb88b8598158b99973794449f1d572caa012e73773a13de817643ca2f25f6",
+      "expected_dom": [
+        "id=\"out\">2,4,6</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J06.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J06.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "dba97f107d2b2aa148a97008820fdebbd04f1df0a8fe33d12bbb050f9bbe2243",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J06.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">2,4,6</div><script>let a=[1,2,3];document.getElementById(\"out\").textContent=a.map(x=>x*2).join(\",\");</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "23f123dd81153c1ae08f4315b8ed7ef18328d2fc47dc4af87cfd38bc581fbb55",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">2,4,6</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J07",
+      "area": "JS/DOM",
+      "inputs_sha256": "e364a7bf2bbb16376743b75fb7ac797947b11175c57f998f38343e9489a8380e",
+      "expected_dom": [
+        "UNICODE_中文字😀"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J07.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J07.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "21a291bd68e67125b9160a38dfcde1af1036e1f4b4ef781e97d4aa1a9e0b1c09",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J07.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">UNICODE_中文字😀</div><script>document.getElementById(\"out\").textContent=\"UNICODE_中文字😀\";</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "ae2025e4e5ce0b17d2a93bc9dbea315067e50c4b348b2ba862247b725a24873d",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "UNICODE_中文字😀",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J08",
+      "area": "JS/DOM",
+      "inputs_sha256": "c1e86bf112279a85c0b9d1354123c416ea1491370878b21a754d4e6e73d22611",
+      "expected_dom": [
+        "class=\"active\""
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J08.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J08.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7210199db7425f6c0828a3cf3866c96b31557fee32d6d5b616d377a427946ae2",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J08.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\" class=\"active\">PENDING</div><script>document.getElementById(\"out\").classList.add(\"active\");</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "2ff2fef92b8da04c1942afcc0aa9f81d88b79c6b3b07ef2a8f6a3021204f0583",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "class=\"active\"",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J09",
+      "area": "JS/DOM",
+      "inputs_sha256": "fa531cacdb3ffd6041954e822dc7d17a85d5e8fc0acdb88d435f6e6480f8d0ba",
+      "expected_dom": [
+        "id=\"out\">VALUE_OK</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J09.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J09.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "312088f56b11bb5b3edab3370dae34d7789a97cd10d8add05212623dae7bf411",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J09.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><input id=\"field\" value=\"VALUE_OK\"></input><div id=\"out\">VALUE_OK</div><script>document.getElementById(\"out\").textContent=document.getElementById(\"field\").value;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "6796f2a3b19d1912b6a4f20572e5055e3b43601b69f568e735531a1bac84205f",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">VALUE_OK</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J10",
+      "area": "JS/DOM",
+      "inputs_sha256": "f0ebeacbeb3150734f64ad1b12e519793ac60df75041d3975f98d3b03b43dc77",
+      "expected_dom": [
+        "id=\"out\">EXTERNAL_OK</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J10.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J10.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "47c527647b13e01b0390ae01ac60fd2a9eb8476ea577b20c094a441e3b438dc2",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J10.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">EXTERNAL_OK</div><script src=\"external.js\"></script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "de1b63acd5212edde36ca83128bda2a815fe904626a5a08609794307d63f901e",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">EXTERNAL_OK</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.016
+    },
+    {
+      "id": "J11",
+      "area": "JS/async",
+      "inputs_sha256": "51176eb466bb5f53d3d7ce4a6000ab181be3b5457aed778d66a300a6691da9a9",
+      "expected_dom": [
+        "id=\"out\">RESOLVED</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J11.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J11.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "fc04b4ea53474b807c4be495ce5dba462c0a328489cdeb3c7501c17eda08b1c4",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J11.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">RESOLVED</div><script>Promise.resolve(\"RESOLVED\").then(x=>{document.getElementById(\"out\").textContent=x;});</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "9107289e639e2db39132431d7b09e6193162d39871515d4df4554cfcc47bd3ba",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">RESOLVED</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J12",
+      "area": "JS/async",
+      "inputs_sha256": "66ea158e83f0b419216290123bc675ae2b1876519c1b4b39f53ca098a715c74f",
+      "expected_dom": [
+        "id=\"out\">42</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J12.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J12.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "b2e7a9fae8f81bfab0cbf236717ed2e9875ec44f3b1d067df1c4695cd39edd53",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J12.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">PENDING</div><script>async function run(){return 42;}run().then(x=>{document.getElementById(\"out\").textContent=x;});</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "2ff2fef92b8da04c1942afcc0aa9f81d88b79c6b3b07ef2a8f6a3021204f0583",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">42</div>",
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.017
+    },
+    {
+      "id": "J13",
+      "area": "JS/DOM",
+      "inputs_sha256": "643634b4b405d163a6da6940fb41b5f5c4ded83abaa45499ab0b89fb85252937",
+      "expected_dom": [
+        "id=\"out\">6</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J13.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J13.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "4658bf3752794bbbb032f1a23606d2d2eb067e2a4b1c7f525cd18a62337422c9",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J13.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">undefined</div><script>document.getElementById(\"out\").textContent=[1,2,3].reduce((a,b)=>a+b,0);</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "7fa56c478ba0772689c0bccf4bad935a8942c2ff7585a80636e50e96cd7eb35b",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">6</div>",
+          "found": false
+        }
+      ],
+      "status": "FAIL",
+      "elapsed_s": 0.018
+    },
+    {
+      "id": "J14",
+      "area": "JS/DOM",
+      "inputs_sha256": "e1e2964e6772017f592aba05c6aa6aa98c41ec6bcce6af8869d17fca596f0ae5",
+      "expected_dom": [
+        "id=\"out\">7</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J14.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J14.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "37d437634d3ab6420829b9f8441b20d91a38255e573dc5b819a3de159462565c",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J14.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">7</div><script>document.getElementById(\"out\").textContent=String(Math.max(2,7));</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "fb9b1a63fdf7ae1845bfa09d20630b1d927ccc839292616abe35b80c106cad58",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">7</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.018
+    },
+    {
+      "id": "J15",
+      "area": "JS/DOM",
+      "inputs_sha256": "8a476300079e9519c9714fb08b995d3c53d21e4d469a329235304edbec0f80fa",
+      "expected_dom": [
+        "id=\"out\">1</div>"
+      ],
+      "expected_pixels": [],
+      "command": [
+        "/home/user/ai-scratch/m2-r1-20261102/release/toy-browser-engine-v0.1.0-research-preview-x86_64-unknown-linux-gnu/browser_engine",
+        "--quiet",
+        "--dump-html",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J15.ppm",
+        "/home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/pages/J15.html"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "0606810bf4207856d0d7bcc3997d0bd31eda284cf5c22d7998afc217a25255e1",
+      "stdout_excerpt": "\nPainted → /home/user/ai-scratch/m2-r1-20261102/baseline-v0.1.0/captures/J15.ppm (120×80, 28814 bytes)\n<!DOCTYPE html><html><head><meta charset=\"utf-8\"></meta></head><body><div id=\"out\">1</div><script>document.getElementById(\"out\").textContent=(({x:1})?.x)??7;</script></body></html>\n",
+      "stderr_excerpt": "",
+      "image_sha256": "48c43dc540eb800e94a87d42d3af033210768e278715e27c81804df39a342815",
+      "checks": [
+        {
+          "kind": "DOM",
+          "expected": "id=\"out\">1</div>",
+          "found": true
+        }
+      ],
+      "status": "PASS",
+      "elapsed_s": 0.017
+    }
+  ]
+}
