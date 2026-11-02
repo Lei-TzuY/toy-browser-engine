@@ -106,4 +106,6 @@ def run():
         +"".join("| "+r["id"]+" | "+r["area"]+" | "+r["status"]+" |\n" for r in results)
         +"\nThese are synthetic local cases, not real-website compatibility scores.\n",encoding="utf-8")
     print("SUMMARY",json.dumps({"status":dict(tally),"by_area":by_area}))
-run()
+
+if __name__ == "__main__":
+    run()
