@@ -1836,6 +1836,81 @@ mod tests {
     }
 
     #[test]
+    fn solid_background_shorthand_respects_cascade_and_paints() {
+        let cases = [
+            ("div { display: block; height: 50px; background: red; }", [255, 0, 0]),
+            ("div { display: block; height: 50px; background-color: blue; background: red; }", [255, 0, 0]),
+            ("div { display: block; height: 50px; background: red; background-color: blue; }", [0, 0, 255]),
+            ("div { display: block; height: 50px; background: red !important; background-color: blue; }", [255, 0, 0]),
+        ];
+        for (css, expected) in cases {
+            let canvas = render_to_canvas("<div></div>", css, 100, 100);
+            let idx = (25 * 100 + 25) * 3;
+            assert_eq!(&canvas.pixels[idx..idx + 3], &expected, "CSS: {css}");
+        }
+    }
+
+    #[test]
+    fn invalid_background_shorthand_preserves_prior_values() {
+        let cases = [
+            ("background-color:red;background:nonsense", [255, 0, 0]),
+            (
+                "background-image:linear-gradient(to right,green,green);background:nonsense",
+                [0, 128, 0],
+            ),
+            (
+                "background-color:red;background:nonsense!important",
+                [255, 0, 0],
+            ),
+            (
+                "background:linear-gradient(to right,green,green);background:nonsense",
+                [0, 128, 0],
+            ),
+            ("background-color:blue;background:red nonsense", [0, 0, 255]),
+            (
+                "background-color:blue;background:red!important nonsense",
+                [0, 0, 255],
+            ),
+            ("background-color:red;background:1", [255, 0, 0]),
+            ("background-color:red;background:1px", [255, 0, 0]),
+            (
+                "background-color:red;background:calc(1px + 2px)",
+                [255, 0, 0],
+            ),
+            ("background-color:red;background:bogus()", [255, 0, 0]),
+        ];
+        for (declarations, expected) in cases {
+            let css = format!("div {{ display:block;height:50px;{declarations} }}");
+            let canvas = render_to_canvas("<div></div>", &css, 100, 100);
+            let idx = (25 * 100 + 25) * 3;
+            assert_eq!(&canvas.pixels[idx..idx + 3], &expected, "CSS: {css}");
+        }
+    }
+
+    #[test]
+    fn supported_background_shorthand_values_still_reset_prior_backgrounds() {
+        let cases = [
+            ("red", [255, 0, 0]),
+            ("red /* trailing comment */", [255, 0, 0]),
+            ("var(--bg)", [255, 0, 0]),
+            ("linear-gradient(to right,red,red)", [255, 0, 0]),
+            ("radial-gradient(red,red)", [255, 0, 0]),
+            ("conic-gradient(red,red)", [255, 0, 0]),
+            ("none", [255, 255, 255]),
+            ("NONE", [255, 255, 255]),
+        ];
+        for (background, expected) in cases {
+            let css = format!(
+                "div {{ display:block;height:50px;--bg:red;background-color:blue;\
+                 background-image:linear-gradient(to right,green,green);background:{background} }}"
+            );
+            let canvas = render_to_canvas("<div></div>", &css, 100, 100);
+            let idx = (25 * 100 + 25) * 3;
+            assert_eq!(&canvas.pixels[idx..idx + 3], &expected, "CSS: {css}");
+        }
+    }
+
+    #[test]
     fn ppm_header_correct() {
         let c = Canvas::new(4, 2, Color::rgb(0, 0, 0));
         let ppm = c.to_ppm();
