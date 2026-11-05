@@ -134,8 +134,7 @@ fn script_value_assignment_uses_the_same_state_without_firing_user_events() {
 #[test]
 fn input_listener_removal_cannot_send_change_to_the_next_control() {
     let mut browser = browser(
-        r#"<select id="pick"><option>A</option><option>B</option></select>
-        <select id="other"><option>A</option><option>B</option></select><script>
+        r#"<select id="pick"><option>A</option><option>B</option></select><select id="other"><option>A</option><option>B</option></select><script>
           const pick = document.getElementById("pick");
           pick.addEventListener("input",function(){pick.remove();console.log("removed");});
           document.getElementById("other").addEventListener("change",function(){console.log("wrong target");});
@@ -146,4 +145,22 @@ fn input_listener_removal_cannot_send_change_to_the_next_control() {
     browser.press_key(&KeyEvent::new(Key::ArrowDown));
     assert_eq!(browser.document().runtime.console, ["removed"]);
     assert_eq!(value(&browser, "other"), "A");
+}
+
+#[test]
+fn keydown_listener_removal_cannot_change_the_following_select() {
+    let mut browser = browser(
+        r#"<select id="a"><option>A</option><option>B</option></select><select id="b"><option>A</option><option>B</option></select><script>
+          const a = document.getElementById("a");
+          const b = document.getElementById("b");
+          a.addEventListener("keydown",function(){a.remove();console.log("removed");});
+          b.addEventListener("input",function(){console.log("WRONG input " + b.value);});
+          b.addEventListener("change",function(){console.log("WRONG change " + b.value);});
+        </script>"#,
+    );
+    let select = path(&browser, "a");
+    browser.document_mut().focus_path(&select);
+    browser.press_key(&KeyEvent::new(Key::ArrowDown));
+    assert_eq!(value(&browser, "b"), "A");
+    assert_eq!(browser.document().runtime.console, ["removed"]);
 }

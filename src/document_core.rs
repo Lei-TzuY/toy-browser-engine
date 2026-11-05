@@ -811,11 +811,24 @@ impl Document {
             .focused_path()
             .or_else(|| dom_api::body_path(&self.dom))
             .unwrap_or_default();
+        let select_id = dom_api::node_at(&self.dom, &target)
+            .and_then(Node::as_element)
+            .filter(|element| element.tag_name == "select")
+            .map(ElementData::element_id);
 
         let outcome = self.dispatch(&target, "keydown", key_event_init(event));
         if outcome.default_prevented {
             return PageAction::None;
         }
+        // A keydown listener may move/remove the original select. Its old
+        // path must never become the default action's new control target.
+        let target = match select_id {
+            Some(id) => match dom_api::path_of_element_id(&self.dom, id) {
+                Some(path) => path,
+                None => return PageAction::None,
+            },
+            None => target,
+        };
         self.default_key_action(&target, event)
     }
 
