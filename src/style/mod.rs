@@ -702,10 +702,26 @@ fn compute_specified_values(
         .map(parse_declaration_block)
         .unwrap_or_default();
 
-    // Expand a supported color-only background shorthand during cascading.
+    // Cascade supported background values, expanding color-only shorthand.
     // Respect source order, specificity, inline styles, and !important.
     fn apply_declaration(map: &mut PropertyMap, decl: &Declaration) {
         if decl.name == "background" {
+            // Unknown/unsupported values must not reset earlier longhands or
+            // replace a supported gradient stored under the shorthand itself.
+            let supported = matches!(
+                decl.value,
+                Value::Color(_)
+                    | Value::Var { .. }
+                    | Value::LinearGradient(_)
+                    | Value::RadialGradient(_)
+                    | Value::ConicGradient(_)
+            ) || matches!(
+                &decl.value,
+                Value::Keyword(value) if value.eq_ignore_ascii_case("none")
+            );
+            if !supported {
+                return;
+            }
             map.remove("background-color");
             map.remove("background-image");
             if matches!(decl.value, Value::Color(_) | Value::Var { .. }) {

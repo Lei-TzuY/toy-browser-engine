@@ -1,0 +1,1576 @@
+{
+  "schema": "m2-r1-invalid-background-correction-v1",
+  "environment": "DESKTOP-FLR11EU; WSL Ubuntu 26.04; Rust/Cargo 1.98; trusted local CLI fixtures",
+  "before": {
+    "stage": "before",
+    "source_head": "b3ca11ac0cee57fcd1c5be0925af6e961f60c673",
+    "source_status": "",
+    "binary": "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+    "binary_sha256": "035d713f3c0a0a33a2ee978bc84002ac8b93ed41741487e1dfa21f065b904edc",
+    "passed": 23,
+    "total": 26,
+    "cases": [
+      {
+        "id": "longhand-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/longhand-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/longhand-only.html"
+        ],
+        "fixture_sha256": "2febfc49ac5a3181f989f8bf5baef3d0bb58dfb7bf560df5ef10165a5206e28c",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0035,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "shorthand-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/shorthand-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/shorthand-only.html"
+        ],
+        "fixture_sha256": "5de996152f5f84dca573bccc524b0de3009846a61927a73ceab2e1dd282d61ec",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.003,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "order-shorthand-later",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/order-shorthand-later.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/order-shorthand-later.html"
+        ],
+        "fixture_sha256": "6103a0e0e76bf6e2d4d2d795f4b9fc247d5503af9d584022d688e99d20b9e8bf",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0023,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "order-longhand-later",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/order-longhand-later.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/order-longhand-later.html"
+        ],
+        "fixture_sha256": "4d6d33386a736a131a7778ccff07c1411cb7904bbde3474575aaf6c7be218d0f",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0025,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "important-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/important-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-shorthand.html"
+        ],
+        "fixture_sha256": "960c0e0fecfbddc735838686bb30948e0840e87124e30ffea4673ef8a958852b",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "important-longhand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/important-longhand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-longhand.html"
+        ],
+        "fixture_sha256": "8ac76a85697066f407ddd7c5eb0b056c64f520d527a71973bf0e8302c9420997",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "important-both-order1",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/important-both-order1.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-both-order1.html"
+        ],
+        "fixture_sha256": "30b37b3c8a86239c424a185d89e4ba149f6a33b6513832c56f572f7eeb171fe3",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "important-both-order2",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/important-both-order2.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-both-order2.html"
+        ],
+        "fixture_sha256": "3bd110ce689eea2ab1b231f510dbd9deb0923e2c22eb9a783790014623ea4e23",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0019,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "specificity-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/specificity-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/specificity-shorthand.html"
+        ],
+        "fixture_sha256": "e67a2fa7a2bc0bc064911cf1c516c3b6b2ad22172701ec4d062dcc896a6e3369",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0029,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "specificity-longhand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/specificity-longhand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/specificity-longhand.html"
+        ],
+        "fixture_sha256": "0c80322f97be3e0fa03334614575058d0675ac6b02c69d441858672cfd6ecacb",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0023,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "inline-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/inline-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/inline-shorthand.html"
+        ],
+        "fixture_sha256": "dbc11aec652a5d3214fd597d4ad51c8d413ea40cbf7602e1d539cf6ff337aa8e",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "inline-longhand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/inline-longhand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/inline-longhand.html"
+        ],
+        "fixture_sha256": "1cb2605a26f576d7b6a34b2515b2fd512b4064c76cb69f8cd3b29dc53e1c455d",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "rule-important-over-inline",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/rule-important-over-inline.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/rule-important-over-inline.html"
+        ],
+        "fixture_sha256": "248056365e7766e80076a0b2390da7b430c2e9b6e4f18110f8691e21a031e7c8",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0023,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "inline-important-over-rule",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/inline-important-over-rule.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/inline-important-over-rule.html"
+        ],
+        "fixture_sha256": "8467b313b591e0b008e510f9903492b6863b88b4801a00f0c3b74ac384b0120a",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0025,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "same-specificity-rule-order",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/same-specificity-rule-order.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/same-specificity-rule-order.html"
+        ],
+        "fixture_sha256": "22760c1293e7c9b0ca15d1fa65aacc98aefb6919eca167fead3afa570ad2b171",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.002,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "gradient-image-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/gradient-image-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/gradient-image-only.html"
+        ],
+        "fixture_sha256": "8569c777c22f684b5cf552e3b1e1b119f8c20ee111c347a67e6416bf1202b24f",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "gradient-shorthand-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/gradient-shorthand-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/gradient-shorthand-only.html"
+        ],
+        "fixture_sha256": "878a43b0fe90e3b2182a28b0af99b083dec57d6542b19c8b709358b9a94ca8e4",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "shorthand-resets-image",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/shorthand-resets-image.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/shorthand-resets-image.html"
+        ],
+        "fixture_sha256": "87f4afa648bddef0a7497dd4f1397015fb648e63da59876f33d1970a5ecd4ca8",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "image-after-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/image-after-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/image-after-color.html"
+        ],
+        "fixture_sha256": "30d865413c71b2c3d85bdd2f634505f44e4e0d0c5bf74d93dfa6daf399b28a3b",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0024,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "image-important-retained",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/image-important-retained.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/image-important-retained.html"
+        ],
+        "fixture_sha256": "cccc80c187b30b9eb07188b69dbbcb8caffeb467fcad780741b97a04ef02d6db",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "gradient-important-resets-image",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/gradient-important-resets-image.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/gradient-important-resets-image.html"
+        ],
+        "fixture_sha256": "d76492d6d12af8367e5d3633ade923912cb71ae535d1990c3a8974aaa2c826b3",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "none-resets-image-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/none-resets-image-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/none-resets-image-color.html"
+        ],
+        "fixture_sha256": "8aca9bf6152d52b460aebe62331ad59e77bb84c3f8c64b0bdcd32f8fbb028e4b",
+        "expected": [
+          255,
+          255,
+          255
+        ],
+        "actual": [
+          255,
+          255,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e"
+      },
+      {
+        "id": "image-none-over-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/image-none-over-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/image-none-over-shorthand.html"
+        ],
+        "fixture_sha256": "1ce587c8e0810da5d4ed46eacfde884ee549ef9f8ba123065ffbf87b00c1103b",
+        "expected": [
+          255,
+          255,
+          255
+        ],
+        "actual": [
+          255,
+          255,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0024,
+        "screenshot_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e"
+      },
+      {
+        "id": "invalid-retains-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/invalid-retains-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-retains-color.html"
+        ],
+        "fixture_sha256": "c8173f25eca0fae581e5b0c8501de2381fb36eee2afd2df954117d9ab8cc198c",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          255,
+          255
+        ],
+        "passed": false,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0017,
+        "screenshot_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e"
+      },
+      {
+        "id": "invalid-retains-gradient",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/invalid-retains-gradient.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-retains-gradient.html"
+        ],
+        "fixture_sha256": "ee41b3f49b4599afdaa8fb1b96888171bc9438cc235c179d3980bb4ce7e88448",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          255,
+          255,
+          255
+        ],
+        "passed": false,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0018,
+        "screenshot_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e"
+      },
+      {
+        "id": "invalid-important-retains-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before/invalid-important-retains-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-important-retains-color.html"
+        ],
+        "fixture_sha256": "f11c43d6007d65a5b29e4815d4d92e1ffeb4ab7bf493cf98c21c348f1bb06b5b",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          255,
+          255
+        ],
+        "passed": false,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0017,
+        "screenshot_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e"
+      }
+    ]
+  },
+  "after": {
+    "stage": "after-final",
+    "source_head": "b3ca11ac0cee57fcd1c5be0925af6e961f60c673",
+    "source_status": " M src/css/parser.rs\n M src/paint/mod.rs\n M src/style/mod.rs\n",
+    "binary": "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+    "binary_sha256": "adbdd7ed6ba49975c5333fea6cff18fad68cdf55553aac080589793582f2c24c",
+    "passed": 26,
+    "total": 26,
+    "cases": [
+      {
+        "id": "longhand-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/longhand-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/longhand-only.html"
+        ],
+        "fixture_sha256": "2febfc49ac5a3181f989f8bf5baef3d0bb58dfb7bf560df5ef10165a5206e28c",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0029,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "shorthand-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/shorthand-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/shorthand-only.html"
+        ],
+        "fixture_sha256": "5de996152f5f84dca573bccc524b0de3009846a61927a73ceab2e1dd282d61ec",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0026,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "order-shorthand-later",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/order-shorthand-later.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/order-shorthand-later.html"
+        ],
+        "fixture_sha256": "6103a0e0e76bf6e2d4d2d795f4b9fc247d5503af9d584022d688e99d20b9e8bf",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0023,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "order-longhand-later",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/order-longhand-later.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/order-longhand-later.html"
+        ],
+        "fixture_sha256": "4d6d33386a736a131a7778ccff07c1411cb7904bbde3474575aaf6c7be218d0f",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0026,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "important-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/important-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-shorthand.html"
+        ],
+        "fixture_sha256": "960c0e0fecfbddc735838686bb30948e0840e87124e30ffea4673ef8a958852b",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "important-longhand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/important-longhand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-longhand.html"
+        ],
+        "fixture_sha256": "8ac76a85697066f407ddd7c5eb0b056c64f520d527a71973bf0e8302c9420997",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0024,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "important-both-order1",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/important-both-order1.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-both-order1.html"
+        ],
+        "fixture_sha256": "30b37b3c8a86239c424a185d89e4ba149f6a33b6513832c56f572f7eeb171fe3",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0023,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "important-both-order2",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/important-both-order2.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/important-both-order2.html"
+        ],
+        "fixture_sha256": "3bd110ce689eea2ab1b231f510dbd9deb0923e2c22eb9a783790014623ea4e23",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "specificity-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/specificity-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/specificity-shorthand.html"
+        ],
+        "fixture_sha256": "e67a2fa7a2bc0bc064911cf1c516c3b6b2ad22172701ec4d062dcc896a6e3369",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0027,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "specificity-longhand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/specificity-longhand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/specificity-longhand.html"
+        ],
+        "fixture_sha256": "0c80322f97be3e0fa03334614575058d0675ac6b02c69d441858672cfd6ecacb",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0026,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "inline-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/inline-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/inline-shorthand.html"
+        ],
+        "fixture_sha256": "dbc11aec652a5d3214fd597d4ad51c8d413ea40cbf7602e1d539cf6ff337aa8e",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0019,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "inline-longhand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/inline-longhand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/inline-longhand.html"
+        ],
+        "fixture_sha256": "1cb2605a26f576d7b6a34b2515b2fd512b4064c76cb69f8cd3b29dc53e1c455d",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.002,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "rule-important-over-inline",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/rule-important-over-inline.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/rule-important-over-inline.html"
+        ],
+        "fixture_sha256": "248056365e7766e80076a0b2390da7b430c2e9b6e4f18110f8691e21a031e7c8",
+        "expected": [
+          0,
+          0,
+          255
+        ],
+        "actual": [
+          0,
+          0,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f"
+      },
+      {
+        "id": "inline-important-over-rule",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/inline-important-over-rule.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/inline-important-over-rule.html"
+        ],
+        "fixture_sha256": "8467b313b591e0b008e510f9903492b6863b88b4801a00f0c3b74ac384b0120a",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.002,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "same-specificity-rule-order",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/same-specificity-rule-order.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/same-specificity-rule-order.html"
+        ],
+        "fixture_sha256": "22760c1293e7c9b0ca15d1fa65aacc98aefb6919eca167fead3afa570ad2b171",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "gradient-image-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/gradient-image-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/gradient-image-only.html"
+        ],
+        "fixture_sha256": "8569c777c22f684b5cf552e3b1e1b119f8c20ee111c347a67e6416bf1202b24f",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0023,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "gradient-shorthand-only",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/gradient-shorthand-only.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/gradient-shorthand-only.html"
+        ],
+        "fixture_sha256": "878a43b0fe90e3b2182a28b0af99b083dec57d6542b19c8b709358b9a94ca8e4",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0023,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "shorthand-resets-image",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/shorthand-resets-image.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/shorthand-resets-image.html"
+        ],
+        "fixture_sha256": "87f4afa648bddef0a7497dd4f1397015fb648e63da59876f33d1970a5ecd4ca8",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "image-after-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/image-after-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/image-after-color.html"
+        ],
+        "fixture_sha256": "30d865413c71b2c3d85bdd2f634505f44e4e0d0c5bf74d93dfa6daf399b28a3b",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "image-important-retained",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/image-important-retained.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/image-important-retained.html"
+        ],
+        "fixture_sha256": "cccc80c187b30b9eb07188b69dbbcb8caffeb467fcad780741b97a04ef02d6db",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0022,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "gradient-important-resets-image",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/gradient-important-resets-image.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/gradient-important-resets-image.html"
+        ],
+        "fixture_sha256": "d76492d6d12af8367e5d3633ade923912cb71ae535d1990c3a8974aaa2c826b3",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0021,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "none-resets-image-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/none-resets-image-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/none-resets-image-color.html"
+        ],
+        "fixture_sha256": "8aca9bf6152d52b460aebe62331ad59e77bb84c3f8c64b0bdcd32f8fbb028e4b",
+        "expected": [
+          255,
+          255,
+          255
+        ],
+        "actual": [
+          255,
+          255,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0026,
+        "screenshot_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e"
+      },
+      {
+        "id": "image-none-over-shorthand",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/image-none-over-shorthand.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/image-none-over-shorthand.html"
+        ],
+        "fixture_sha256": "1ce587c8e0810da5d4ed46eacfde884ee549ef9f8ba123065ffbf87b00c1103b",
+        "expected": [
+          255,
+          255,
+          255
+        ],
+        "actual": [
+          255,
+          255,
+          255
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0018,
+        "screenshot_sha256": "abb9374fc7c984d91031fb89a5ca88ebe30a41386db1c7f9f73dfab8e9e9e43e"
+      },
+      {
+        "id": "invalid-retains-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/invalid-retains-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-retains-color.html"
+        ],
+        "fixture_sha256": "c8173f25eca0fae581e5b0c8501de2381fb36eee2afd2df954117d9ab8cc198c",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.0026,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      },
+      {
+        "id": "invalid-retains-gradient",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/invalid-retains-gradient.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-retains-gradient.html"
+        ],
+        "fixture_sha256": "ee41b3f49b4599afdaa8fb1b96888171bc9438cc235c179d3980bb4ce7e88448",
+        "expected": [
+          0,
+          128,
+          0
+        ],
+        "actual": [
+          0,
+          128,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.002,
+        "screenshot_sha256": "2667c1278a0024d4b361364a9c8f0e1fdfcee6295b76a05412d11d9a851d5b04"
+      },
+      {
+        "id": "invalid-important-retains-color",
+        "command": [
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+          "--quiet",
+          "--inspect",
+          "--size",
+          "120x80",
+          "--screenshot",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final/invalid-important-retains-color.ppm",
+          "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-important-retains-color.html"
+        ],
+        "fixture_sha256": "f11c43d6007d65a5b29e4815d4d92e1ffeb4ab7bf493cf98c21c348f1bb06b5b",
+        "expected": [
+          255,
+          0,
+          0
+        ],
+        "actual": [
+          255,
+          0,
+          0
+        ],
+        "passed": true,
+        "exit_code": 0,
+        "elapsed_seconds": 0.002,
+        "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51"
+      }
+    ]
+  },
+  "adjacent_trailing": {
+    "before": {
+      "id": "invalid-trailing-background",
+      "source_head": "b3ca11ac0cee57fcd1c5be0925af6e961f60c673",
+      "command": [
+        "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-browser_engine",
+        "--quiet",
+        "--inspect",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/before-trailing.ppm",
+        "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-trailing-background.html"
+      ],
+      "fixture_sha256": "6fbaabe4f791c342a45aa5156a8e2ac849c453ea1889fde080e623a0b1684878",
+      "binary_sha256": "035d713f3c0a0a33a2ee978bc84002ac8b93ed41741487e1dfa21f065b904edc",
+      "expected": [
+        0,
+        0,
+        255
+      ],
+      "actual": [
+        255,
+        0,
+        0
+      ],
+      "exit_code": 0,
+      "screenshot_sha256": "125093c7ea381db619aed31431bd0460ad013852b8a8395d8693714ecae32b51",
+      "passed": false
+    },
+    "after": {
+      "id": "invalid-trailing-background",
+      "command": [
+        "/home/user/ai-scratch/m2-r2-agent-a-20261105/target/debug/browser_engine",
+        "--quiet",
+        "--inspect",
+        "--size",
+        "120x80",
+        "--screenshot",
+        "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/after-final-trailing.ppm",
+        "/home/user/ai-scratch/m2-r2-agent-a-20261105-evidence/r1-invalid-background/fixtures/invalid-trailing-background.html"
+      ],
+      "fixture_sha256": "6fbaabe4f791c342a45aa5156a8e2ac849c453ea1889fde080e623a0b1684878",
+      "binary_sha256": "adbdd7ed6ba49975c5333fea6cff18fad68cdf55553aac080589793582f2c24c",
+      "expected": [
+        0,
+        0,
+        255
+      ],
+      "actual": [
+        0,
+        0,
+        255
+      ],
+      "exit_code": 0,
+      "screenshot_sha256": "df60175ab9052b5002b8a27429e16d023938e779cc42ffa3f7ae4ee6a4034b6f",
+      "passed": true
+    }
+  },
+  "tested_source_sha256": {
+    "src/css/parser.rs": "8f53f738143c04e21703c77cc2fe74f74fc4d0ae5e942cfe30f9aa1ab154b86d",
+    "src/paint/mod.rs": "bacc303453be3c21962f0695f7c161e77fdfa4a173ca54b5a2e5200c6b0f8f2e",
+    "src/style/mod.rs": "68964a5d8a96ace5dd08ddb28ed11efbb2e72dac77db807731324efa63be6a6b"
+  },
+  "tested_source_patch_sha256": "491bb0ded47ed2decb9e81b5dd2de484af95bb37ff1ff29592894bd7264783a4",
+  "full_rust_tests": {
+    "groups": 194,
+    "passed": 1897,
+    "failed": 0,
+    "ignored": 0
+  },
+  "frozen_artifacts_sha256": {
+    "benchmarks/m2_r1/baseline.json": "9c2c2e07d26bc7e5322280db4338a4ad11bef379fa2638a3ae0351e1212686a9",
+    "benchmarks/m2_r1/captures-fixtures.tar.gz": "f6961673f389f90cf08fb0c7f4f328e5c6b8c4edb618d13b5423641696201d55",
+    "benchmarks/m2_r1/after-background.json": "ad1e42426004e8651055dc5207f9eacf9d5c14b9d3d02448f3affed51597647f",
+    "benchmarks/m2_r1/after-background-captures.tar.gz": "6874a1ac48f1ba7df9c0adf6d6ed4ada516fcd05cb730483db243ead699b9071",
+    "benchmarks/m2_r1/m2_probe.py": "88e6989124444768755bfb2d95a3692d15dd1735e320c4bf63167159d6399d86"
+  },
+  "frozen_harness": {
+    "metric": {
+      "PASS": 25,
+      "FAIL": 4
+    },
+    "binary_sha256": "adbdd7ed6ba49975c5333fea6cff18fad68cdf55553aac080589793582f2c24c",
+    "all_original_fixture_hashes_match": true,
+    "prior_passing_regressions": [],
+    "remaining_failures": [
+      "H02",
+      "C01",
+      "J12",
+      "J13"
+    ],
+    "caveat": "Frozen DOM-substring checks can match script source (notably J02/J07); metric is not proof of those live behaviors. CSS C02-C08 pixel changes are independently verified."
+  }
+}

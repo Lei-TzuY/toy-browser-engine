@@ -1703,6 +1703,7 @@ impl Parser {
             return vec![Declaration::new(name, Value::Keyword(raw))];
         }
 
+        let is_background = name == "background";
         let first_value = self.parse_value();
         let decls = match name.as_str() {
             "margin" | "padding" | "border-width" => {
@@ -2001,8 +2002,30 @@ impl Parser {
             self.consume();
         }
 
-        let important = trailing.trim_start().starts_with('!')
-            && trailing.to_ascii_lowercase().contains("important");
+        let important = if is_background {
+            // Only one supported background value is handled here. Do not
+            // silently accept an invalid tail after a color/gradient/var.
+            let mut rest = Parser::new(&trailing);
+            rest.skip_ws_and_comments();
+            let important = if rest.peek() == '!' {
+                rest.consume();
+                rest.skip_ws_and_comments();
+                if !rest.parse_ident().eq_ignore_ascii_case("important") {
+                    return Vec::new();
+                }
+                true
+            } else {
+                false
+            };
+            rest.skip_ws_and_comments();
+            if !rest.eof() {
+                return Vec::new();
+            }
+            important
+        } else {
+            trailing.trim_start().starts_with('!')
+                && trailing.to_ascii_lowercase().contains("important")
+        };
         if important {
             return decls
                 .into_iter()
@@ -3122,6 +3145,43 @@ pub fn parse_declaration_block(input: &str) -> Vec<Declaration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_value_rejects_trailing_tokens_but_keeps_comments_and_importance() {
+        for input in [
+            "background:red nonsense;color:blue",
+            "background:red!important nonsense;color:blue",
+            "background:red!unimportant;color:blue",
+            "background:none junk;color:blue",
+            "background:var(--bg) junk;color:blue",
+            "background:linear-gradient(red,red) junk;color:blue",
+        ] {
+            let declarations = parse_declaration_block(input);
+            assert_eq!(declarations.len(), 1, "{input}");
+            assert_eq!(declarations[0].name, "color", "{input}");
+        }
+
+        for (input, important) in [
+            ("background:red", false),
+            ("background:red /* trailing comment */", false),
+            ("background:red!important", true),
+            ("background:red ! IMPORTANT", true),
+            (
+                "background:red/*before*/!/*between*/important/*after*/",
+                true,
+            ),
+        ] {
+            let declarations = parse_declaration_block(input);
+            assert_eq!(declarations.len(), 1, "{input}");
+            assert_eq!(declarations[0].name, "background", "{input}");
+            assert_eq!(
+                declarations[0].value,
+                Value::Color(Color::rgb(255, 0, 0)),
+                "{input}"
+            );
+            assert_eq!(declarations[0].important, important, "{input}");
+        }
+    }
 
     #[test]
     fn simple_rule() {
