@@ -52,6 +52,24 @@ On Wayland/WSLg, the tested X11 path can be selected per process with
 is available. This does not validate the separate Wayland backend. Use US English
 for the measured Windows keyboard path; general IME/layout support is incomplete.
 
+## Fonts and select controls in current source builds
+
+Text keeps the existing primary font for glyphs it covers. Missing glyphs can
+use fonts from a fixed list of common OS paths, loaded only when needed.
+`BROWSER_ENGINE_FONT` selects a primary font file;
+`BROWSER_ENGINE_FALLBACK_FONT` adds one explicit fallback file. Both measurement
+and rasterization use the selected glyph's font. No fonts are installed or
+redistributed. A Linux host with only DejaVu/Ubuntu fonts still needs an available
+CJK font to display Chinese characters. Fallback coverage does not provide
+operating-system IME composition or complete color-emoji support.
+
+A collapsed single-select displays its selected option label. Click or Tab to
+focus it, then use Up/Down or Home/End to choose an enabled option. User changes
+fire `input` and `change`, and form submission uses that live selection. Popup
+menus and multiple-select/listbox interaction remain incomplete.
+
+These source changes do not replace the immutable v0.1.0 release assets.
+
 ## Download and install
 
 Use assets only from the repository's verified GitHub Release URL. Packages are

@@ -14,6 +14,88 @@ use crate::script::dom_api;
 #[derive(Debug, Clone)]
 struct OptionState {
     value: String,
+    label: String,
+    disabled: bool,
+}
+
+/// A select displayed as one collapsed control.
+pub(crate) fn is_collapsed(select: &ElementData) -> bool {
+    select.tag_name == "select"
+        && select.get_attr("multiple").is_none()
+        && select
+            .get_attr("size")
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(1)
+            <= 1
+}
+
+pub(crate) fn option_labels(dom: &Node, select_path: &[usize]) -> Vec<String> {
+    select_snapshot(dom, select_path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|option| option.label)
+        .collect()
+}
+
+pub(crate) fn display_label(dom: &Node, select_path: &[usize]) -> Option<String> {
+    let options = select_snapshot(dom, select_path)?;
+    let selected = forms::select_selected_indices(dom, select_path)?;
+    Some(
+        selected
+            .first()
+            .and_then(|index| options.get(*index))
+            .map(|option| option.label.clone())
+            .unwrap_or_default(),
+    )
+}
+
+pub(crate) enum SelectionMove {
+    Previous,
+    Next,
+    First,
+    Last,
+}
+
+/// A user move skips disabled options/optgroups and stops at either end.
+/// The caller dispatches events only when this returns true.
+pub(crate) fn move_selection(
+    dom: &mut Node,
+    select_path: &[usize],
+    movement: SelectionMove,
+) -> bool {
+    let Some(select) = dom_api::node_at(dom, select_path).and_then(Node::as_element) else {
+        return false;
+    };
+    if !is_collapsed(select) || select.is_disabled() {
+        return false;
+    }
+    let Some(options) = select_snapshot(dom, select_path) else {
+        return false;
+    };
+    let current = forms::select_selected_indices(dom, select_path)
+        .and_then(|indices| indices.first().copied());
+    let enabled: Vec<_> = options
+        .iter()
+        .enumerate()
+        .filter_map(|(index, option)| (!option.disabled).then_some(index))
+        .collect();
+    let next = match movement {
+        SelectionMove::Next => enabled
+            .iter()
+            .copied()
+            .find(|index| current.is_none_or(|old| *index > old)),
+        SelectionMove::Previous => enabled
+            .iter()
+            .rev()
+            .copied()
+            .find(|index| current.is_none_or(|old| *index < old)),
+        SelectionMove::First => enabled.first().copied(),
+        SelectionMove::Last => enabled.last().copied(),
+    };
+    let Some(next) = next.filter(|next| Some(*next) != current) else {
+        return false;
+    };
+    forms::set_select_selected_indices(dom, select_path, vec![next])
 }
 
 /// Current `HTMLSelectElement.value`.
@@ -80,11 +162,12 @@ fn select_snapshot(dom: &Node, select_path: &[usize]) -> Option<Vec<OptionState>
         return None;
     }
     let mut options = Vec::new();
-    collect_options(select_node, true, &mut options);
+    collect_options(select_node, true, false, &mut options);
     Some(options)
 }
 
-fn collect_options(node: &Node, is_root: bool, out: &mut Vec<OptionState>) {
+fn collect_options(node: &Node, is_root: bool, disabled_group: bool, out: &mut Vec<OptionState>) {
+    let mut descendants_disabled = disabled_group;
     if let Some(element) = node.as_element() {
         if !is_root && element.tag_name == "select" {
             return;
@@ -92,12 +175,22 @@ fn collect_options(node: &Node, is_root: bool, out: &mut Vec<OptionState>) {
         if element.tag_name == "option" {
             out.push(OptionState {
                 value: option_value(node, element),
+                label: element
+                    .get_attr("label")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| dom_api::text_content(node))
+                    .split_ascii_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                disabled: disabled_group || element.get_attr("disabled").is_some(),
             });
             return;
         }
+        descendants_disabled |=
+            element.tag_name == "optgroup" && element.get_attr("disabled").is_some();
     }
     for child in &node.children {
-        collect_options(child, false, out);
+        collect_options(child, false, descendants_disabled, out);
     }
 }
 

@@ -2198,7 +2198,11 @@ impl JsRuntime {
                 }
                 // The live value, which stops mirroring the attribute once the
                 // control has been edited.
-                "value" => element.map(|e| JsValue::Str(e.control_value())),
+                "value" => element.map(|e| JsValue::Str(if e.tag_name == "select" {
+                    crate::select_state::value(node, &[]).unwrap_or_default()
+                } else {
+                    e.control_value()
+                })),
                 "defaultValue" => {
                     element.map(|e| JsValue::Str(e.get_attr("value").unwrap_or("").to_string()))
                 }
@@ -2319,7 +2323,13 @@ impl JsRuntime {
                     // Assigning `.value` sets the live value; the `value`
                     // attribute (the default) keeps whatever it had.
                     "value" => {
-                        self.with_element_mut(dom, r, |e| e.set_control_value(text.clone()));
+                        self.with_node_mut(dom, r, |node| {
+                            if node.as_element().is_some_and(|e| e.tag_name == "select") {
+                                crate::select_state::set_value(node, &[], &text);
+                            } else if let NodeType::Element(element) = &mut node.node_type {
+                                element.set_control_value(text.clone());
+                            }
+                        });
                     }
                     "checked" => {
                         let checked = truthy(&value);
