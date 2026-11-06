@@ -1,0 +1,8 @@
+{
+  "archive_files_verified": 1300,
+  "archive_sha256": "8bb434ec1020199a91583635ef684913ca48016274e1a2d1b5d738293c5213fe",
+  "fixture_files_verified": 20,
+  "production_tree_unchanged_from_f330": true,
+  "r1_corpus_unchanged": true,
+  "native_interaction_gate": "HOLD"
+}

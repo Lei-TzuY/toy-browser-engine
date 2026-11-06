@@ -535,7 +535,7 @@ const PLACEHOLDER_TEXT: Color = Color {
     a: 255,
 };
 
-/// Paint the widget for `<input>` and `<textarea>`.
+/// Paint input, textarea and collapsed single-select widgets.
 ///
 /// The UA look is drawn here rather than in the DOM so that author CSS keeps
 /// working: backgrounds and borders from the cascade are painted first, and
@@ -548,6 +548,10 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
     let NodeType::Element(element) = &styled.node.node_type else {
         return;
     };
+    if crate::select_state::is_collapsed(element) {
+        render_select(list, lb, styled.node, opacity);
+        return;
+    }
     if !matches!(element.tag_name.as_str(), "input" | "textarea") {
         return;
     }
@@ -655,6 +659,51 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
                 height: metrics.new_line_size - 2.0,
             },
         ));
+    }
+    list.push(DisplayCommand::PopClip);
+}
+
+fn render_select(list: &mut DisplayList, lb: &LayoutBox, node: &crate::dom::Node, opacity: f32) {
+    let element = node.as_element().expect("select element");
+    let rect = lb.dimensions.padding_box();
+    let focused = lb.is_focused();
+    let disabled = element.is_disabled();
+    render_framed_box(
+        list, rect, get_border_radius(lb).max(3.0),
+        apply_opacity(if disabled { CONTROL_DISABLED } else { CONTROL_BACKGROUND }, opacity),
+        apply_opacity(if focused { CONTROL_FOCUS } else { CONTROL_BORDER }, opacity),
+        if focused { 2.0 } else { 1.0 },
+    );
+    let color = apply_opacity(if disabled { PLACEHOLDER_TEXT } else { CONTROL_TEXT }, opacity);
+    let font_size = lb.font_size();
+    let metrics = line_metrics(font_size);
+    let text_rect = Rect {
+        x: rect.x + 4.0,
+        y: rect.y + (rect.height - metrics.new_line_size) / 2.0,
+        width: (rect.width - 26.0).max(0.0),
+        height: metrics.new_line_size,
+    };
+    list.push(DisplayCommand::PushClip(rect));
+    list.push(DisplayCommand::PushClip(text_rect));
+    list.push(DisplayCommand::Text(TextFragment {
+        text: crate::select_state::display_label(node, &[]).unwrap_or_default(),
+        rect: text_rect,
+        baseline: text_rect.y + metrics.ascent,
+        color, font_size,
+        underline: false,
+        strikethrough: false,
+        text_shadow: None,
+    }));
+    list.push(DisplayCommand::PopClip);
+    // A visible down arrow identifies the control. Keyboard defaults change
+    // selection; opening a popup is outside this collapsed widget's scope.
+    for row in 0..4 {
+        list.push(DisplayCommand::SolidColor(color, Rect {
+            x: rect.x + rect.width - 16.0 + row as f32,
+            y: rect.y + rect.height / 2.0 - 2.0 + row as f32,
+            width: 8.0 - row as f32 * 2.0,
+            height: 1.0,
+        }));
     }
     list.push(DisplayCommand::PopClip);
 }
@@ -1818,6 +1867,20 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn collapsed_select_paints_only_the_selected_label_inside_a_control_frame() {
+        let list = display_list_for(
+            r#"<select><option>Alpha</option><option selected label="Shown Beta">Hidden text</option></select>"#,
+            "select{display:block;width:240px;height:52px}", 300,
+        );
+        let text: Vec<_> = list.iter().filter_map(|command| match command {
+            DisplayCommand::Text(fragment) => Some(fragment.text.as_str()), _ => None,
+        }).collect();
+        assert_eq!(text, ["Shown Beta"]);
+        assert!(list.iter().any(|command| matches!(command,
+            DisplayCommand::RoundedRect(_, rect, _) if rect.width == 240.0 && rect.height == 52.0)));
     }
 
     #[test]

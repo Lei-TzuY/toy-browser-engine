@@ -32,6 +32,7 @@ use crate::net::{
 use crate::paint::{paint_with_scroll, Canvas};
 use crate::script::interp::{EventInit, EventOutcome, JsValue, PendingAction};
 use crate::script::{dom_api, JsRuntime, NodePath};
+use crate::select_state::{self, SelectionMove};
 use crate::style::{style_tree_full, InteractionState, StyledNode};
 
 /// The user-agent stylesheet: the browser's own defaults, the weakest layer of
@@ -810,11 +811,24 @@ impl Document {
             .focused_path()
             .or_else(|| dom_api::body_path(&self.dom))
             .unwrap_or_default();
+        let select_id = dom_api::node_at(&self.dom, &target)
+            .and_then(Node::as_element)
+            .filter(|element| element.tag_name == "select")
+            .map(ElementData::element_id);
 
         let outcome = self.dispatch(&target, "keydown", key_event_init(event));
         if outcome.default_prevented {
             return PageAction::None;
         }
+        // A keydown listener may move/remove the original select. Its old
+        // path must never become the default action's new control target.
+        let target = match select_id {
+            Some(id) => match dom_api::path_of_element_id(&self.dom, id) {
+                Some(path) => path,
+                None => return PageAction::None,
+            },
+            None => target,
+        };
         self.default_key_action(&target, event)
     }
 
@@ -857,6 +871,27 @@ impl Document {
         let Some(element) = dom_api::node_at(&self.dom, target).and_then(|n| n.as_element()) else {
             return PageAction::None;
         };
+
+        if select_state::is_collapsed(element) && !event.modifiers.has_command_modifier() {
+            let movement = match event.key {
+                Key::ArrowUp => Some(SelectionMove::Previous),
+                Key::ArrowDown => Some(SelectionMove::Next),
+                Key::Home => Some(SelectionMove::First),
+                Key::End => Some(SelectionMove::Last),
+                _ => None,
+            };
+            if let Some(movement) = movement {
+                let id = element.element_id();
+                if select_state::move_selection(&mut self.dom, target, movement) {
+                    self.dispatch(target, "input", EventInit::bubbling());
+                    // The input listener may move or remove this control.
+                    if let Some(path) = dom_api::path_of_element_id(&self.dom, id) {
+                        self.dispatch(&path, "change", EventInit::bubbling());
+                    }
+                }
+                return PageAction::None;
+            }
+        }
 
         // Space and Enter activate buttons and checkable inputs.
         if matches!(event.key, Key::Character(' ')) && element.is_checkable() {

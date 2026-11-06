@@ -1422,6 +1422,7 @@ impl<'a> LayoutBox<'a> {
         let replaced = element.tag_name == "img"
             || element.tag_name == "canvas"
             || element.tag_name == "textarea"
+            || crate::select_state::is_collapsed(element)
             || (element.tag_name == "input" && element.input_type() != "hidden");
         replaced.then_some(element)
     }
@@ -1438,6 +1439,11 @@ impl<'a> LayoutBox<'a> {
         let padding = 8.0;
 
         match element.tag_name.as_str() {
+            "select" if crate::select_state::is_collapsed(element) => {
+                let width = crate::select_state::option_labels(self.style()?.node, &[])
+                    .iter().map(|label| measure_text(label, font_size)).fold(0.0_f32, f32::max);
+                Some((width + 26.0, metrics.new_line_size + padding))
+            }
             "canvas" => {
                 let w = element
                     .get_attr("width")
@@ -2554,7 +2560,8 @@ fn build_layout_tree_inner<'a>(
     let replaced_content = node
         .node
         .as_element()
-        .is_some_and(|e| matches!(e.tag_name.as_str(), "img" | "canvas" | "input" | "textarea"));
+        .is_some_and(|e| matches!(e.tag_name.as_str(), "img" | "canvas" | "input" | "textarea")
+            || crate::select_state::is_collapsed(e));
 
     for child in &node.children {
         if replaced_content {

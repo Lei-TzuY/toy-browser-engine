@@ -1,0 +1,214 @@
+{
+  "reviewer": "C independent own checkout and execution",
+  "base_source": "c379fd7e5bc2f8740cd9763cd60ee3706c1cb9b1",
+  "candidate_source": "f330aea360a30d22327ffa44b9c60c1c5f9e9024",
+  "source_clean": true,
+  "source_tree_sha": "e8607b53cb2c2497e73ccae2b0ee552dfc473851",
+  "tests_passed": 1906,
+  "own_supplemental_probes": {
+    "f330": {
+      "passed": 5,
+      "failed": 0
+    },
+    "c9dd": {
+      "passed": 3,
+      "failed": 2
+    },
+    "source": "reviewer_c_select_event_probe_v2.rs",
+    "source_sha256": "b03cee92fc0e02d8d8842714b4359bb22886d3ef35010ea67fd5f27876dc3a3d"
+  },
+  "base": {
+    "status": {
+      "PASS": 23,
+      "PARTIAL": 1,
+      "FAIL": 1,
+      "BLOCKED": 1
+    },
+    "executed": 25,
+    "binary_sha256": "4dde80f70f5c07c18df30b4dbc7c228f0c0874258f0c5e5c95987e2bdc30a81c"
+  },
+  "candidate": {
+    "status": {
+      "PASS": 24,
+      "PARTIAL": 1,
+      "BLOCKED": 1
+    },
+    "executed": 25,
+    "binary_sha256": "bc9d07d62e8a58483639121cf736d6eb6aac9c21a2533c2dcdb1103fb48a5623"
+  },
+  "original_pass_cases": [
+    "U01",
+    "U02",
+    "U03",
+    "U04",
+    "U05",
+    "U06",
+    "U07",
+    "U08",
+    "U09",
+    "U10",
+    "U12",
+    "U13",
+    "U14",
+    "U15",
+    "U16",
+    "U17",
+    "U19",
+    "U20",
+    "U21",
+    "U22",
+    "U23",
+    "U25",
+    "U26"
+  ],
+  "original_pass_regressions": [],
+  "fixture_manifest_identical": true,
+  "runner_source_sha256": "27ec24672de6a011c2a8ab6b72fff0783217f1d743e7a981080ac515b2130c62",
+  "fixture_files_sha256": {
+    "checkbox.html": "988c796939d1ce9760909e2fe829cab16cca09ddc23f73bc936b083bb90a7210",
+    "click.html": "243d4f2277eacfada042e83e084031d70fd22b31000932a7f12efe875edf3d3e",
+    "color.html": "0765c3049729b3e7de09dd537e13392db267af8bb478e1787903dd366fa19d4a",
+    "fetch.html": "a862308ae9ad0e35a795091bdaf9917564bcd24ba8aebdcda5ad8ab7a747fd5b",
+    "file-target.html": "b59010380a61bb69c9d87897462fac2e9c64f3a3cc8352d51639b6dd8158e867",
+    "file.html": "1df127b5f5129568f3c54d42759111c2f4e3b3cc7a327a1f6e9f365c5eeda341",
+    "get.html": "f40af6b647149c7697dcd5e5a72ad0bd393a21c05eaaf83af347ca511de30101",
+    "image.html": "cb5af8f878ae24696aefdd1dab7f4595dff1a6fc47a9e72af7a3998192afe191",
+    "ime.html": "c03519002b4bf7b799b994ee8b9d158028ffc4905e8fe96b9aa931c64ab14f7d",
+    "index.html": "dc7c4195a2f953bf4a083983ca88e6f21e6d5c097ff99ba5c065bc15e92017ee",
+    "input.html": "7572fa1a00c5c51d39009bf2d825dc9dcf6226cb3a244558e3a7e377bff62ae1",
+    "post.html": "aae432bc299cf5a1c2a0d485b25e17b0f8ae22a753d61d552a6113e20025bfa0",
+    "required.html": "6b0ea5d067d7daca486ea7d0b9ae51c62a57da5af639deaf1c18a20666a6198f",
+    "scroll.html": "a20b8b0b384c59d5fd2052d5fa69eadeefc95ce137d3117b449dbc777ea3d118",
+    "select.html": "2ecb1d0520cea06a3eaf6c10f088fa4be329ec1ee53bcacc76947a735b357183",
+    "tabstate.html": "5439a1e7c794260be4f5bcaccc1ba99cdb979d7c3027c5135340ca94879b1388",
+    "target.html": "f317d1de6c82f13b36945a43ad63d9037b10953600eff074fd0832b06e2aee91",
+    "tile.png": "b7873540b4cceac16392704258f38824aba116620a6c791d93a61825b4d68a09",
+    "timer.html": "d02ad816b14bad2837742f038ccd3a397abe0c489b0db171a457fe0a44a31e06",
+    "unicode.html": "5eaa65c3768b3b8d1c10e3b43ee6d25206d31d23f5f7e5b117713017ea3c6a89"
+  },
+  "configured_fonts": {
+    "BROWSER_ENGINE_FONT": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "BROWSER_ENGINE_FALLBACK_FONT": "/mnt/c/Windows/Fonts/msyh.ttc"
+  },
+  "configured_font_sha256": {
+    "BROWSER_ENGINE_FONT": "b4c632e3cdf9acc7f28758fb5a323c8524d7fc6660d46904d9b6cbe2809c419c",
+    "BROWSER_ENGINE_FALLBACK_FONT": "d79c55e68b1131eea0cc1c47be4f572d964f28c682e143db2ad09c1e4cb07a3f"
+  },
+  "configured_unicode_row_pixel_comparison": {
+    "latin": {
+      "before_sha256": "89797986ba2222417e1fbddcf80e9e3ed1880c11a334c1ae308f35f3f80f439a",
+      "after_sha256": "89797986ba2222417e1fbddcf80e9e3ed1880c11a334c1ae308f35f3f80f439a",
+      "identical": true,
+      "changed_pixels": 0
+    },
+    "greek": {
+      "before_sha256": "9c1168006614bb60dd0178a01c264038c4b1c1cda29b7468f5ab7960aeadbb85",
+      "after_sha256": "9c1168006614bb60dd0178a01c264038c4b1c1cda29b7468f5ab7960aeadbb85",
+      "identical": true,
+      "changed_pixels": 0
+    },
+    "chinese": {
+      "before_sha256": "49409e53b0ee5b1d36cdd9cdc3feb5fb6e127851747c6bb1d638d7faf44a1868",
+      "after_sha256": "d7179f6432c0756e464012731956cf407526e8aef123592ad8788a80f61152c6",
+      "identical": false,
+      "changed_pixels": 1771
+    },
+    "emoji": {
+      "before_sha256": "8882c61cce2dbe0913a20637dd87624f3805ef08718af26135325447038bb146",
+      "after_sha256": "8882c61cce2dbe0913a20637dd87624f3805ef08718af26135325447038bb146",
+      "identical": true,
+      "changed_pixels": 0
+    }
+  },
+  "u18": {
+    "base": {
+      "status": "FAIL",
+      "failed_checks": [
+        {
+          "name": "live title",
+          "passed": false,
+          "expected": "Select b",
+          "actual": "Select a — http://127.0.0.1:34807/select.html [1/1]"
+        },
+        {
+          "name": "server captured form values",
+          "passed": false,
+          "expected": {
+            "pick": [
+              "b"
+            ],
+            "case": [
+              "U18"
+            ]
+          },
+          "actual": [
+            {
+              "pick": [
+                "a"
+              ],
+              "case": [
+                "U18"
+              ]
+            }
+          ]
+        }
+      ],
+      "observed_titles": [
+        "Select a — http://127.0.0.1:34807/select.html [1/1]",
+        "Select a — http://127.0.0.1:34807/select.html [1/1]",
+        "EchoGET — http://127.0.0.1:34807/echo-get?pick=a&case=U18 [2/2]",
+        "EchoGET — http://127.0.0.1:34807/echo-get?pick=a&case=U18 [2/2]"
+      ],
+      "form_requests": [
+        {
+          "sequence": 36,
+          "at_seconds": 30.069125,
+          "method": "GET",
+          "path": "/echo-get",
+          "query": "pick=a&case=U18",
+          "body": "",
+          "content_type": null
+        }
+      ]
+    },
+    "candidate": {
+      "status": "PASS",
+      "failed_checks": [],
+      "observed_titles": [
+        "Select a — http://127.0.0.1:35835/select.html [1/1]",
+        "Select b — http://127.0.0.1:35835/select.html [1/1]",
+        "EchoGET — http://127.0.0.1:35835/echo-get?pick=b&case=U18 [2/2]",
+        "EchoGET — http://127.0.0.1:35835/echo-get?pick=b&case=U18 [2/2]"
+      ],
+      "form_requests": [
+        {
+          "sequence": 36,
+          "at_seconds": 23.948409,
+          "method": "GET",
+          "path": "/echo-get",
+          "query": "pick=b&case=U18",
+          "body": "",
+          "content_type": null
+        }
+      ]
+    }
+  },
+  "default_linux_cjk_candidates": {
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc": false,
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc": false,
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc": false
+  },
+  "limitations": [
+    "Native Windows real input not independently exercised and remains UNVERIFIED",
+    "U24 real OS IME remains BLOCKED; no shaping/composition certification",
+    "Default Linux has no listed CJK fallback font; configured-font improvement does not make default U11 pass",
+    "U11 raw matrix status remains PARTIAL; visible configured Chinese correction inspected independently, no full Unicode conformance certification"
+  ],
+  "excluded_receipts": {
+    "c9dd-default": "INVALID_PROVENANCE: reused base executable; retained",
+    "c9dd-configured": "INVALID_PROVENANCE: reused base executable; retained",
+    "c9dd-isolated-default": "UNEXECUTED environment startup failure: missing /tmp/p83/xkbcomp; retained",
+    "select-event-probe-v2-c9dd.log": "reviewer probe compile draft error, not product result"
+  },
+  "font_fixture_audit": "font-fixtures-audit.json"
+}
