@@ -11,11 +11,9 @@ import http.server
 import json
 from pathlib import Path
 import socket
-import struct
 import threading
 import time
 import urllib.parse
-import zlib
 
 
 CSS = """html,body{margin:0;padding:0}body{font-size:18px;color:#111111;background-color:white}
@@ -69,10 +67,12 @@ PAGES = {
 
 
 def png_tile():
-    def chunk(kind, body):
-        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff)
-    raw = b"".join(b"\0" + bytes([200, 10, 30]) * 40 for _ in range(40))
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 40, 40, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    """Original baseline bytes, independent of the host compression library."""
+    return bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000028000000280802000000039c2f3a"
+        "0000003049444154789cedcd310d00000803b0dd88c0bf1464618284a749ff66aa5f"
+        "442c168bc562b1582c168bc562b1582cbeb328addc4ca5ff27b20000000049454e44ae426082"
+    )
 
 
 CASE_SPECS = [

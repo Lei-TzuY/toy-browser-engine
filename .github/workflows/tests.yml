@@ -58,7 +58,7 @@ jobs:
   x11-gui:
     name: Actual Linux X11 GUI smoke (not Windows GUI)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
@@ -75,6 +75,8 @@ jobs:
         run: env -u WAYLAND_DISPLAY xvfb-run -a python3 tests/gui/tabs_window.py target/release/browser_engine gui-tabs
       - name: Real X11 shortcut routing (bounded two trials)
         run: env -u WAYLAND_DISPLAY python3 tests/gui/shortcut_routing.py target/release/browser_engine gui-routing --trials 2
+      - name: Trusted local usability scenarios through actual X11 input
+        run: env -u WAYLAND_DISPLAY python3 tests/gui/usability/linux_usability.py target/release/browser_engine gui-usability --source-repo "$GITHUB_WORKSPACE"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -83,3 +85,4 @@ jobs:
           path: |
             gui-tabs/
             gui-routing/
+            gui-usability/

@@ -1,0 +1,57 @@
+{
+  "source_head": "f330aea360a30d22327ffa44b9c60c1c5f9e9024",
+  "generator_sha256": "fac1b15ff94ecab452af94075cc8794e99e367b7f71b6385d11308b8a29873b4",
+  "fonts": {
+    "fallback.ttf": {
+      "cmap": {
+        "32": "space",
+        "65": "A",
+        "20013": "cjk"
+      },
+      "hmtx": {
+        ".notdef": [
+          900,
+          0
+        ],
+        "space": [
+          900,
+          0
+        ],
+        "A": [
+          900,
+          0
+        ],
+        "cjk": [
+          900,
+          0
+        ]
+      },
+      "sha256": "83a5f5d5813f626c38abbd00a2b93e3e0779d75f5a379b3c423a4c1096917a6f",
+      "regenerated_sha256": "83a5f5d5813f626c38abbd00a2b93e3e0779d75f5a379b3c423a4c1096917a6f",
+      "byte_identical_regeneration": true
+    },
+    "primary.ttf": {
+      "cmap": {
+        "32": "space",
+        "65": "A"
+      },
+      "hmtx": {
+        ".notdef": [
+          600,
+          0
+        ],
+        "space": [
+          600,
+          0
+        ],
+        "A": [
+          600,
+          0
+        ]
+      },
+      "sha256": "f5d43e1799fa1d6f58f6a3950495a50f14f7e4645413cc93d2b93beff6e150de",
+      "regenerated_sha256": "f5d43e1799fa1d6f58f6a3950495a50f14f7e4645413cc93d2b93beff6e150de",
+      "byte_identical_regeneration": true
+    }
+  }
+}

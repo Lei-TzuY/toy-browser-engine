@@ -19,6 +19,12 @@ python3 tests/gui/usability/linux_usability.py \
 
 The native Windows adapter operates one owned HWND and restores its input layout. Its screenshot method must capture only that HWND's client, never a desktop rectangle. The reference adapter uses a fresh Chrome profile with loopback fixtures, actual CDP input events, live title/URL reads and page screenshots. Reference navigation/tab APIs and headless rendering are recorded as capabilities; they do not certify native browser chrome or operating-system IME.
 
+```powershell
+python tests/gui/usability/windows_usability.py --mode chrome --binary "C:\Program Files\Google\Chrome\Application\chrome.exe" --output C:\Temp\toy-reference-unique
+```
+
+Use `--mode native --binary <owned-release-exe> --revision <source-sha>` for the guarded native adapter, optionally `--build-receipt <receipt.json>`. It requires an idle desktop and an owned foreground target. A refused activation or input interference leaves native interaction unverified. No-input Win32 client captures establish rendering only. The recorded R2 native interaction gate remains on hold; its safe rendering receipts do not clear that gate.
+
 For CLI rendering corroboration only:
 
 ```sh

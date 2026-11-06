@@ -1,0 +1,3733 @@
+{
+  "schema": "toy-browser-m2-r2-evidence-v1",
+  "overall_gate": "HOLD: native Windows interaction remains unverified",
+  "baseline_source": "c379fd7e5bc2f8740cd9763cd60ee3706c1cb9b1",
+  "fixed_source": "f330aea360a30d22327ffa44b9c60c1c5f9e9024",
+  "fixed_src_tree": "e8607b53cb2c2497e73ccae2b0ee552dfc473851",
+  "root_causes_fixed": 2,
+  "fixture_files_sha256": {
+    "checkbox.html": "988c796939d1ce9760909e2fe829cab16cca09ddc23f73bc936b083bb90a7210",
+    "click.html": "243d4f2277eacfada042e83e084031d70fd22b31000932a7f12efe875edf3d3e",
+    "color.html": "0765c3049729b3e7de09dd537e13392db267af8bb478e1787903dd366fa19d4a",
+    "fetch.html": "a862308ae9ad0e35a795091bdaf9917564bcd24ba8aebdcda5ad8ab7a747fd5b",
+    "file-target.html": "b59010380a61bb69c9d87897462fac2e9c64f3a3cc8352d51639b6dd8158e867",
+    "file.html": "1df127b5f5129568f3c54d42759111c2f4e3b3cc7a327a1f6e9f365c5eeda341",
+    "get.html": "f40af6b647149c7697dcd5e5a72ad0bd393a21c05eaaf83af347ca511de30101",
+    "image.html": "cb5af8f878ae24696aefdd1dab7f4595dff1a6fc47a9e72af7a3998192afe191",
+    "ime.html": "c03519002b4bf7b799b994ee8b9d158028ffc4905e8fe96b9aa931c64ab14f7d",
+    "index.html": "dc7c4195a2f953bf4a083983ca88e6f21e6d5c097ff99ba5c065bc15e92017ee",
+    "input.html": "7572fa1a00c5c51d39009bf2d825dc9dcf6226cb3a244558e3a7e377bff62ae1",
+    "post.html": "aae432bc299cf5a1c2a0d485b25e17b0f8ae22a753d61d552a6113e20025bfa0",
+    "required.html": "6b0ea5d067d7daca486ea7d0b9ae51c62a57da5af639deaf1c18a20666a6198f",
+    "scroll.html": "a20b8b0b384c59d5fd2052d5fa69eadeefc95ce137d3117b449dbc777ea3d118",
+    "select.html": "2ecb1d0520cea06a3eaf6c10f088fa4be329ec1ee53bcacc76947a735b357183",
+    "tabstate.html": "5439a1e7c794260be4f5bcaccc1ba99cdb979d7c3027c5135340ca94879b1388",
+    "target.html": "f317d1de6c82f13b36945a43ad63d9037b10953600eff074fd0832b06e2aee91",
+    "tile.png": "b7873540b4cceac16392704258f38824aba116620a6c791d93a61825b4d68a09",
+    "timer.html": "d02ad816b14bad2837742f038ccd3a397abe0c489b0db171a457fe0a44a31e06",
+    "unicode.html": "5eaa65c3768b3b8d1c10e3b43ee6d25206d31d23f5f7e5b117713017ea3c6a89"
+  },
+  "linux_before": {
+    "status": {
+      "PASS": 23,
+      "PARTIAL": 1,
+      "FAIL": 1,
+      "BLOCKED": 1
+    },
+    "executed": 25
+  },
+  "linux_after": {
+    "status": {
+      "PASS": 24,
+      "PARTIAL": 1,
+      "BLOCKED": 1
+    },
+    "executed": 25
+  },
+  "chrome_reference": {
+    "status": {
+      "PASS": 24,
+      "PARTIAL": 1,
+      "BLOCKED": 1
+    },
+    "executed": 25
+  },
+  "native_windows": {
+    "interaction_gate": "UNVERIFIED",
+    "valid_interaction_cases": 0,
+    "no_input_renders": 4,
+    "rust_passed": 1901,
+    "render_receipt": "B/native/render/receipt.json"
+  },
+  "linux_rust": {
+    "passed": 1906,
+    "failed": 0,
+    "ignored": 0,
+    "groups": 195
+  },
+  "existing_x11_regressions": {
+    "tab_assertions_passed": 52,
+    "tab_assertions_total": 52,
+    "routing_named_scenarios": 11,
+    "routing_comparison_units": 62,
+    "routing_failures": 0
+  },
+  "headless": {
+    "executed_render_cases": 3,
+    "PASS": 2,
+    "PARTIAL": 1,
+    "NOT_TESTED": 23
+  },
+  "format_check": {
+    "status": "FAIL on baseline and candidate",
+    "baseline_failed_files": 190,
+    "candidate_failed_files": 190,
+    "comparison_limit": "File-list comparison only; does not prove changed hunks conform"
+  },
+  "clippy": {
+    "baseline_exit": 0,
+    "candidate_exit": 0
+  },
+  "raw_archive": {
+    "path": "raw-receipts.tar.gz",
+    "sha256": "8bb434ec1020199a91583635ef684913ca48016274e1a2d1b5d738293c5213fe",
+    "files": 1300
+  },
+  "cases": [
+    {
+      "id": "U01",
+      "name": "File page and relative link",
+      "expected": "Click #go; live title FileTarget and file URL; visible local target",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "FileHome",
+            "actual": "FileHome — file:///home/user/ai-scratch/m2-r2-reviewer-c-20261106/evidence/base-default/corpus/site/file.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "FileTarget",
+            "actual": "FileTarget — file:///home/user/ai-scratch/m2-r2-reviewer-c-20261106/evidence/base-default/corpus/site/file-target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /file-target.html",
+            "actual": "file:///home/user/ai-scratch/m2-r2-reviewer-c-20261106/evidence/base-default/corpus/site/file-target.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "FileHome",
+            "actual": "FileHome — file:///home/user/ai-scratch/m2-r2-reviewer-c-20261106/evidence/f330-default/corpus/site/file.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "FileTarget",
+            "actual": "FileTarget — file:///home/user/ai-scratch/m2-r2-reviewer-c-20261106/evidence/f330-default/corpus/site/file-target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /file-target.html",
+            "actual": "file:///home/user/ai-scratch/m2-r2-reviewer-c-20261106/evidence/f330-default/corpus/site/file-target.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "FileHome",
+            "actual": "FileHome"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "FileTarget",
+            "actual": "FileTarget"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /file-target.html",
+            "actual": "file:///C:/Users/User/AppData/Local/Temp/toy-browser-m2r2-b-20261105/evidence/chrome-baseline/corpus/site/file-target.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U02",
+      "name": "Full HTTP address entry",
+      "expected": "Ctrl+L; type full loopback /target.html URL; Enter; live title Target and target request",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:34807/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 2,
+                "at_seconds": 2.093875,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:35835/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 2,
+                "at_seconds": 2.26051,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:62646/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 3,
+                "at_seconds": 1.319657,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U03",
+      "name": "Mouse hyperlink",
+      "expected": "Click #go; live title Target; server receives /target.html",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:34807/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 4,
+                "at_seconds": 2.622083,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:35835/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 4,
+                "at_seconds": 2.7624,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:62646/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 6,
+                "at_seconds": 1.959414,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U04",
+      "name": "Back",
+      "expected": "Click #go then Back; live Home title and original URL",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:34807/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 6,
+                "at_seconds": 3.25006,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /index.html",
+            "actual": "http://127.0.0.1:34807/index.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:35835/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 6,
+                "at_seconds": 3.398949,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /index.html",
+            "actual": "http://127.0.0.1:35835/index.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:62646/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 9,
+                "at_seconds": 2.631147,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /index.html",
+            "actual": "http://127.0.0.1:62646/index.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U05",
+      "name": "Forward",
+      "expected": "Click #go, Back, Forward; live Target title and target URL",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:34807/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 9,
+                "at_seconds": 4.305973,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /index.html",
+            "actual": "http://127.0.0.1:34807/index.html"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:34807/target.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:35835/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 9,
+                "at_seconds": 4.418414,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /index.html",
+            "actual": "http://127.0.0.1:35835/index.html"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:35835/target.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:62646/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 13,
+                "at_seconds": 3.381319,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /index.html",
+            "actual": "http://127.0.0.1:62646/index.html"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:62646/target.html"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U06",
+      "name": "Reload",
+      "expected": "Reload button; /reload hit count increases exactly once and live Reload title changes",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "initial reload title",
+            "passed": true,
+            "expected": "Reload N",
+            "actual": "Reload 1 — http://127.0.0.1:34807/reload [1/1]"
+          },
+          {
+            "name": "reload server hit increment",
+            "passed": true,
+            "expected": 2,
+            "actual": 2
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Reload 2",
+            "actual": "Reload 2 — http://127.0.0.1:34807/reload [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "initial reload title",
+            "passed": true,
+            "expected": "Reload N",
+            "actual": "Reload 1 — http://127.0.0.1:35835/reload [1/1]"
+          },
+          {
+            "name": "reload server hit increment",
+            "passed": true,
+            "expected": 2,
+            "actual": 2
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Reload 2",
+            "actual": "Reload 2 — http://127.0.0.1:35835/reload [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "initial reload title",
+            "passed": true,
+            "expected": "Reload N",
+            "actual": "Reload 1"
+          },
+          {
+            "name": "reload server hit increment",
+            "passed": true,
+            "expected": 2,
+            "actual": 2
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Reload 2",
+            "actual": "Reload 2"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U07",
+      "name": "New tab",
+      "expected": "Open a new tab; observe two tabs and initial destination; navigate the new tab to controlled Target",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "observed tab count",
+            "passed": true,
+            "expected": 2,
+            "actual": 2
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 16,
+                "at_seconds": 8.242224,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "observed tab count",
+            "passed": true,
+            "expected": 2,
+            "actual": 2
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 16,
+                "at_seconds": 8.293077,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "observed tab count",
+            "passed": true,
+            "expected": 2,
+            "actual": 2
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 22,
+                "at_seconds": 5.329663,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U08",
+      "name": "Independent tab field state",
+      "expected": "Type first; new tab type second; switch both; submit first and capture q=first",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState",
+            "actual": "TabState — http://127.0.0.1:34807/tabstate.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState first",
+            "actual": "TabState first — http://127.0.0.1:34807/tabstate.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState",
+            "actual": "TabState — http://127.0.0.1:34807/tabstate.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState second",
+            "actual": "TabState second — http://127.0.0.1:34807/tabstate.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState first",
+            "actual": "TabState first — http://127.0.0.1:34807/tabstate.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState second",
+            "actual": "TabState second — http://127.0.0.1:34807/tabstate.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:34807/echo-get?q=first&case=U08 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 19,
+                "at_seconds": 12.918602,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=first&case=U08",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "first"
+              ],
+              "case": [
+                "U08"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "first"
+                ],
+                "case": [
+                  "U08"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState",
+            "actual": "TabState — http://127.0.0.1:35835/tabstate.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState first",
+            "actual": "TabState first — http://127.0.0.1:35835/tabstate.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState",
+            "actual": "TabState — http://127.0.0.1:35835/tabstate.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState second",
+            "actual": "TabState second — http://127.0.0.1:35835/tabstate.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState first",
+            "actual": "TabState first — http://127.0.0.1:35835/tabstate.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState second",
+            "actual": "TabState second — http://127.0.0.1:35835/tabstate.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:35835/echo-get?q=first&case=U08 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 19,
+                "at_seconds": 12.954612,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=first&case=U08",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "first"
+              ],
+              "case": [
+                "U08"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "first"
+                ],
+                "case": [
+                  "U08"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState",
+            "actual": "TabState"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState first",
+            "actual": "TabState first"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState",
+            "actual": "TabState"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState second",
+            "actual": "TabState second"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState first",
+            "actual": "TabState first"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "TabState second",
+            "actual": "TabState second"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 26,
+                "at_seconds": 6.216539,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=first&case=U08",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "first"
+              ],
+              "case": [
+                "U08"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "first"
+                ],
+                "case": [
+                  "U08"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U09",
+      "name": "Close active tab",
+      "expected": "Open second tab, navigate Target, Ctrl+W; one tab remains on Home",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "observed tab count",
+            "passed": true,
+            "expected": 1,
+            "actual": 1
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "observed tab count",
+            "passed": true,
+            "expected": 1,
+            "actual": 1
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "observed tab count",
+            "passed": true,
+            "expected": 1,
+            "actual": 1
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U10",
+      "name": "Solid CSS rendering",
+      "expected": "Actual screenshot page pixels (20,20)=204,51,51 and (20,140)=51,102,204",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Colors",
+            "actual": "Colors — http://127.0.0.1:34807/color.html [1/1]"
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                20,
+                20
+              ],
+              "rgb": [
+                204,
+                51,
+                51
+              ]
+            },
+            "actual": [
+              204,
+              51,
+              51
+            ]
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                20,
+                140
+              ],
+              "rgb": [
+                51,
+                102,
+                204
+              ]
+            },
+            "actual": [
+              51,
+              102,
+              204
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Colors",
+            "actual": "Colors — http://127.0.0.1:35835/color.html [1/1]"
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                20,
+                20
+              ],
+              "rgb": [
+                204,
+                51,
+                51
+              ]
+            },
+            "actual": [
+              204,
+              51,
+              51
+            ]
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                20,
+                140
+              ],
+              "rgb": [
+                51,
+                102,
+                204
+              ]
+            },
+            "actual": [
+              51,
+              102,
+              204
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Colors",
+            "actual": "Colors"
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                20,
+                20
+              ],
+              "rgb": [
+                204,
+                51,
+                51
+              ]
+            },
+            "actual": [
+              204,
+              51,
+              51
+            ]
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                20,
+                140
+              ],
+              "rgb": [
+                51,
+                102,
+                204
+              ]
+            },
+            "actual": [
+              51,
+              102,
+              204
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U11",
+      "name": "Unicode visible glyphs",
+      "expected": "Inspect actual screenshot Latin/Greek/Chinese/emoji glyphs against actual reference; DOM/title alone cannot pass",
+      "linux_before": {
+        "status": "PARTIAL",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Unicode",
+            "actual": "Unicode — http://127.0.0.1:34807/unicode.html [1/1]"
+          }
+        ],
+        "limitations": [
+          "Actual Unicode screenshot captured; pending visible glyph review against actual reference. DOM/title is not glyph evidence"
+        ],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PARTIAL",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Unicode",
+            "actual": "Unicode — http://127.0.0.1:35835/unicode.html [1/1]"
+          }
+        ],
+        "limitations": [
+          "Actual Unicode screenshot captured; pending visible glyph review against actual reference. DOM/title is not glyph evidence"
+        ],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PARTIAL",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Unicode",
+            "actual": "Unicode"
+          }
+        ],
+        "limitations": [
+          "Actual Unicode screenshot captured; pending visible glyph review against actual reference. DOM/title is not glyph evidence"
+        ],
+        "error": null
+      }
+    },
+    {
+      "id": "U12",
+      "name": "PNG image",
+      "expected": "Actual page pixel (5,5)=200,10,30 and GET /tile.png observed",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Image",
+            "actual": "Image — http://127.0.0.1:34807/image.html [1/1]"
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                5,
+                5
+              ],
+              "rgb": [
+                200,
+                10,
+                30
+              ]
+            },
+            "actual": [
+              200,
+              10,
+              30
+            ]
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/tile.png",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 26,
+                "at_seconds": 16.241981,
+                "method": "GET",
+                "path": "/tile.png",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Image",
+            "actual": "Image — http://127.0.0.1:35835/image.html [1/1]"
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                5,
+                5
+              ],
+              "rgb": [
+                200,
+                10,
+                30
+              ]
+            },
+            "actual": [
+              200,
+              10,
+              30
+            ]
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/tile.png",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 26,
+                "at_seconds": 16.237661,
+                "method": "GET",
+                "path": "/tile.png",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Image",
+            "actual": "Image"
+          },
+          {
+            "name": "visible page pixel",
+            "passed": true,
+            "expected": {
+              "at": [
+                5,
+                5
+              ],
+              "rgb": [
+                200,
+                10,
+                30
+              ]
+            },
+            "actual": [
+              200,
+              10,
+              30
+            ]
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/tile.png",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 35,
+                "at_seconds": 8.801849,
+                "method": "GET",
+                "path": "/tile.png",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U13",
+      "name": "JavaScript mouse event",
+      "expected": "Click #act; live title Click 1 and screenshot shows CLICKED 1",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Click 0",
+            "actual": "Click 0 — http://127.0.0.1:34807/click.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Click 1",
+            "actual": "Click 1 — http://127.0.0.1:34807/click.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Click 0",
+            "actual": "Click 0 — http://127.0.0.1:35835/click.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Click 1",
+            "actual": "Click 1 — http://127.0.0.1:35835/click.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Click 0",
+            "actual": "Click 0"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Click 1",
+            "actual": "Click 1"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U14",
+      "name": "Text input and editing",
+      "expected": "Type alpha in #q then Backspace; live title Input alph and visible field/readout",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input",
+            "actual": "Input — http://127.0.0.1:34807/input.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input alpha",
+            "actual": "Input alpha — http://127.0.0.1:34807/input.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input alph",
+            "actual": "Input alph — http://127.0.0.1:34807/input.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input",
+            "actual": "Input — http://127.0.0.1:35835/input.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input alpha",
+            "actual": "Input alpha — http://127.0.0.1:35835/input.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input alph",
+            "actual": "Input alph — http://127.0.0.1:35835/input.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input",
+            "actual": "Input"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input alpha",
+            "actual": "Input alpha"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Input alph",
+            "actual": "Input alph"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U15",
+      "name": "Required validation",
+      "expected": "Empty submit fires invalid/live Required blocked with no echo request; type AB12 and submit successfully",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Required",
+            "actual": "Required — http://127.0.0.1:34807/required.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Required blocked",
+            "actual": "Required blocked — http://127.0.0.1:34807/required.html [1/1]"
+          },
+          {
+            "name": "invalid submission sends no form",
+            "passed": true,
+            "expected": "no /echo-get",
+            "actual": [
+              {
+                "sequence": 29,
+                "at_seconds": 18.349487,
+                "method": "GET",
+                "path": "/required.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:34807/echo-get?q=AB12&case=U15 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 30,
+                "at_seconds": 19.572515,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=AB12&case=U15",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "AB12"
+              ],
+              "case": [
+                "U15"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "AB12"
+                ],
+                "case": [
+                  "U15"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Required",
+            "actual": "Required — http://127.0.0.1:35835/required.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Required blocked",
+            "actual": "Required blocked — http://127.0.0.1:35835/required.html [1/1]"
+          },
+          {
+            "name": "invalid submission sends no form",
+            "passed": true,
+            "expected": "no /echo-get",
+            "actual": [
+              {
+                "sequence": 29,
+                "at_seconds": 18.311095,
+                "method": "GET",
+                "path": "/required.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:35835/echo-get?q=AB12&case=U15 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 30,
+                "at_seconds": 19.526157,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=AB12&case=U15",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "AB12"
+              ],
+              "case": [
+                "U15"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "AB12"
+                ],
+                "case": [
+                  "U15"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Required",
+            "actual": "Required"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Required blocked",
+            "actual": "Required blocked"
+          },
+          {
+            "name": "invalid submission sends no form",
+            "passed": true,
+            "expected": "no /echo-get",
+            "actual": [
+              {
+                "sequence": 41,
+                "at_seconds": 10.736928,
+                "method": "GET",
+                "path": "/required.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              },
+              {
+                "sequence": 42,
+                "at_seconds": 10.753145,
+                "method": "GET",
+                "path": "/favicon.ico",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 43,
+                "at_seconds": 10.984785,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=AB12&case=U15",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "AB12"
+              ],
+              "case": [
+                "U15"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "AB12"
+                ],
+                "case": [
+                  "U15"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U16",
+      "name": "GET form submission",
+      "expected": "Type toy browser and click submit; live EchoGET and decoded server q=toy browser",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "GetForm",
+            "actual": "GetForm — http://127.0.0.1:34807/get.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:34807/echo-get?q=toy+browser&case=U16 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 32,
+                "at_seconds": 21.028066,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=toy+browser&case=U16",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "toy browser"
+              ],
+              "case": [
+                "U16"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "toy browser"
+                ],
+                "case": [
+                  "U16"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "GetForm",
+            "actual": "GetForm — http://127.0.0.1:35835/get.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:35835/echo-get?q=toy+browser&case=U16 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 32,
+                "at_seconds": 20.953668,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=toy+browser&case=U16",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "toy browser"
+              ],
+              "case": [
+                "U16"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "toy browser"
+                ],
+                "case": [
+                  "U16"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "GetForm",
+            "actual": "GetForm"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 46,
+                "at_seconds": 11.751532,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "q=toy+browser&case=U16",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "toy browser"
+              ],
+              "case": [
+                "U16"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "toy browser"
+                ],
+                "case": [
+                  "U16"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U17",
+      "name": "POST form submission",
+      "expected": "Type post value and click submit; live EchoPOST; decoded POST body q=post value",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "PostForm",
+            "actual": "PostForm — http://127.0.0.1:34807/post.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoPOST",
+            "actual": "EchoPOST — http://127.0.0.1:34807/echo-post [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-post",
+              "method": "POST"
+            },
+            "actual": [
+              {
+                "sequence": 34,
+                "at_seconds": 22.437161,
+                "method": "POST",
+                "path": "/echo-post",
+                "query": "",
+                "body": "q=post+value&case=U17",
+                "content_type": "application/x-www-form-urlencoded; charset=UTF-8"
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "post value"
+              ],
+              "case": [
+                "U17"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "post value"
+                ],
+                "case": [
+                  "U17"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "POST content type",
+            "passed": true,
+            "expected": "application/x-www-form-urlencoded",
+            "actual": [
+              "application/x-www-form-urlencoded; charset=UTF-8"
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "PostForm",
+            "actual": "PostForm — http://127.0.0.1:35835/post.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoPOST",
+            "actual": "EchoPOST — http://127.0.0.1:35835/echo-post [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-post",
+              "method": "POST"
+            },
+            "actual": [
+              {
+                "sequence": 34,
+                "at_seconds": 22.373149,
+                "method": "POST",
+                "path": "/echo-post",
+                "query": "",
+                "body": "q=post+value&case=U17",
+                "content_type": "application/x-www-form-urlencoded; charset=UTF-8"
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "post value"
+              ],
+              "case": [
+                "U17"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "post value"
+                ],
+                "case": [
+                  "U17"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "POST content type",
+            "passed": true,
+            "expected": "application/x-www-form-urlencoded",
+            "actual": [
+              "application/x-www-form-urlencoded; charset=UTF-8"
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "PostForm",
+            "actual": "PostForm"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoPOST",
+            "actual": "EchoPOST"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-post",
+              "method": "POST"
+            },
+            "actual": [
+              {
+                "sequence": 49,
+                "at_seconds": 12.46787,
+                "method": "POST",
+                "path": "/echo-post",
+                "query": "",
+                "body": "q=post+value&case=U17",
+                "content_type": "application/x-www-form-urlencoded"
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "q": [
+                "post value"
+              ],
+              "case": [
+                "U17"
+              ]
+            },
+            "actual": [
+              {
+                "q": [
+                  "post value"
+                ],
+                "case": [
+                  "U17"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "POST content type",
+            "passed": true,
+            "expected": "application/x-www-form-urlencoded",
+            "actual": [
+              "application/x-www-form-urlencoded"
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U18",
+      "name": "Select keyboard control",
+      "expected": "Focus select; ArrowDown then Enter; live Select b; submit server pick=b",
+      "linux_before": {
+        "status": "FAIL",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Select a",
+            "actual": "Select a — http://127.0.0.1:34807/select.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": false,
+            "expected": "Select b",
+            "actual": "Select a — http://127.0.0.1:34807/select.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:34807/echo-get?pick=a&case=U18 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 36,
+                "at_seconds": 30.069125,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "pick=a&case=U18",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": false,
+            "expected": {
+              "pick": [
+                "b"
+              ],
+              "case": [
+                "U18"
+              ]
+            },
+            "actual": [
+              {
+                "pick": [
+                  "a"
+                ],
+                "case": [
+                  "U18"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Select a",
+            "actual": "Select a — http://127.0.0.1:35835/select.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Select b",
+            "actual": "Select b — http://127.0.0.1:35835/select.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET — http://127.0.0.1:35835/echo-get?pick=b&case=U18 [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 36,
+                "at_seconds": 23.948409,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "pick=b&case=U18",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "pick": [
+                "b"
+              ],
+              "case": [
+                "U18"
+              ]
+            },
+            "actual": [
+              {
+                "pick": [
+                  "b"
+                ],
+                "case": [
+                  "U18"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Select a",
+            "actual": "Select a"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Select b",
+            "actual": "Select b"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "EchoGET",
+            "actual": "EchoGET"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/echo-get",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 52,
+                "at_seconds": 13.35101,
+                "method": "GET",
+                "path": "/echo-get",
+                "query": "pick=b&case=U18",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server captured form values",
+            "passed": true,
+            "expected": {
+              "pick": [
+                "b"
+              ],
+              "case": [
+                "U18"
+              ]
+            },
+            "actual": [
+              {
+                "pick": [
+                  "b"
+                ],
+                "case": [
+                  "U18"
+                ]
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U19",
+      "name": "Timer after click",
+      "expected": "Click #act; actual event loop updates live title Timer done and visible readout within4seconds",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Timer idle",
+            "actual": "Timer idle — http://127.0.0.1:34807/timer.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Timer done",
+            "actual": "Timer done — http://127.0.0.1:34807/timer.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Timer idle",
+            "actual": "Timer idle — http://127.0.0.1:35835/timer.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Timer done",
+            "actual": "Timer done — http://127.0.0.1:35835/timer.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Timer idle",
+            "actual": "Timer idle"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Timer done",
+            "actual": "Timer done"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U20",
+      "name": "Fetch after click",
+      "expected": "Click #act; GET /api/value.txt; live title Fetch FETCHED and visible readout",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Fetch idle",
+            "actual": "Fetch idle — http://127.0.0.1:34807/fetch.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Fetch FETCHED",
+            "actual": "Fetch FETCHED — http://127.0.0.1:34807/fetch.html [1/1]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/api/value.txt",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 39,
+                "at_seconds": 31.314295,
+                "method": "GET",
+                "path": "/api/value.txt",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Fetch idle",
+            "actual": "Fetch idle — http://127.0.0.1:35835/fetch.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Fetch FETCHED",
+            "actual": "Fetch FETCHED — http://127.0.0.1:35835/fetch.html [1/1]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/api/value.txt",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 39,
+                "at_seconds": 25.196636,
+                "method": "GET",
+                "path": "/api/value.txt",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Fetch idle",
+            "actual": "Fetch idle"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Fetch FETCHED",
+            "actual": "Fetch FETCHED"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/api/value.txt",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 57,
+                "at_seconds": 14.914709,
+                "method": "GET",
+                "path": "/api/value.txt",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U21",
+      "name": "HTTP302 redirect",
+      "expected": "Navigate /redirect; /target.html final URL/live title; both request paths observed",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:34807/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/redirect",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 41,
+                "at_seconds": 33.088961,
+                "method": "GET",
+                "path": "/redirect",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 42,
+                "at_seconds": 33.089712,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:35835/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/redirect",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 41,
+                "at_seconds": 26.96952,
+                "method": "GET",
+                "path": "/redirect",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 42,
+                "at_seconds": 26.970131,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "committed URL",
+            "passed": true,
+            "expected": "ends with /target.html",
+            "actual": "http://127.0.0.1:62646/target.html"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/redirect",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 60,
+                "at_seconds": 15.581969,
+                "method": "GET",
+                "path": "/redirect",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 61,
+                "at_seconds": 15.583625,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U22",
+      "name": "HTTP404 feedback",
+      "expected": "Navigate /not-found; visible 404 feedback captured; record whether response body is rendered or previous page retained",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "visible HTTP404 feedback",
+            "passed": true,
+            "expected": "caption/document title contains 404",
+            "actual": "Could not open http://127.0.0.1:34807/not-found: HTTP 404 at http://127.0.0.1:34807/not-found — Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/not-found",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 44,
+                "at_seconds": 34.769751,
+                "method": "GET",
+                "path": "/not-found",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "visible HTTP404 feedback",
+            "passed": true,
+            "expected": "caption/document title contains 404",
+            "actual": "Could not open http://127.0.0.1:35835/not-found: HTTP 404 at http://127.0.0.1:35835/not-found — Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/not-found",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 44,
+                "at_seconds": 28.640186,
+                "method": "GET",
+                "path": "/not-found",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "visible HTTP404 feedback",
+            "passed": true,
+            "expected": "caption/document title contains 404",
+            "actual": "NotFound404"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/not-found",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 64,
+                "at_seconds": 16.248846,
+                "method": "GET",
+                "path": "/not-found",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U23",
+      "name": "Recovery after unavailable URL",
+      "expected": "Navigate owned bound-but-not-listening loopback port; record actual failure feedback; navigate valid target successfully",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:34807/index.html [1/1]"
+          },
+          {
+            "name": "unavailable navigation has observable failure",
+            "passed": true,
+            "expected": "GUI error or actual reference navigation error",
+            "actual": {
+              "caption": "Could not open http://127.0.0.1:51831/unavailable: IO error at http://127.0.0.1:51831/unavailable: TypeError: Failed to fetch: http://127.0.0.1:51831/unavailable: Connection refused (os error 111) — Home — http://127.0.0.1:34807/index.html [1/1]",
+              "navigation_error": null,
+              "adapter_actions": [
+                {
+                  "action": "type",
+                  "monotonic": 1004159.721590056,
+                  "text": "http://127.0.0.1:51831/unavailable",
+                  "method": "xdotool XTest text input; no IME"
+                },
+                {
+                  "action": "key chord",
+                  "monotonic": 1004160.074945519,
+                  "value": "Return"
+                },
+                {
+                  "action": "navigate",
+                  "monotonic": 1004160.195059874,
+                  "url": "http://127.0.0.1:51831/unavailable"
+                }
+              ]
+            }
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 46,
+                "at_seconds": 38.29664,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home — http://127.0.0.1:35835/index.html [1/1]"
+          },
+          {
+            "name": "unavailable navigation has observable failure",
+            "passed": true,
+            "expected": "GUI error or actual reference navigation error",
+            "actual": {
+              "caption": "Could not open http://127.0.0.1:60813/unavailable: IO error at http://127.0.0.1:60813/unavailable: TypeError: Failed to fetch: http://127.0.0.1:60813/unavailable: Connection refused (os error 111) — Home — http://127.0.0.1:35835/index.html [1/1]",
+              "navigation_error": null,
+              "adapter_actions": [
+                {
+                  "action": "type",
+                  "monotonic": 370.943306317,
+                  "text": "http://127.0.0.1:60813/unavailable",
+                  "method": "xdotool XTest text input; no IME"
+                },
+                {
+                  "action": "key chord",
+                  "monotonic": 371.297053788,
+                  "value": "Return"
+                },
+                {
+                  "action": "navigate",
+                  "monotonic": 371.417162884,
+                  "url": "http://127.0.0.1:60813/unavailable"
+                }
+              ]
+            }
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 46,
+                "at_seconds": 32.145273,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Home",
+            "actual": "Home"
+          },
+          {
+            "name": "unavailable navigation has observable failure",
+            "passed": true,
+            "expected": "GUI error or actual reference navigation error",
+            "actual": {
+              "caption": "127.0.0.1",
+              "navigation_error": null,
+              "adapter_actions": [
+                {
+                  "action": "reference_launch",
+                  "monotonic": 1174853.0467781,
+                  "pid": 160228,
+                  "binary_sha256": "de999bce6a1c954df71a8f15bf751b336172f55ac1a0325bb0580cbc2121268c",
+                  "actual_browser_version": {
+                    "protocolVersion": "1.3",
+                    "product": "Chrome/155.0.8059.85",
+                    "revision": "@0e66b94549a8bd85f03fbdf189b752d6e7b63c32",
+                    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+                    "jsVersion": "15.5.35.25"
+                  },
+                  "isolated_profile": "C:\\Users\\User\\AppData\\Local\\Temp\\toy-browser-m2r2-b-20261105\\evidence\\chrome-baseline\\U23\\fresh-profile"
+                },
+                {
+                  "action": "navigate",
+                  "monotonic": 1174853.0610809,
+                  "url": "http://127.0.0.1:62646/index.html",
+                  "result": {
+                    "frameId": "ED4C090CE613082AAE4B4A8131F11CB4",
+                    "loaderId": "7FCA85C411F924AB44B54CF831EB5DE6",
+                    "isDownload": false
+                  }
+                },
+                {
+                  "action": "navigate",
+                  "monotonic": 1174853.2612541,
+                  "url": "http://127.0.0.1:13713/unavailable",
+                  "result": {
+                    "frameId": "ED4C090CE613082AAE4B4A8131F11CB4",
+                    "loaderId": "1034CF9FFAC721092F0842E84FADF191",
+                    "errorText": "net::ERR_CONNECTION_REFUSED",
+                    "isDownload": false
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 67,
+                "at_seconds": 17.246709,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U24",
+      "name": "Chinese operating-system IME composition",
+      "expected": "Actual composition only; committed Unicode injection is distinct; BLOCKED if no supported IME composition adapter",
+      "linux_before": {
+        "status": "BLOCKED",
+        "checks": [],
+        "limitations": [],
+        "error": "No adapter implements actual OS IME composition; committed Unicode is distinct"
+      },
+      "linux_after": {
+        "status": "BLOCKED",
+        "checks": [],
+        "limitations": [],
+        "error": "No adapter implements actual OS IME composition; committed Unicode is distinct"
+      },
+      "chrome_reference": {
+        "status": "BLOCKED",
+        "checks": [],
+        "limitations": [],
+        "error": "No adapter implements actual OS IME composition; committed Unicode is distinct"
+      }
+    },
+    {
+      "id": "U25",
+      "name": "Checkbox mouse and keyboard",
+      "expected": "Click checkbox then Space; live Check on then Check off; visible state changes",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check off",
+            "actual": "Check off — http://127.0.0.1:34807/checkbox.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check on",
+            "actual": "Check on — http://127.0.0.1:34807/checkbox.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check off",
+            "actual": "Check off — http://127.0.0.1:34807/checkbox.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check off",
+            "actual": "Check off — http://127.0.0.1:35835/checkbox.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check on",
+            "actual": "Check on — http://127.0.0.1:35835/checkbox.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check off",
+            "actual": "Check off — http://127.0.0.1:35835/checkbox.html [1/1]"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check off",
+            "actual": "Check off"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check on",
+            "actual": "Check on"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Check off",
+            "actual": "Check off"
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    },
+    {
+      "id": "U26",
+      "name": "Scroll and activate bottom link",
+      "expected": "Wheel down to bottom; screenshot shows link; click #bottom and reach live Target",
+      "linux_before": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Scroll",
+            "actual": "Scroll — http://127.0.0.1:34807/scroll.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:34807/target.html [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 49,
+                "at_seconds": 43.335982,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "linux_after": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Scroll",
+            "actual": "Scroll — http://127.0.0.1:35835/scroll.html [1/1]"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target — http://127.0.0.1:35835/target.html [2/2]"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 49,
+                "at_seconds": 37.194828,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      },
+      "chrome_reference": {
+        "status": "PASS",
+        "checks": [
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Scroll",
+            "actual": "Scroll"
+          },
+          {
+            "name": "live title",
+            "passed": true,
+            "expected": "Target",
+            "actual": "Target"
+          },
+          {
+            "name": "server request",
+            "passed": true,
+            "expected": {
+              "path": "/target.html",
+              "method": "GET"
+            },
+            "actual": [
+              {
+                "sequence": 72,
+                "at_seconds": 18.925487,
+                "method": "GET",
+                "path": "/target.html",
+                "query": "",
+                "body": "",
+                "content_type": null
+              }
+            ]
+          }
+        ],
+        "limitations": [],
+        "error": null
+      }
+    }
+  ]
+}
