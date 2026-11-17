@@ -14,6 +14,8 @@ pub struct KeyHandler {
     delta_time: Duration,
     keys: [bool; 512],
     keys_prev: [bool; 512],
+    keys_pressed: [bool; 512],
+    keys_released: [bool; 512],
     keys_down_duration: [f32; 512],
     key_repeat_delay: f32,
     key_repeat_rate: f32,
@@ -26,6 +28,8 @@ impl KeyHandler {
             key_callback: None,
             keys: [false; 512],
             keys_prev: [false; 512],
+            keys_pressed: [false; 512],
+            keys_released: [false; 512],
             keys_down_duration: [-1.0; 512],
             prev_time: Instant::now(),
             delta_time: Duration::from_secs(0),
@@ -38,7 +42,17 @@ impl KeyHandler {
     #[cfg(any(target_os = "redox", target_arch = "wasm32"))]
     #[inline]
     pub fn set_key_state(&mut self, key: Key, state: bool) {
-        self.keys[key as usize] = state;
+        let idx = key as usize;
+        let was_down = self.keys[idx];
+        self.keys[idx] = state;
+        if state && !was_down {
+            self.keys_pressed[idx] = true;
+            if self.keys_down_duration[idx] < 0.0 {
+                self.keys_down_duration[idx] = 0.0;
+            }
+        } else if !state && (was_down || self.keys_pressed[idx]) {
+            self.keys_released[idx] = true;
+        }
         if let Some(cb) = &mut self.key_callback {
             cb.set_key_state(key, state);
         }
@@ -52,7 +66,18 @@ impl KeyHandler {
         } else {
             self.native_keys.remove(&code).unwrap_or(key)
         };
-        self.keys[key as usize] = state || self.native_keys.values().any(|k| *k == key);
+        let idx = key as usize;
+        let was_down = self.keys[idx];
+        let now_down = state || self.native_keys.values().any(|k| *k == key);
+        self.keys[idx] = now_down;
+        if state && !was_down {
+            self.keys_pressed[idx] = true;
+            if self.keys_down_duration[idx] < 0.0 {
+                self.keys_down_duration[idx] = 0.0;
+            }
+        } else if !now_down && (was_down || self.keys_pressed[idx]) {
+            self.keys_released[idx] = true;
+        }
         if let Some(cb) = &mut self.key_callback {
             cb.set_key_state_with_code(key, state, code);
         }
@@ -78,11 +103,13 @@ impl KeyHandler {
         let delta_time = self.delta_time.as_secs_f32();
 
         for idx in 0..self.keys.len() {
+            self.keys_pressed[idx] = false;
+            self.keys_released[idx] = false;
             if self.keys[idx] {
                 if self.keys_down_duration[idx] < 0.0 {
                     self.keys_down_duration[idx] = 0.0;
                 } else {
-                    self.keys_down_duration[idx] += delta_time;
+                    self.keys_down_duration[idx] += delta_time.max(f32::MIN_POSITIVE);
                 }
             } else {
                 self.keys_down_duration[idx] = -1.0;
@@ -100,7 +127,7 @@ impl KeyHandler {
         let mut keys: Vec<Key> = Vec::new();
 
         for (idx, is_down) in self.keys.iter().enumerate() {
-            if *is_down && self.is_key_index_pressed(idx, repeat) {
+            if (self.keys_pressed[idx] || *is_down) && self.is_key_index_pressed(idx, repeat) {
                 unsafe {
                     keys.push(std::mem::transmute(idx as u8));
                 }
@@ -114,7 +141,7 @@ impl KeyHandler {
         let mut keys: Vec<Key> = Vec::new();
 
         for (idx, is_down) in self.keys.iter().enumerate() {
-            if !(*is_down) && self.is_key_index_released(idx) {
+            if (!(*is_down) || self.keys_released[idx]) && self.is_key_index_released(idx) {
                 unsafe {
                     keys.push(std::mem::transmute(idx as u8));
                 }
@@ -140,6 +167,12 @@ impl KeyHandler {
     }
 
     fn is_key_index_pressed(&self, index: usize, repeat: KeyRepeat) -> bool {
+        if self.keys_pressed[index] {
+            return true;
+        }
+        if !self.keys[index] {
+            return false;
+        }
         let t = self.keys_down_duration[index];
 
         if t == 0.0 {
@@ -172,7 +205,7 @@ impl KeyHandler {
 
     #[inline]
     fn is_key_index_released(&self, idx: usize) -> bool {
-        self.keys_prev[idx] && !self.keys[idx]
+        self.keys_released[idx] || (self.keys_prev[idx] && !self.keys[idx])
     }
 }
 
@@ -198,5 +231,43 @@ mod provenance_tests {
         assert!(h.is_key_down(Key::Key1));
         h.set_key_state_with_code(Key::Key1, false, 10);
         assert!(!h.is_key_down(Key::Key1));
+    }
+
+    #[test]
+    fn e3_same_frame_keydown_and_keyup_preserves_single_press_and_release() {
+        let mut h = KeyHandler::new();
+        h.update();
+        // Both KeyDown and KeyUp arrive in the same frame's message loop
+        // after update(), before the application polls get_keys_pressed.
+        h.set_key_state_with_code(Key::Backspace, true, 0x00E);
+        h.set_key_state_with_code(Key::Backspace, false, 0x00E);
+
+        assert!(!h.is_key_down(Key::Backspace));
+        assert!(h.is_key_pressed(Key::Backspace, KeyRepeat::No));
+        assert_eq!(h.get_keys_pressed(KeyRepeat::Yes), vec![Key::Backspace]);
+        assert!(h.is_key_released(Key::Backspace));
+        assert_eq!(h.get_keys_released(), vec![Key::Backspace]);
+
+        // Next frame's update() clears the one-shot press/release latches.
+        h.update();
+        assert!(!h.is_key_pressed(Key::Backspace, KeyRepeat::No));
+        assert!(h.get_keys_pressed(KeyRepeat::Yes).is_empty());
+        assert!(!h.is_key_released(Key::Backspace));
+    }
+
+    #[test]
+    fn e3_held_key_fires_immediately_on_press_frame_and_not_again_before_repeat_delay() {
+        let mut h = KeyHandler::new();
+        h.update();
+        h.set_key_state_with_code(Key::Enter, true, 0x01C);
+
+        assert!(h.is_key_pressed(Key::Enter, KeyRepeat::No));
+        assert_eq!(h.get_keys_pressed(KeyRepeat::Yes), vec![Key::Enter]);
+
+        // Next frame while still held (< 250ms repeat delay): must not re-fire.
+        h.update();
+        assert!(h.is_key_down(Key::Enter));
+        assert!(!h.is_key_pressed(Key::Enter, KeyRepeat::No));
+        assert!(h.get_keys_pressed(KeyRepeat::Yes).is_empty());
     }
 }

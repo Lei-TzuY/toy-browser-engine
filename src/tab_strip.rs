@@ -124,6 +124,10 @@ impl TabStrip {
         }
     }
 
+    pub(crate) fn set_width(&mut self, width: usize) {
+        self.width = width;
+    }
+
     // ── Geometry ──────────────────────────────────────────────────────────
 
     /// Width shared by the tabs and the new-tab button.

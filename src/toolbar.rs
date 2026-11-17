@@ -138,6 +138,10 @@ impl Toolbar {
         }
     }
 
+    pub(crate) fn set_width(&mut self, width: usize) {
+        self.width = width;
+    }
+
     // ── Geometry ──────────────────────────────────────────────────────────
 
     pub(crate) fn rect(&self, control: Control) -> Rect {

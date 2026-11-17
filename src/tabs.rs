@@ -181,6 +181,13 @@ impl Tabs {
         }
     }
 
+    pub(crate) fn set_width(&mut self, width: usize) {
+        self.width = width;
+        for tab in &mut self.tabs {
+            tab.toolbar.set_width(width);
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.tabs.len()
     }

@@ -151,6 +151,31 @@ fn update_key_state(window: &mut Window, scan: u32, state: bool) {
 }
 
 #[inline]
+fn is_ime_process_key(wparam: minwindef::WPARAM) -> bool {
+    (wparam & 0xffff) == winuser::VK_PROCESSKEY as usize
+}
+
+#[inline]
+fn mouse_coords_from_lparam(lparam: minwindef::LPARAM) -> (f32, f32) {
+    let x = (lparam & 0xffff) as i16 as f32;
+    let y = ((lparam >> 16) & 0xffff) as i16 as f32;
+    (x, y)
+}
+
+#[inline]
+fn client_size_from_wm_size(
+    wparam: minwindef::WPARAM,
+    lparam: minwindef::LPARAM,
+) -> Option<(i32, i32)> {
+    if wparam == winuser::SIZE_MINIMIZED {
+        return None;
+    }
+    let width = ((lparam as u32) & 0xffff) as i32;
+    let height = (((lparam as u32) >> 16) & 0xffff) as i32;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+#[inline]
 fn char_down(window: &mut Window, code_point: u32, scan: u32) {
     if let Some(ref mut callback) = window.key_handler.key_callback {
         callback.add_char_with_key(code_point, key_from_scan_code(scan), (scan & 0x1ff != 0).then_some(scan & 0x1ff));
@@ -241,12 +266,16 @@ unsafe extern "system" fn wnd_proc(
         }
 
         winuser::WM_KEYDOWN => {
-            update_key_state(wnd, (lparam as u32) >> 16, true);
+            if !is_ime_process_key(wparam) {
+                update_key_state(wnd, (lparam as u32) >> 16, true);
+            }
             return 0;
         }
 
         winuser::WM_SYSKEYDOWN => {
-            update_key_state(wnd, (lparam as u32) >> 16, true);
+            if !is_ime_process_key(wparam) {
+                update_key_state(wnd, (lparam as u32) >> 16, true);
+            }
             return 0;
         }
 
@@ -258,10 +287,24 @@ unsafe extern "system" fn wnd_proc(
             char_down(wnd, wparam as u32, (lparam as u32) >> 16);
         }
 
-        winuser::WM_LBUTTONDOWN => wnd.mouse.state[0] = true,
-        winuser::WM_LBUTTONUP => wnd.mouse.state[0] = false,
+        winuser::WM_LBUTTONDOWN => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[0] = true;
+            wnd.mouse.pressed[0] = true;
+        }
+        winuser::WM_LBUTTONUP => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[0] = false;
+        }
 
         winuser::WM_MOUSEMOVE => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
             let button_checks = [
                 winuser::MK_LBUTTON,
                 winuser::MK_MBUTTON,
@@ -269,14 +312,40 @@ unsafe extern "system" fn wnd_proc(
             ];
 
             for (i, button) in button_checks.iter().enumerate() {
-                wnd.mouse.state[i] = (wparam & *button) == *button;
+                let down = (wparam & *button) == *button;
+                if down && !wnd.mouse.state[i] {
+                    wnd.mouse.pressed[i] = true;
+                }
+                wnd.mouse.state[i] = down;
             }
         }
 
-        winuser::WM_MBUTTONDOWN => wnd.mouse.state[1] = true,
-        winuser::WM_MBUTTONUP => wnd.mouse.state[1] = false,
-        winuser::WM_RBUTTONDOWN => wnd.mouse.state[2] = true,
-        winuser::WM_RBUTTONUP => wnd.mouse.state[2] = false,
+        winuser::WM_MBUTTONDOWN => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[1] = true;
+            wnd.mouse.pressed[1] = true;
+        }
+        winuser::WM_MBUTTONUP => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[1] = false;
+        }
+        winuser::WM_RBUTTONDOWN => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[2] = true;
+            wnd.mouse.pressed[2] = true;
+        }
+        winuser::WM_RBUTTONUP => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[2] = false;
+        }
 
         winuser::WM_CLOSE => {
             wnd.is_open = false;
@@ -306,10 +375,10 @@ unsafe extern "system" fn wnd_proc(
         }
         */
         winuser::WM_SIZE => {
-            let width = (lparam as u32) & 0xffff;
-            let height = ((lparam as u32) >> 16) & 0xffff;
-            wnd.width = width as i32;
-            wnd.height = height as i32;
+            if let Some((width, height)) = client_size_from_wm_size(wparam, lparam) {
+                wnd.width = width;
+                wnd.height = height;
+            }
         }
 
         winuser::WM_PAINT => {
@@ -473,7 +542,9 @@ fn to_wstring(str: &str) -> Vec<u16> {
 struct MouseData {
     pub x: f32,
     pub y: f32,
+    pub last_screen: Option<(i32, i32)>,
     pub state: [bool; 8],
+    pub pressed: [bool; 8],
     pub scroll: f32,
 }
 
@@ -837,9 +908,9 @@ impl Window {
     #[inline]
     pub fn get_mouse_down(&self, button: MouseButton) -> bool {
         match button {
-            MouseButton::Left => self.mouse.state[0],
-            MouseButton::Middle => self.mouse.state[1],
-            MouseButton::Right => self.mouse.state[2],
+            MouseButton::Left => self.mouse.state[0] || self.mouse.pressed[0],
+            MouseButton::Middle => self.mouse.state[1] || self.mouse.pressed[1],
+            MouseButton::Right => self.mouse.state[2] || self.mouse.pressed[2],
         }
     }
 
@@ -921,12 +992,17 @@ impl Window {
         unsafe {
             let mut point: windef::POINT = std::mem::zeroed();
 
-            winuser::GetCursorPos(&mut point);
-            winuser::ScreenToClient(window, &mut point);
-
-            self.mouse.x = point.x as f32;
-            self.mouse.y = point.y as f32;
+            if winuser::GetCursorPos(&mut point) != 0 {
+                let screen = (point.x, point.y);
+                if self.mouse.last_screen != Some(screen) {
+                    self.mouse.last_screen = Some(screen);
+                    winuser::ScreenToClient(window, &mut point);
+                    self.mouse.x = point.x as f32;
+                    self.mouse.y = point.y as f32;
+                }
+            }
             self.mouse.scroll = 0.0;
+            self.mouse.pressed = [false; 8];
 
             self.key_handler.update();
 
@@ -1407,5 +1483,38 @@ impl Drop for Window {
             winuser::ReleaseDC(self.hwnd, self.dc);
             winuser::DestroyWindow(self.hwnd);
         }
+    }
+}
+
+#[cfg(test)]
+mod windows_input_tests {
+    use super::*;
+
+    #[test]
+    fn e1_identifies_vk_processkey_and_preserves_normal_virtual_keys() {
+        assert!(is_ime_process_key(winuser::VK_PROCESSKEY as usize));
+        assert!(is_ime_process_key(0x00E5));
+        assert!(!is_ime_process_key(winuser::VK_RETURN as usize));
+        assert!(!is_ime_process_key(winuser::VK_BACK as usize));
+        assert!(!is_ime_process_key(winuser::VK_ESCAPE as usize));
+    }
+
+    #[test]
+    fn e4_extracts_signed_mouse_coords_and_non_minimized_wm_size() {
+        let lparam = ((138u32) << 16) | 280u32;
+        assert_eq!(mouse_coords_from_lparam(lparam as isize), (280.0, 138.0));
+
+        assert_eq!(
+            client_size_from_wm_size(winuser::SIZE_RESTORED, ((468u32 << 16) | 500u32) as isize),
+            Some((500, 468))
+        );
+        assert_eq!(
+            client_size_from_wm_size(winuser::SIZE_MINIMIZED, 0),
+            None
+        );
+        assert_eq!(
+            client_size_from_wm_size(winuser::SIZE_RESTORED, 0),
+            None
+        );
     }
 }

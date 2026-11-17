@@ -23,10 +23,24 @@ change the keysym, and handles two codes mapped to the same Key independently.
   retaining the upstream character-before-key-state callback order. Preserve
   physical identity with the native wl_keyboard key code, so Shift changes
   to keysyms cannot strand ownership after key release. Shift+Tab is mapped
-  from ISO_Left_Tab.
+  from ISO_Left_Tab. `KeyHandler::update()` is invoked at the start of
+  `Wayland::update()` before dispatching new display events, matching X11,
+  Windows, and macOS lifecycle ordering.
 - Windows: WM_CHAR/WM_SYSCHAR supply the scan code from their own lParam.
-  No previous-character/key guess is used. Native message-pump behavior and
-  IME sequences still require Windows verification; no native test is claimed.
+  No previous-character/key guess is used.
+  - E1 (`VK_PROCESSKEY`): `WM_KEYDOWN` and `WM_SYSKEYDOWN` ignore keys whose
+    low 16-bit virtual key code is `VK_PROCESSKEY` (`0xE5`), preventing IME
+    composition keys (such as `Enter` candidate selection or `Backspace`
+    preedit deletion) from leaking raw physical scan codes into key state.
+  - E3 (Sub-frame key transitions): `KeyHandler` latches `keys_pressed` and
+    `keys_released` across a single frame drain until the next `update()`, so
+    `KeyDown` + `KeyUp` pairs arriving within the same `PeekMessageW` loop are
+    reported once by `get_keys_pressed` and `get_keys_released`.
+  - E4 (Resize & pointer coordinates): `WM_MOUSEMOVE` and `WM_{L,M,R}BUTTON*`
+    update client-area mouse coordinates and button state directly from
+    message `lParam`, `GetCursorPos` polling only updates coordinates when the
+    OS screen cursor actually moves, and non-minimized `WM_SIZE` updates
+    window `width` and `height`.
 - macOS: NSEvent.keyCode accompanies each character through the native callback
   signature. No native test is claimed.
 

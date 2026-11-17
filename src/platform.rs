@@ -25,6 +25,8 @@ use crate::tabs::{ShortcutKey, ShortcutKeyFilter};
 #[derive(Default)]
 struct CharacterQueue {
     characters: Vec<KeyEvent>,
+    callback_pressed_keys: Vec<MinifbKey>,
+    down_codes: std::collections::BTreeSet<u32>,
     shortcut_keys: ShortcutKeyFilter,
     modifier_keys: [bool; 6],
 }
@@ -58,8 +60,13 @@ impl CharacterQueue {
 
     fn drain(&mut self, pressed: Vec<MinifbKey>, modifiers: Modifiers) -> Vec<KeyEvent> {
         let mut events = std::mem::take(&mut self.characters);
+        let mut callback_pressed = std::mem::take(&mut self.callback_pressed_keys);
         for key in pressed {
             if shortcut_key(key).is_some_and(|key| self.shortcut_keys.owns(key)) {
+                continue;
+            }
+            if let Some(pos) = callback_pressed.iter().position(|&k| k == key) {
+                callback_pressed.remove(pos);
                 continue;
             }
             if let Some(engine_key) = translate(key) {
@@ -119,6 +126,22 @@ impl InputCallback for CharacterQueue {
             modifiers.ctrl,
             modifiers.alt,
         );
+        let was_down = if down {
+            !self.down_codes.insert(code)
+        } else {
+            self.down_codes.remove(&code)
+        };
+        if down
+            && !was_down
+            && !self.shortcut_keys.owns_physical(code)
+            && !shortcut_key(key).is_some_and(|k| self.shortcut_keys.owns(k))
+        {
+            if let Some(engine_key) = translate(key) {
+                self.characters
+                    .push(KeyEvent::with_modifiers(engine_key, modifiers));
+                self.callback_pressed_keys.push(key);
+            }
+        }
     }
 }
 
@@ -653,6 +676,62 @@ mod reviewer_c_regressions {
             ordinary_text(&events),
             "字",
             "unmapped Unicode must not inherit held digit ownership: {events:?}"
+        );
+    }
+
+    #[test]
+    fn e2_named_key_before_wm_char_in_same_frame_keeps_chronological_order() {
+        let mut q = CharacterQueue::default();
+        // Win32 message queue delivers WM_KEYDOWN(Backspace) first, then WM_CHAR('M').
+        q.set_key_state_with_code(MinifbKey::Backspace, true, 0x00E);
+        q.add_char_with_key('M' as u32, Some(MinifbKey::M), Some(0x032));
+        let events = q.drain(vec![MinifbKey::Backspace], Modifiers::NONE);
+        assert_eq!(
+            events,
+            vec![
+                KeyEvent::new(EngineKey::Backspace),
+                KeyEvent::character('M'),
+            ]
+        );
+    }
+
+    #[test]
+    fn e2_interleaved_chars_and_named_keys_preserve_exact_arrival_sequence() {
+        let mut q = CharacterQueue::default();
+        q.add_char_with_key('A' as u32, Some(MinifbKey::A), Some(0x01E));
+        q.set_key_state_with_code(MinifbKey::Backspace, true, 0x00E);
+        q.set_key_state_with_code(MinifbKey::Backspace, false, 0x00E);
+        q.add_char_with_key('B' as u32, Some(MinifbKey::B), Some(0x030));
+        q.set_key_state_with_code(MinifbKey::Enter, true, 0x01C);
+        let events = q.drain(vec![MinifbKey::Enter], Modifiers::NONE);
+        assert_eq!(
+            events,
+            vec![
+                KeyEvent::character('A'),
+                KeyEvent::new(EngineKey::Backspace),
+                KeyEvent::character('B'),
+                KeyEvent::new(EngineKey::Enter),
+            ]
+        );
+    }
+
+    #[test]
+    fn e3_subframe_keydown_and_keyup_in_same_drain_is_not_lost_or_duplicated() {
+        let mut q = CharacterQueue::default();
+        q.set_key_state_with_code(MinifbKey::Backspace, true, 0x00E);
+        q.set_key_state_with_code(MinifbKey::Backspace, false, 0x00E);
+        // Even if get_keys_pressed is empty (or reports the one-shot press),
+        // exactly one Backspace event must be emitted.
+        assert_eq!(
+            q.drain(vec![], Modifiers::NONE),
+            vec![KeyEvent::new(EngineKey::Backspace)]
+        );
+
+        q.set_key_state_with_code(MinifbKey::Backspace, true, 0x00E);
+        q.set_key_state_with_code(MinifbKey::Backspace, false, 0x00E);
+        assert_eq!(
+            q.drain(vec![MinifbKey::Backspace], Modifiers::NONE),
+            vec![KeyEvent::new(EngineKey::Backspace)]
         );
     }
 }

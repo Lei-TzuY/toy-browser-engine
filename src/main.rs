@@ -474,17 +474,41 @@ const NUMBER_KEYS: [Key; 9] = [
     Key::Key9,
 ];
 
+/// Synchronize the page viewport, tab strip and every tab's toolbar with the
+/// live client size of the OS window, returning the full framebuffer height.
+fn sync_window_size(
+    window_size: (usize, usize),
+    width: &mut usize,
+    height: &mut usize,
+    strip: &mut TabStrip,
+    tabs: &mut Tabs,
+) -> usize {
+    let chrome_height = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT;
+    let (win_width, win_height) = window_size;
+    if win_width > 0 && win_height > 0 {
+        let next_width = win_width.max(1);
+        let next_height = win_height.saturating_sub(chrome_height).max(1);
+        if next_width != *width || next_height != *height {
+            *width = next_width;
+            *height = next_height;
+            strip.set_width(*width);
+            tabs.set_width(*width);
+        }
+    }
+    chrome_height + *height
+}
+
 /// Drive the window until it is closed, then hand back the session of the
 /// tab that was active at the time. `open_tab` starts each new tab.
 fn run_window(
     browser: Browser,
     open_tab: impl Fn() -> Result<Browser, LoadError>,
-    width: usize,
-    height: usize,
+    mut width: usize,
+    mut height: usize,
 ) -> Result<Browser, minifb::Error> {
     // The page keeps the full `--size` viewport; the tab strip and toolbar
     // sit above it.
-    let window_height = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT + height;
+    let mut window_height = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT + height;
     let mut window = Window::new(
         &browser.status_line(),
         width,
@@ -510,6 +534,13 @@ fn run_window(
     let mut notice: Option<String> = None;
 
     while window.is_open() {
+        window_height = sync_window_size(
+            window.get_size(),
+            &mut width,
+            &mut height,
+            &mut strip,
+            &mut tabs,
+        );
         let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
         let ctrl = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
         let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
@@ -887,5 +918,52 @@ mod tests {
         let mut tabs = Tabs::new(browser("demo:///a.html"), WIDTH);
         let mut strip = TabStrip::new(WIDTH);
         assert!(!apply(&mut tabs, &mut strip, TabCommand::Close(0)));
+    }
+
+    #[test]
+    fn e4_sync_window_size_updates_viewport_and_routes_resized_page_coordinates() {
+        let mut site = MemoryLoader::new();
+        site.insert(
+            "demo:///resize.html",
+            r#"<!doctype html><html><head><title>Init</title><style>
+                html, body { margin: 0; padding: 0; }
+                #b { display: block; width: 120px; height: 40px; margin-left: 50%; margin-top: 10px; }
+            </style></head><body><input id="b"><script>
+                let b = document.getElementById("b");
+                b.addEventListener("focus", function() {
+                    document.querySelector("title").textContent = "FocusedB";
+                });
+            </script></body></html>"#,
+        );
+        let b = Browser::open(Box::new(site), &Url::parse("demo:///resize.html").unwrap()).unwrap();
+        let mut width = 800;
+        let mut height = 600;
+        let mut tabs = Tabs::new(b, width);
+        let mut strip = TabStrip::new(width);
+
+        // At width=800, #b starts at x=400, so page x=280 misses #b.
+        if let WindowPoint::Page { x, y } =
+            route_window(&tabs.active().toolbar, 280.0, 88.0, height, 0.0)
+        {
+            tabs.active_mut().browser.click_at(x, y, width as f32);
+        }
+        assert_ne!(
+            tabs.active().browser.document().title().as_deref(),
+            Some("FocusedB")
+        );
+
+        // After resizing client area to 500x468, viewport becomes 500x400 and #b starts at x=250.
+        let win_h = sync_window_size((500, 468), &mut width, &mut height, &mut strip, &mut tabs);
+        assert_eq!((width, height, win_h), (500, 400, 468));
+
+        if let WindowPoint::Page { x, y } =
+            route_window(&tabs.active().toolbar, 280.0, 88.0, height, 0.0)
+        {
+            tabs.active_mut().browser.click_at(x, y, width as f32);
+        }
+        assert_eq!(
+            tabs.active().browser.document().title().as_deref(),
+            Some("FocusedB")
+        );
     }
 }
