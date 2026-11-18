@@ -142,13 +142,40 @@ class WorkbenchServer:
                 # No raw POST body on disk: it can contain secrets even when
                 # the test page did not intend to submit them. Password input
                 # values are never retained in receipts.
-                safe_fields = {k: v for k, v in parsed.items() if k != "pwd_field"}
+                def single(key: str) -> str | None:
+                    values = parsed.get(key)
+                    return values[0] if values and len(values) == 1 else None
+
+                # Receipt values are strictly allowlisted. Free-form IME and
+                # clipboard text can be private, so only record lengths and
+                # assertions against the workbench's fixed test sentences.
+                selected = single("pick")
+                clicks = single("clicks")
+                safe_fields: dict[str, str] = {}
+                if selected is not None:
+                    safe_fields["pick"] = selected if selected in ("a", "b", "c") else "INVALID"
+                if clicks is not None:
+                    safe_fields["clicks"] = clicks if clicks.isdecimal() and len(clicks) <= 6 else "INVALID"
+                text_keys = ("ime_field", "clip_source", "clip_target")
+                text_lengths = {key: len(single(key) or "") for key in text_keys if key in parsed}
+                target = single("clip_target")
+                source = single("clip_source")
+                checks = {
+                    "ime_expected_text": single("ime_field") == "中文測試😀",
+                    "clipboard_expected_text": target == "台灣瀏覽器 Copy/Cut 測試 🌐",
+                    "clipboard_matches_current_source": bool(target) and target == source,
+                    "select_beta": selected == "b",
+                }
+                known = set(text_keys) | {"pwd_field", "pick", "clicks"}
                 receipt = {
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "path": self.path,
-                    "field_names": sorted(parsed),
-                    "redacted_fields": sorted(set(parsed) - set(safe_fields)),
-                    "fields": {k: v[0] if len(v) == 1 else v for k, v in safe_fields.items()},
+                    "field_names": sorted(set(parsed) & known),
+                    "unknown_field_count": len(set(parsed) - known),
+                    "redacted_fields": sorted((set(parsed) & known) - set(safe_fields)),
+                    "fields": safe_fields,
+                    "text_lengths": text_lengths,
+                    "checks": checks,
                 }
                 parent.receipts.append(receipt)
                 resp = (
