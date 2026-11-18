@@ -22,10 +22,10 @@ import argparse
 import ctypes as c
 from ctypes import wintypes as w
 import hashlib
+import html
 import http.server
 import json
 from pathlib import Path
-import socket
 import struct
 import subprocess
 import sys
@@ -70,7 +70,7 @@ M2_R3_WORKBENCH_HTML = """<!doctype html>
       <label for="clip_target">3. P2 剪貼簿目標 Textarea (按 Ctrl+V 貼上，支援 Shift+方向鍵與滑鼠拖曳選取):</label>
       <textarea id="clip_target" name="clip_target" rows="3"></textarea>
       <label for="pwd_field">4. P2 密碼欄位保護 (Ctrl+C / Ctrl+X 不得複製出密碼):</label>
-      <input id="pwd_field" name="pwd_field" type="password" value="never-leak-password">
+      <input id="pwd_field" type="password" value="never-leak-password">
     </div>
 
     <div class="card">
@@ -132,21 +132,32 @@ class WorkbenchServer:
                 self.wfile.write(body)
 
             def do_POST(self) -> None:
+                if self.path != "/submit":
+                    self.send_error(404)
+                    return
                 length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > 16384:
+                    self.send_error(413)
+                    return
                 raw = self.rfile.read(length).decode("utf-8", errors="replace")
                 parsed = urllib.parse.parse_qs(raw, keep_blank_values=True)
+                # No raw POST body on disk: it can contain secrets even when
+                # the test page did not intend to submit them. Password input
+                # values are never retained in receipts.
+                safe_fields = {k: v for k, v in parsed.items() if k != "pwd_field"}
                 receipt = {
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "path": self.path,
-                    "raw_body": raw,
-                    "fields": {k: v[0] if len(v) == 1 else v for k, v in parsed.items()},
+                    "field_names": sorted(parsed),
+                    "redacted_fields": sorted(set(parsed) - set(safe_fields)),
+                    "fields": {k: v[0] if len(v) == 1 else v for k, v in safe_fields.items()},
                 }
                 parent.receipts.append(receipt)
                 resp = (
                     "<!doctype html><meta charset='utf-8'>"
                     "<title>SUBMITTED_OK</title>"
                     "<h1>M2-R3 Receipt Recorded</h1>"
-                    f"<pre id='receipt'>{json.dumps(receipt, ensure_ascii=False, indent=2)}</pre>"
+                    f"<pre id='receipt'>{html.escape(json.dumps(receipt, ensure_ascii=False, indent=2))}</pre>"
                     "<p><a href='/'>返回工作台</a></p>"
                 ).encode("utf-8")
                 self.send_response(200)
@@ -155,12 +166,9 @@ class WorkbenchServer:
                 self.end_headers()
                 self.wfile.write(resp)
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("127.0.0.1", 0))
-        self.port = sock.getsockname()[1]
-        sock.close()
-
-        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        # Binding once avoids a release-and-rebind port race.
+        self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         return f"http://127.0.0.1:{self.port}/"
@@ -367,7 +375,9 @@ def main() -> int:
     args = parser.parse_args()
 
     out_dir: Path = args.output.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_dir.exists():
+        parser.error("Evidence output already exists; choose a fresh directory")
+    out_dir.mkdir(parents=True, exist_ok=False)
     binary: Path = args.binary.resolve()
     if not binary.exists():
         print(f"ERROR: binary not found: {binary}", file=sys.stderr)
