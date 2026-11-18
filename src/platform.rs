@@ -42,13 +42,15 @@ impl CharacterQueue {
         }
     }
 
-    fn push_char(&mut self, uni_char: u32) {
+    fn push_char(&mut self, uni_char: u32, clear_command_modifiers: bool) {
         if let Some(character) = char::from_u32(uni_char) {
             if !character.is_control() {
                 let mut modifiers = self.modifiers();
-                // AltGr produces text, including on systems reporting Ctrl+
-                // right Alt. The text channel has already applied the layout.
-                if self.modifier_keys[5] {
+                // AltGr produces text (often reported as LCtrl+RightAlt), and
+                // unassociated/IME commits are already finalized text; neither
+                // should inherit held Ctrl/Alt to trigger shortcuts or drop
+                // characters while Ctrl/Alt is held.
+                if self.modifier_keys[5] || clear_command_modifiers {
                     modifiers.ctrl = false;
                     modifiers.alt = false;
                 }
@@ -82,8 +84,8 @@ impl CharacterQueue {
 impl InputCallback for CharacterQueue {
     fn add_char(&mut self, uni_char: u32) {
         // No source means no shortcut ownership, even while another key is
-        // owned. Capture modifiers NOW, never when a later key/drain arrives.
-        self.push_char(uni_char);
+        // owned. Capture Shift NOW, without inheriting Ctrl/Alt.
+        self.push_char(uni_char, true);
     }
 
     fn add_char_with_key(&mut self, uni_char: u32, source: Option<MinifbKey>, code: Option<u32>) {
@@ -100,7 +102,8 @@ impl InputCallback for CharacterQueue {
                 return;
             }
         }
-        self.push_char(uni_char);
+        let unassociated_ime = source.is_none() && code.is_none();
+        self.push_char(uni_char, unassociated_ime);
     }
 
     fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
@@ -953,5 +956,157 @@ mod reviewer_c_regressions {
             .as_element()
             .unwrap();
         assert_eq!(area_el.control_value(), "Hello\n台灣😀");
+    }
+
+    #[test]
+    fn cx1_altgr_character_reaches_page_and_does_not_trigger_reload() {
+        let mut loader = MemoryLoader::new();
+        loader.insert("demo:///altgr", r#"<html><body><input id="q"></body></html>"#);
+        let b = Browser::open(Box::new(loader), &Url::parse("demo:///altgr").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut queue = CharacterQueue::default();
+        // Windows AltGr (LeftCtrl + RightAlt) typing '@' and an AltGr+R layout char 'ŕ'.
+        queue.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        queue.set_key_state_with_code(MinifbKey::RightAlt, true, 0x138);
+        queue.add_char_with_key('@' as u32, Some(MinifbKey::Key2), Some(0x003));
+        queue.add_char_with_key('ŕ' as u32, Some(MinifbKey::R), Some(0x013));
+        let events = queue.drain(vec![], queue.modifiers());
+        let (cmd, allow_nav) = tabs
+            .active_mut()
+            .route_frame_keys(events, false, true, true, &mut cb);
+        assert_eq!(cmd, None);
+        assert!(!allow_nav, "AltGr must not trigger browser Alt navigation");
+        let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "@ŕ");
+
+        // LeftAlt + Left arrow MUST still block page events and allow Alt nav.
+        queue.set_key_state_with_code(MinifbKey::RightAlt, false, 0x138);
+        queue.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        queue.set_key_state_with_code(MinifbKey::LeftAlt, true, 0x038);
+        queue.set_key_state_with_code(MinifbKey::Left, true, 0x14B);
+        let events = queue.drain(vec![MinifbKey::Left], queue.modifiers());
+        let (_, allow_nav) = tabs
+            .active_mut()
+            .route_frame_keys(events, true, false, false, &mut cb);
+        assert!(allow_nav);
+    }
+
+    #[test]
+    fn cx2_ime_commit_while_ctrl_held_preserves_cjk_without_triggering_shortcuts() {
+        let mut loader = MemoryLoader::new();
+        loader.insert(
+            "demo:///ime_ctrl",
+            r#"<html><body><input id="q" value="keep"></body></html>"#,
+        );
+        let b = Browser::open(Box::new(loader), &Url::parse("demo:///ime_ctrl").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+
+        let mut cb = crate::clipboard::MemoryClipboard::with_text("PASTE");
+        let mut q = CharacterQueue::default();
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        // Unassociated IME GCS_RESULTSTR arrives while LeftCtrl is down.
+        for ch in "中文a".chars() {
+            q.add_char_with_key(ch as u32, None, None);
+        }
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let events = q.drain(vec![], Modifiers::NONE);
+        tabs.active_mut()
+            .handle_keys_with_clipboard(events, false, &mut cb);
+        let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "中文akeep");
+    }
+
+    #[test]
+    fn cx3_tab_switch_and_toolbar_focus_clear_stale_ime_preedit() {
+        let mut loader = MemoryLoader::new();
+        loader.insert("demo:///a", r#"<html><body><input id="q"></body></html>"#);
+        let mut loader_b = MemoryLoader::new();
+        loader_b.insert("demo:///b", r#"<html><body><input id="r"></body></html>"#);
+        let b1 = Browser::open(Box::new(loader), &Url::parse("demo:///a").unwrap()).unwrap();
+        let b2 = Browser::open(Box::new(loader_b), &Url::parse("demo:///b").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b1, 800);
+        let q_path = dom_api::get_element_by_id(&tabs.get(0).unwrap().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+        tabs.active_mut().set_ime_preedit("ㄓㄨㄥ", 3);
+
+        // Switching to a second tab clears preedit on the outgoing tab.
+        tabs.open(b2);
+        let el0 = dom_api::node_at(&tabs.get(0).unwrap().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(el0.ime_preedit(), None);
+
+        // Focusing the toolbar address bar via Ctrl+L clears DOM preedit on the same tab.
+        let r_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "r").unwrap();
+        tabs.active_mut().browser.click_node(&r_path);
+        tabs.active_mut().set_ime_preedit("ㄆ", 1);
+        tabs.active_mut().focus_address();
+        let el1 = dom_api::node_at(&tabs.active().browser.document().dom, &r_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(el1.ime_preedit(), None);
+
+        // Password fields never store IME preedit.
+        let mut loader2 = MemoryLoader::new();
+        loader2.insert("demo:///pwd", r#"<html><body><input id="p" type="password"></body></html>"#);
+        let bp = Browser::open(Box::new(loader2), &Url::parse("demo:///pwd").unwrap()).unwrap();
+        let mut pwd_tab = crate::tabs::Tab::new(bp, 800);
+        let p_path = dom_api::get_element_by_id(&pwd_tab.browser.document().dom, "p").unwrap();
+        pwd_tab.browser.click_node(&p_path);
+        pwd_tab.set_ime_preedit("ㄓㄨㄥ", 3);
+        let pw_el = dom_api::node_at(&pwd_tab.browser.document().dom, &p_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(pw_el.ime_preedit(), None);
+    }
+
+    #[test]
+    fn cx4_ctrl_v_dispatches_input_before_keyup() {
+        let mut loader = MemoryLoader::new();
+        loader.insert(
+            "demo:///events",
+            r#"<html><body><input id="q"><p id="log"></p><script>
+            var q = document.getElementById("q");
+            var log = [];
+            function record(kind) {
+                log.push(kind + ":" + q.value);
+                document.getElementById("log").textContent = log.join("|");
+            }
+            q.addEventListener("keydown", function() { record("keydown"); });
+            q.addEventListener("input", function() { record("input"); });
+            q.addEventListener("keyup", function() { record("keyup"); });
+            </script></body></html>"#,
+        );
+        let b = Browser::open(Box::new(loader), &Url::parse("demo:///events").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+
+        let mut cb = crate::clipboard::MemoryClipboard::with_text("hi");
+        let mut q = CharacterQueue::default();
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::V, true, 0x02F);
+        q.set_key_state_with_code(MinifbKey::V, false, 0x02F);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let events = q.drain(vec![], Modifiers::NONE);
+        tabs.active_mut()
+            .handle_keys_with_clipboard(events, false, &mut cb);
+        assert!(dom_api::outer_html(&tabs.active().browser.document().dom)
+            .contains("keydown:|input:hi|keyup:hi"));
     }
 }

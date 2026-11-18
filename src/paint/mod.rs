@@ -607,12 +607,13 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
     let metrics = line_metrics(font_size);
     // A password is never painted as its characters. One bullet per char keeps
     // caret and selection offsets (counted in chars) aligned with the value.
-    let value = if element.tag_name == "input" && element.input_type() == "password" {
+    let is_password = element.tag_name == "input" && element.input_type() == "password";
+    let value = if is_password {
         "\u{2022}".repeat(element.control_value().chars().count())
     } else {
         element.control_value()
     };
-    let preedit = if focused && !disabled {
+    let preedit = if focused && !disabled && !is_password {
         element.ime_preedit()
     } else {
         None

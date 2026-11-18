@@ -252,6 +252,14 @@ unsafe fn ime_composition_message(wnd: &mut Window, lparam: minwindef::LPARAM) {
         return;
     }
     let flags = lparam as u32;
+    if flags == 0 {
+        wnd.ime_composing = false;
+        if let Some(ref mut callback) = wnd.key_handler.key_callback {
+            callback.set_ime_preedit("", 0);
+        }
+        ImmReleaseContext(wnd.hwnd, himc);
+        return;
+    }
     if flags & GCS_RESULTSTR != 0 {
         let units = ime_composition_units(himc, GCS_RESULTSTR);
         if let Some(ref mut callback) = wnd.key_handler.key_callback {
@@ -1201,7 +1209,14 @@ impl Window {
         let area = Some((x, y, line_height));
         if self.ime_cursor != area {
             self.ime_cursor = area;
-            unsafe { apply_ime_cursor_area(self) };
+            unsafe {
+                // Temporarily clear GWLP_USERDATA so synchronous IMM messages
+                // cannot alias `&mut self` via `wnd_proc`.
+                let prev = get_window_long(self.hwnd);
+                set_window_long(self.hwnd, 0);
+                apply_ime_cursor_area(self);
+                set_window_long(self.hwnd, prev);
+            }
         }
     }
 
@@ -1722,6 +1737,7 @@ impl Menu {
 impl Drop for Window {
     fn drop(&mut self) {
         unsafe {
+            set_window_long(self.hwnd, 0);
             winuser::ReleaseDC(self.hwnd, self.dc);
             winuser::DestroyWindow(self.hwnd);
         }

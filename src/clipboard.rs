@@ -65,6 +65,7 @@ pub(crate) fn decode_cf_unicodetext(units: &[u16]) -> String {
 pub(crate) struct SystemClipboard {
     #[cfg(target_os = "windows")]
     hwnd: *mut std::ffi::c_void,
+    #[cfg(not(target_os = "windows"))]
     fallback: MemoryClipboard,
 }
 
@@ -74,7 +75,6 @@ impl SystemClipboard {
         {
             Self {
                 hwnd: window.get_window_handle(),
-                fallback: MemoryClipboard::new(),
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -197,21 +197,23 @@ impl Clipboard for SystemClipboard {
     fn get_text(&mut self) -> Option<String> {
         #[cfg(target_os = "windows")]
         {
-            if let Some(text) = win32::read_unicode_text(self.hwnd) {
-                self.fallback.set_text(&text);
-                return Some(text);
-            }
+            win32::read_unicode_text(self.hwnd)
         }
-        self.fallback.get_text()
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.fallback.get_text()
+        }
     }
 
     fn set_text(&mut self, text: &str) -> bool {
-        self.fallback.set_text(text);
         #[cfg(target_os = "windows")]
         {
-            let _ = win32::write_unicode_text(self.hwnd, text);
+            win32::write_unicode_text(self.hwnd, text)
         }
-        true
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.fallback.set_text(text)
+        }
     }
 }
 

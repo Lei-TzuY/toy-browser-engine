@@ -159,6 +159,23 @@ fn edit_command_for(event: &KeyEvent, element: &ElementData) -> Option<EditComma
     })
 }
 
+/// Text displayed inside a text control for caret measurement and hit-testing:
+/// password fields mask each character with a bullet; single-line inputs
+/// flatten newlines to spaces, matching `paint::render_form_control`.
+fn visible_control_value(element: &ElementData) -> String {
+    let raw = element.control_value();
+    let masked = if element.tag_name == "input" && element.input_type() == "password" {
+        "\u{2022}".repeat(raw.chars().count())
+    } else {
+        raw
+    };
+    if element.tag_name == "textarea" {
+        masked
+    } else {
+        masked.replace('\n', " ")
+    }
+}
+
 /// What the pointer is over, addressed by DOM path so it survives re-layout.
 #[derive(Debug, Default, Clone)]
 pub struct PointerState {
@@ -1113,7 +1130,7 @@ impl Document {
             return;
         }
 
-        let value = element.control_value();
+        let value = visible_control_value(element);
         let font_size = box_info.font_size;
         let offset_x = x - box_info.content_x;
 
@@ -1200,7 +1217,8 @@ impl Document {
         if let Some(NodeType::Element(element)) =
             dom_api::node_at_mut(&mut self.dom, &path).map(|n| &mut n.node_type)
         {
-            if !element.is_disabled() && !element.is_readonly() {
+            let is_password = element.tag_name == "input" && element.input_type() == "password";
+            if !element.is_disabled() && !element.is_readonly() && !is_password {
                 element.set_ime_preedit(text, cursor);
             } else {
                 element.set_ime_preedit("", 0);
@@ -1214,7 +1232,7 @@ impl Document {
         let path = self.focused_text_entry()?;
         let box_info = self.control_box(&path, viewport_width)?;
         let element = dom_api::node_at(&self.dom, &path)?.as_element()?;
-        let value = element.control_value();
+        let value = visible_control_value(element);
         let font_size = box_info.font_size;
         let line_height = crate::text::line_metrics(font_size).new_line_size;
         let (line, column) = editing::caret_line_column(&value, element.caret());
@@ -1225,8 +1243,11 @@ impl Document {
             .chars()
             .take(column)
             .collect();
-        if let Some((preedit, cursor)) = element.ime_preedit() {
-            prefix.extend(preedit.chars().take(cursor));
+        let is_password = element.tag_name == "input" && element.input_type() == "password";
+        if !is_password {
+            if let Some((preedit, cursor)) = element.ime_preedit() {
+                prefix.extend(preedit.chars().take(cursor));
+            }
         }
         let line = if element.tag_name == "textarea" { line } else { 0 };
         Some((

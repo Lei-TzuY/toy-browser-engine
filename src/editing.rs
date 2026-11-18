@@ -211,6 +211,9 @@ pub fn insert_text(element: &mut ElementData, text: &str) -> EditResult {
         .map(|c| if c == '\r' { '\n' } else { c })
         .filter(|c| if multiline { *c == '\n' || !c.is_control() } else { !c.is_control() })
         .collect();
+    if incoming.is_empty() {
+        return result;
+    }
     let mut characters: Vec<char> = element.control_value().chars().collect();
     let caret = element.caret().min(characters.len());
     let (start, end) = element.text_selection().unwrap_or((caret, caret));
@@ -564,5 +567,15 @@ mod tests {
         assert!(insert_text(&mut ro, "new").did_nothing());
         assert_eq!(cut_selection(&mut ro), None);
         assert_eq!(ro.control_value(), "locked");
+    }
+
+    #[test]
+    fn p2_empty_or_control_only_paste_preserves_selection() {
+        let mut input = text_input(&[("value", "keep")]);
+        input.select_all_text();
+        assert!(insert_text(&mut input, "").did_nothing());
+        assert!(insert_text(&mut input, "\r\n").did_nothing());
+        assert_eq!(input.control_value(), "keep");
+        assert_eq!(input.text_selection(), Some((0, 4)));
     }
 }

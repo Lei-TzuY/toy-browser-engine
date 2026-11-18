@@ -716,6 +716,20 @@ impl Browser {
         self.document.apply_pending_actions();
     }
 
+    /// Deliver a key press without releasing it, also returning whether a
+    /// `keydown` listener called `preventDefault()`.
+    pub fn key_down_with_default_check(&mut self, event: &KeyEvent) -> (ClickOutcome, bool) {
+        if let Some((target, form_path, submitter)) = self.implicit_submission_context(event) {
+            return (
+                self.perform_implicit_key_submission(event, target, form_path, submitter),
+                false,
+            );
+        }
+
+        let (action, prevented) = self.document.key_down_outcome(event);
+        (self.after_document_action(action), prevented)
+    }
+
     /// A complete press and release.
     pub fn press_key(&mut self, event: &KeyEvent) -> ClickOutcome {
         self.press_key_with_default_check(event).0
@@ -724,16 +738,7 @@ impl Browser {
     /// Like [`Browser::press_key`], also returning whether `keydown` called
     /// `preventDefault()`.
     pub fn press_key_with_default_check(&mut self, event: &KeyEvent) -> (ClickOutcome, bool) {
-        if let Some((target, form_path, submitter)) = self.implicit_submission_context(event) {
-            let outcome = self.perform_implicit_key_submission(event, target, form_path, submitter);
-            if !matches!(outcome, ClickOutcome::Navigated(_)) {
-                self.key_up(event);
-            }
-            return (outcome, false);
-        }
-
-        let (action, prevented) = self.document.key_down_outcome(event);
-        let outcome = self.after_document_action(action);
+        let (outcome, prevented) = self.key_down_with_default_check(event);
         // A navigation replaced the document; the release belongs to the old one.
         if !matches!(outcome, ClickOutcome::Navigated(_)) {
             self.key_up(event);

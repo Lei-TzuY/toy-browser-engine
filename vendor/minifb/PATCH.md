@@ -58,10 +58,13 @@ change the keysym, and handles two codes mapped to the same Key independently.
     `WM_IME_COMPOSITION` (`GCS_COMPSTR`, `GCS_CURSORPOS`, `GCS_RESULTSTR`), and
     `WM_IME_ENDCOMPOSITION` report preedit and committed text through
     `InputCallback::set_ime_preedit`, `InputCallback::notify_ime_activity`, and
-    unassociated `add_char_with_key(..., None, None)` (returning `0` on
-    `WM_IME_COMPOSITION` so `DefWindowProcW` does not duplicate committed
-    characters); `Window::set_ime_cursor_area` positions the composition and
-    candidate windows via `ImmSetCompositionWindow` and `ImmSetCandidateWindow`.
+    unassociated `add_char_with_key(..., None, None)` (clearing preedit as well
+    when `lParam == 0` and returning `0` on `WM_IME_COMPOSITION` so
+    `DefWindowProcW` does not duplicate committed characters);
+    `Window::set_ime_cursor_area` positions the composition and candidate windows
+    via `ImmSetCompositionWindow` and `ImmSetCandidateWindow` while temporarily
+    clearing `GWLP_USERDATA` to prevent synchronous IMM aliasing, and
+    `Window::drop` clears `GWLP_USERDATA` before `DestroyWindow`.
 - macOS: NSEvent.keyCode accompanies each character through the native callback
   signature. No native test is claimed.
 

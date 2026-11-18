@@ -402,8 +402,12 @@ impl Toolbar {
             return;
         };
         let visible = (self.rect(Control::Address).width - 2.0 * FIELD_PADDING).max(1.0);
-        let text_width = measure_text(editor.value(), FONT_SIZE);
-        let caret_x = prefix_width(editor.value(), editor.caret());
+        let mut text_width = measure_text(editor.value(), FONT_SIZE);
+        let mut caret_x = prefix_width(editor.value(), editor.caret());
+        if let Some((preedit, cursor)) = editor.ime_preedit() {
+            text_width += measure_text(preedit, FONT_SIZE);
+            caret_x += prefix_width(preedit, cursor);
+        }
         if caret_x < self.text_scroll {
             self.text_scroll = caret_x;
         } else if caret_x > self.text_scroll + visible {

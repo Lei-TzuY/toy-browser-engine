@@ -548,7 +548,9 @@ fn run_window(
             &mut strip,
             &mut tabs,
         );
-        let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
+        let left_alt = window.is_key_down(Key::LeftAlt);
+        let right_alt = window.is_key_down(Key::RightAlt);
+        let any_alt = left_alt || right_alt;
         let ctrl = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
         let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
 
@@ -556,7 +558,7 @@ fn run_window(
         // First, so the rest of the frame already works on the tab they
         // pick. The adapter removes only the keys owned by the shortcut.
         let mut tab_key = None;
-        if ctrl && !chrome {
+        if ctrl && !any_alt {
             if window.is_key_pressed(Key::T, minifb::KeyRepeat::No) {
                 tab_key = Some(TabCommand::New);
             }
@@ -580,6 +582,7 @@ fn run_window(
             if !apply_tab_command(&mut tabs, &mut strip, command, &open_tab, &mut notice) {
                 break;
             }
+            ime_composing = false;
             press_on_page = false;
         }
 
@@ -600,12 +603,11 @@ fn run_window(
                 tab.scroll_y -= wheel_y * 30.0;
             }
         }
-        let address_opened = ctrl && !chrome && window.is_key_pressed(Key::L, minifb::KeyRepeat::No);
+        let address_opened = ctrl && !any_alt && window.is_key_pressed(Key::L, minifb::KeyRepeat::No);
         if address_opened {
             // The current URL starts selected, like a familiar address field.
             // All editor keys stay in window chrome, never in the page's DOM.
-            let current = tab.browser.url().to_string();
-            tab.toolbar.focus_address(&current);
+            tab.focus_address();
         }
 
         // Escape cancels address entry or an active IME composition; outside
@@ -620,8 +622,16 @@ fn run_window(
             break;
         }
 
-        let mut command = None;
-        if chrome && !tab.toolbar.is_editing() {
+        // ── Keyboard → address field, AltGr, or page ─────────────────────
+        // Consume once per frame, even for Alt shortcuts, so old text input
+        // cannot leak into a document on a later frame.
+        let events = input.drain(&window);
+        let (mut command, allow_alt_nav) = if address_opened {
+            (None, left_alt || (right_alt && !ctrl))
+        } else {
+            tab.route_frame_keys(events, left_alt, right_alt, ctrl, &mut clipboard)
+        };
+        if allow_alt_nav && !tab.toolbar.is_editing() {
             if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) {
                 command = Some(Command::Back);
             }
@@ -637,19 +647,6 @@ fn run_window(
             if window.is_key_pressed(Key::Up, minifb::KeyRepeat::Yes) {
                 tab.scroll_y -= 40.0;
             }
-        }
-
-        // ── Keyboard → address field or page ─────────────────────────────
-        // Consume once per frame, even for Alt shortcuts, so old text input
-        // cannot leak into a document on a later frame. Tab shortcut keys,
-        // including their auto-repeats, never reach a tab.
-        let events = input.drain(&window);
-        if !address_opened {
-            command = command.or(tab.handle_keys_with_clipboard(
-                events,
-                chrome,
-                &mut clipboard,
-            ));
         }
 
         // ── Pointer → tab strip, toolbar or page ──────────────────────────
@@ -682,8 +679,7 @@ fn run_window(
             match point {
                 Some(WindowPoint::TabStrip { x, y }) => tab_click = strip.press(x, y, count),
                 Some(WindowPoint::Toolbar { x, y }) => {
-                    let current = tab.browser.url().to_string();
-                    tab.toolbar.press(x, y, &current, shift);
+                    tab.press_toolbar(x, y, shift);
                 }
                 Some(WindowPoint::Page { x, y }) => {
                     if tab.toolbar.is_editing() {
@@ -730,6 +726,7 @@ fn run_window(
             if !apply_tab_command(&mut tabs, &mut strip, command, &open_tab, &mut notice) {
                 break;
             }
+            ime_composing = false;
             press_on_page = false;
         }
 

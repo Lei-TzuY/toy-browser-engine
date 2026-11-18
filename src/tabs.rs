@@ -81,6 +81,34 @@ impl Tab {
         self.handle_keys_with_clipboard(events, chrome_only, &mut dummy)
     }
 
+    /// Route a frame's keystrokes between the toolbar/page and browser Alt
+    /// navigation, without blocking AltGr layout characters from web inputs.
+    pub(crate) fn route_frame_keys(
+        &mut self,
+        events: Vec<KeyEvent>,
+        left_alt: bool,
+        right_alt: bool,
+        ctrl: bool,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> (Option<Command>, bool) {
+        let has_altgr_text = right_alt
+            && !left_alt
+            && events
+                .iter()
+                .any(|e| !e.modifiers.alt && !e.modifiers.ctrl && e.typed_character().is_some());
+        let allow_alt_nav = left_alt || (right_alt && !ctrl && !has_altgr_text);
+        let filtered_events = if right_alt && !left_alt {
+            events
+                .into_iter()
+                .filter(|e| !e.modifiers.alt && !e.modifiers.ctrl)
+                .collect()
+        } else {
+            events
+        };
+        let command = self.handle_keys_with_clipboard(filtered_events, left_alt, clipboard);
+        (command, allow_alt_nav)
+    }
+
     /// Like [`Tab::handle_keys`], routing Ctrl+C / Ctrl+X / Ctrl+V through
     /// `clipboard` for either the address field or the focused page control.
     pub(crate) fn handle_keys_with_clipboard(
@@ -94,7 +122,7 @@ impl Tab {
             .dispatch_keys_with_clipboard(events, clipboard);
         if !chrome_only {
             for event in dispatch.page {
-                let (outcome, prevented) = self.browser.press_key_with_default_check(&event);
+                let (outcome, prevented) = self.browser.key_down_with_default_check(&event);
                 if !prevented
                     && !matches!(outcome, ClickOutcome::Navigated(_))
                     && event.modifiers.ctrl
@@ -120,10 +148,34 @@ impl Tab {
                         _ => {}
                     }
                 }
+                // `keyup` runs after any clipboard edit so listeners observe the updated value.
+                if !matches!(outcome, ClickOutcome::Navigated(_)) {
+                    self.browser.key_up(&event);
+                }
                 self.report_page_outcome(outcome);
             }
         }
         dispatch.command
+    }
+
+    /// Clear any uncommitted IME preedit on both the address bar and the DOM.
+    pub(crate) fn clear_ime_preedit(&mut self) {
+        self.toolbar.set_ime_preedit("", 0);
+        self.browser.document_mut().set_ime_preedit("", 0);
+    }
+
+    /// Focus the address bar (`Ctrl+L`) and drop any stale DOM IME preedit.
+    pub(crate) fn focus_address(&mut self) {
+        let current = self.browser.url().to_string();
+        self.toolbar.focus_address(&current);
+        self.browser.document_mut().set_ime_preedit("", 0);
+    }
+
+    /// Deliver a toolbar pointer press and drop stale DOM preedit if editing began.
+    pub(crate) fn press_toolbar(&mut self, x: f32, y: f32, shift: bool) {
+        let current = self.browser.url().to_string();
+        self.toolbar.press(x, y, &current, shift);
+        self.browser.document_mut().set_ime_preedit("", 0);
     }
 
     /// Route an uncommitted IME composition to whichever surface has focus
@@ -363,9 +415,10 @@ impl Tabs {
         if index >= self.tabs.len() || index == self.active {
             return false;
         }
-        // A gesture that started in the old tab's toolbar must not finish
-        // in it while hidden. Its typed address text is kept.
+        // A gesture or uncommitted IME composition from the outgoing tab
+        // must not persist while hidden or leak back when revisiting it.
         self.tabs[self.active].toolbar.reset_pointer();
+        self.tabs[self.active].clear_ime_preedit();
         self.active = index;
         true
     }
