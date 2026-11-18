@@ -482,13 +482,27 @@ impl Browser {
 
     /// A complete press and release.
     pub fn press_key(&mut self, event: &KeyEvent) -> ClickOutcome {
-        let outcome = self.key_down(event);
-        // A navigation replaced the document; the release belongs to the old one.
-        if matches!(outcome, ClickOutcome::Navigated(_)) {
-            return outcome;
+        self.press_key_with_default_check(event).0
+    }
+
+    /// Like [`Browser::press_key`], also returning whether `keydown` called
+    /// `preventDefault()`.
+    pub fn press_key_with_default_check(&mut self, event: &KeyEvent) -> (ClickOutcome, bool) {
+        if let Some((target, form_path, submitter)) = self.implicit_submission_context(event) {
+            let outcome = self.perform_implicit_key_submission(event, target, form_path, submitter);
+            if !matches!(outcome, ClickOutcome::Navigated(_)) {
+                self.key_up(event);
+            }
+            return (outcome, false);
         }
-        self.key_up(event);
-        outcome
+
+        let (action, prevented) = self.document.key_down_outcome(event);
+        let outcome = self.after_document_action(action);
+        // A navigation replaced the document; the release belongs to the old one.
+        if !matches!(outcome, ClickOutcome::Navigated(_)) {
+            self.key_up(event);
+        }
+        (outcome, prevented)
     }
 
     /// Type a string into the focused control, one key at a time.
@@ -718,9 +732,33 @@ impl Browser {
 
     /// Hit-test a point in page coordinates and deliver a click there.
     pub fn click_at(&mut self, x: f32, y: f32, viewport_width: f32) -> ClickOutcome {
+        self.click_at_with_shift(x, y, viewport_width, false)
+    }
+
+    /// Hit-test a point in page coordinates, place (or with `shift`, extend)
+    /// the caret in a text control at `(x, y)`, and deliver a click there.
+    pub fn click_at_with_shift(
+        &mut self,
+        x: f32,
+        y: f32,
+        viewport_width: f32,
+        shift: bool,
+    ) -> ClickOutcome {
         match self.document.hit_test(x, y, viewport_width) {
-            Some(path) => self.click_node(&path),
+            Some(path) => {
+                self.document
+                    .place_caret_from_point(&path, x, y, viewport_width, shift);
+                self.click_node(&path)
+            }
             None => ClickOutcome::Ignored,
+        }
+    }
+
+    /// Extend a pointer-drag text selection inside the focused text control.
+    pub fn drag_selection_to(&mut self, x: f32, y: f32, viewport_width: f32) {
+        if let Some(focused) = self.document.focused_path() {
+            self.document
+                .place_caret_from_point(&focused, x, y, viewport_width, true);
         }
     }
 

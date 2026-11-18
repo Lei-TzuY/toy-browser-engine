@@ -16,8 +16,9 @@ use browser_engine::{
     layout::{BoxType, LayoutBox},
     net::{url_from_argument, DefaultLoader, LoadError, Url},
 };
-use minifb::{CursorStyle, Key, Window, WindowOptions};
+use minifb::{CursorStyle, Key, ScaleMode, Window, WindowOptions};
 
+mod clipboard;
 mod demo;
 mod location_input;
 mod platform;
@@ -513,11 +514,16 @@ fn run_window(
         &browser.status_line(),
         width,
         window_height,
-        WindowOptions::default(),
+        WindowOptions {
+            resize: true,
+            scale_mode: ScaleMode::UpperLeft,
+            ..WindowOptions::default()
+        },
     )?;
     // Pace the loop so animations run at a steady rate and an idle page does
     // not spin the CPU. minifb sleeps for us inside `update_with_buffer`.
     window.set_target_fps(FRAME_RATE);
+    let mut clipboard = clipboard::SystemClipboard::new(&window);
     let input = platform::InputAdapter::attach(&mut window);
 
     let mut tabs = Tabs::new(browser, width);
@@ -527,6 +533,7 @@ fn run_window(
     // Whether the button went down over the page, so dragging in from the
     // chrome does not paint page elements as :active.
     let mut press_on_page = false;
+    let mut ime_composing = false;
     let mut title = String::new();
     let mut text_cursor = false;
     // A window-level message, such as a new tab that failed to load. It
@@ -579,11 +586,13 @@ fn run_window(
         let count = tabs.len();
         let tab = tabs.active_mut();
 
-        // Escape cancels address entry; outside entry it retains the window's
-        // existing Escape-to-close shortcut.
-        if !tab.toolbar.is_editing() && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No) {
-            break;
+        let ime_activity = input.take_ime_activity();
+        let had_ime_preedit = ime_composing;
+        if let Some((preedit, cursor)) = input.take_ime_preedit() {
+            ime_composing = !preedit.is_empty();
+            tab.set_ime_preedit(&preedit, cursor);
         }
+
         // ── Browser chrome shortcuts ──────────────────────────────────────
         // These are the window's own keys; everything else goes to the page.
         if let Some((_, wheel_y)) = window.get_scroll_wheel() {
@@ -591,19 +600,26 @@ fn run_window(
                 tab.scroll_y -= wheel_y * 30.0;
             }
         }
-        let address_opened = ctrl && window.is_key_pressed(Key::L, minifb::KeyRepeat::No);
+        let address_opened = ctrl && !chrome && window.is_key_pressed(Key::L, minifb::KeyRepeat::No);
         if address_opened {
             // The current URL starts selected, like a familiar address field.
             // All editor keys stay in window chrome, never in the page's DOM.
             let current = tab.browser.url().to_string();
             tab.toolbar.focus_address(&current);
         }
-        if tab.toolbar.is_editing() && ctrl && window.is_key_pressed(Key::A, minifb::KeyRepeat::No)
+
+        // Escape cancels address entry or an active IME composition; outside
+        // both it retains the window's existing Escape-to-close shortcut.
+        if !address_opened
+            && !tab.toolbar.is_editing()
+            && !had_ime_preedit
+            && !ime_composing
+            && !ime_activity
+            && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No)
         {
-            // Ctrl+A arrives as a control character, which the text channel
-            // drops, so select-all is read from the physical key.
-            tab.toolbar.select_all();
+            break;
         }
+
         let mut command = None;
         if chrome && !tab.toolbar.is_editing() {
             if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) {
@@ -629,7 +645,11 @@ fn run_window(
         // including their auto-repeats, never reach a tab.
         let events = input.drain(&window);
         if !address_opened {
-            command = command.or(tab.handle_keys(events, chrome));
+            command = command.or(tab.handle_keys_with_clipboard(
+                events,
+                chrome,
+                &mut clipboard,
+            ));
         }
 
         // ── Pointer → tab strip, toolbar or page ──────────────────────────
@@ -672,11 +692,16 @@ fn run_window(
                         tab.toolbar.cancel();
                     } else {
                         press_on_page = true;
-                        let outcome = tab.browser.click_at(x, y, width as f32);
+                        let outcome =
+                            tab.browser.click_at_with_shift(x, y, width as f32, shift);
                         tab.report_page_outcome(outcome);
                     }
                 }
                 _ => {}
+            }
+        } else if is_mouse_down && was_mouse_down && press_on_page {
+            if let Some(WindowPoint::Page { x, y }) = point {
+                tab.browser.drag_selection_to(x, y, width as f32);
             }
         }
         if !is_mouse_down && was_mouse_down {
@@ -741,6 +766,11 @@ fn run_window(
             hovered,
         };
 
+        if let Some((cx, cy, ch)) =
+            tab.ime_cursor_area(TAB_STRIP_HEIGHT, TOOLBAR_HEIGHT, width)
+        {
+            window.set_ime_cursor_area(cx, cy, ch);
+        }
         let page = tab.browser.render(width, height, tab.scroll_y, &pointer);
         let navigation = tab.navigation();
         let bar = tab

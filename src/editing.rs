@@ -25,6 +25,16 @@ pub enum EditCommand {
     MoveDown,
     MoveToStart,
     MoveToEnd,
+    /// Shift+Arrow / Shift+Home / Shift+End: move the caret, keeping the
+    /// selection anchor.
+    ExtendLeft,
+    ExtendRight,
+    ExtendUp,
+    ExtendDown,
+    ExtendToStart,
+    ExtendToEnd,
+    /// Ctrl+A inside the control.
+    SelectAll,
 }
 
 impl EditCommand {
@@ -77,26 +87,35 @@ pub fn apply(element: &mut ElementData, command: EditCommand) -> EditResult {
     let mut characters: Vec<char> = element.control_value().chars().collect();
     let caret = element.caret().min(characters.len());
     let multiline = element.tag_name == "textarea";
+    let selection = element.text_selection();
+    let mut extend = false;
 
     let new_caret = match command {
-        EditCommand::Insert(c) => {
-            if max_length(element).is_some_and(|limit| characters.len() >= limit) {
+        EditCommand::Insert(_) | EditCommand::InsertNewline => {
+            let c = match command {
+                EditCommand::Insert(c) => c,
+                _ => {
+                    if !multiline {
+                        return result;
+                    }
+                    '\n'
+                }
+            };
+            // Typing replaces the selection.
+            let (start, end) = selection.unwrap_or((caret, caret));
+            let remaining = characters.len() - (end - start);
+            if max_length(element).is_some_and(|limit| remaining >= limit) {
                 return result;
             }
-            characters.insert(caret, c);
+            characters.splice(start..end, [c]);
             result.value_changed = true;
-            caret + 1
+            start + 1
         }
-        EditCommand::InsertNewline => {
-            if !multiline {
-                return result;
-            }
-            if max_length(element).is_some_and(|limit| characters.len() >= limit) {
-                return result;
-            }
-            characters.insert(caret, '\n');
+        EditCommand::Backspace | EditCommand::Delete if selection.is_some() => {
+            let (start, end) = selection.unwrap_or((caret, caret));
+            characters.drain(start..end);
             result.value_changed = true;
-            caret + 1
+            start
         }
         EditCommand::Backspace => {
             if caret == 0 {
@@ -114,42 +133,115 @@ pub fn apply(element: &mut ElementData, command: EditCommand) -> EditResult {
             result.value_changed = true;
             caret
         }
-        EditCommand::MoveLeft => caret.saturating_sub(1),
-        EditCommand::MoveRight => (caret + 1).min(characters.len()),
-        EditCommand::MoveToStart => {
+        EditCommand::MoveLeft => match selection {
+            Some((start, _)) => start,
+            None => caret.saturating_sub(1),
+        },
+        EditCommand::MoveRight => match selection {
+            Some((_, end)) => end,
+            None => (caret + 1).min(characters.len()),
+        },
+        EditCommand::ExtendLeft => {
+            extend = true;
+            caret.saturating_sub(1)
+        }
+        EditCommand::ExtendRight => {
+            extend = true;
+            (caret + 1).min(characters.len())
+        }
+        EditCommand::MoveToStart | EditCommand::ExtendToStart => {
+            extend = command == EditCommand::ExtendToStart;
             if multiline {
                 line_start(&characters, caret)
             } else {
                 0
             }
         }
-        EditCommand::MoveToEnd => {
+        EditCommand::MoveToEnd | EditCommand::ExtendToEnd => {
+            extend = command == EditCommand::ExtendToEnd;
             if multiline {
                 line_end(&characters, caret)
             } else {
                 characters.len()
             }
         }
-        EditCommand::MoveUp => {
+        EditCommand::MoveUp | EditCommand::ExtendUp => {
             if !multiline {
                 return result;
             }
+            extend = command == EditCommand::ExtendUp;
             move_line(&characters, caret, -1)
         }
-        EditCommand::MoveDown => {
+        EditCommand::MoveDown | EditCommand::ExtendDown => {
             if !multiline {
                 return result;
             }
+            extend = command == EditCommand::ExtendDown;
             move_line(&characters, caret, 1)
+        }
+        EditCommand::SelectAll => {
+            let had = element.text_selection();
+            element.select_all_text();
+            result.caret_moved = element.text_selection() != had;
+            return result;
         }
     };
 
     if result.value_changed {
         element.set_control_value(characters.into_iter().collect::<String>());
     }
-    result.caret_moved = new_caret != caret;
-    element.set_caret(new_caret);
+    let selection_changed = !extend && selection.is_some();
+    result.caret_moved = new_caret != caret || selection_changed;
+    element.place_caret(new_caret, extend);
     result
+}
+
+/// Insert `text` at the caret, replacing any selection, as a paste or an IME
+/// commit does. Single-line controls drop line breaks; `maxlength` truncates.
+/// Returns what changed; read-only and disabled controls are untouched.
+pub fn insert_text(element: &mut ElementData, text: &str) -> EditResult {
+    let mut result = EditResult::default();
+    if !element.is_text_entry() || element.is_disabled() || element.is_readonly() {
+        return result;
+    }
+    let multiline = element.tag_name == "textarea";
+    let incoming: Vec<char> = text
+        .replace("\r\n", "\n")
+        .chars()
+        .map(|c| if c == '\r' { '\n' } else { c })
+        .filter(|c| if multiline { *c == '\n' || !c.is_control() } else { !c.is_control() })
+        .collect();
+    let mut characters: Vec<char> = element.control_value().chars().collect();
+    let caret = element.caret().min(characters.len());
+    let (start, end) = element.text_selection().unwrap_or((caret, caret));
+    let remaining = characters.len() - (end - start);
+    let room = max_length(element).map_or(usize::MAX, |limit| limit.saturating_sub(remaining));
+    let inserted: Vec<char> = incoming.into_iter().take(room).collect();
+    if inserted.is_empty() && start == end {
+        return result;
+    }
+    let count = inserted.len();
+    characters.splice(start..end, inserted);
+    element.set_control_value(characters.into_iter().collect::<String>());
+    element.place_caret(start + count, false);
+    result.value_changed = true;
+    result.caret_moved = true;
+    result
+}
+
+/// Remove the selected text and return it (for Ctrl+X). `None` when nothing
+/// is selected or the control cannot be edited.
+pub fn cut_selection(element: &mut ElementData) -> Option<String> {
+    if !element.is_text_entry() || element.is_disabled() || element.is_readonly() {
+        return None;
+    }
+    let (start, end) = element.text_selection()?;
+    let text = element.selected_text();
+    let mut characters: Vec<char> = element.control_value().chars().collect();
+    characters.drain(start..end);
+    element.set_control_value(characters.into_iter().collect::<String>());
+    element.place_caret(start, false);
+    Some(text)
 }
 
 /// Index of the first character on the caret's line.
@@ -426,5 +518,51 @@ mod tests {
         assert_eq!(caret_line_column("ab\ncd", 3), (1, 0));
         assert_eq!(caret_line_column("ab\ncd", 5), (1, 2));
         assert_eq!(value_lines("ab\ncd"), vec!["ab", "cd"]);
+    }
+
+    #[test]
+    fn p2_selection_extension_and_replacement_work_for_unicode_and_emoji() {
+        let mut input = text_input(&[]);
+        insert_text(&mut input, "台灣😀瀏覽器");
+        assert_eq!(input.control_value(), "台灣😀瀏覽器");
+        assert_eq!(input.caret(), 6);
+
+        // Select the last 3 characters ("瀏覽器") with Shift+Left.
+        apply(&mut input, EditCommand::ExtendLeft);
+        apply(&mut input, EditCommand::ExtendLeft);
+        apply(&mut input, EditCommand::ExtendLeft);
+        assert_eq!(input.text_selection(), Some((3, 6)));
+        assert_eq!(input.selected_text(), "瀏覽器");
+
+        // Typing replaces the selection.
+        apply(&mut input, EditCommand::Insert('好'));
+        assert_eq!(input.control_value(), "台灣😀好");
+        assert_eq!(input.text_selection(), None);
+        assert_eq!(input.caret(), 4);
+
+        // SelectAll + cut_selection removes all text and returns it.
+        apply(&mut input, EditCommand::SelectAll);
+        assert_eq!(input.text_selection(), Some((0, 4)));
+        assert_eq!(cut_selection(&mut input).as_deref(), Some("台灣😀好"));
+        assert_eq!(input.control_value(), "");
+        assert_eq!(input.caret(), 0);
+    }
+
+    #[test]
+    fn p2_insert_text_and_cut_respect_maxlength_multiline_and_readonly() {
+        let mut single = text_input(&[("maxlength", "5")]);
+        assert!(insert_text(&mut single, "a\r\nb\ncdef").value_changed);
+        // Single-line input strips CR/LF and truncates to maxlength=5.
+        assert_eq!(single.control_value(), "abcde");
+
+        let mut area = textarea();
+        assert!(insert_text(&mut area, "第一行\r\n第二行").value_changed);
+        assert_eq!(area.control_value(), "第一行\n第二行");
+
+        let mut ro = text_input(&[("readonly", ""), ("value", "locked")]);
+        ro.select_all_text();
+        assert!(insert_text(&mut ro, "new").did_nothing());
+        assert_eq!(cut_selection(&mut ro), None);
+        assert_eq!(ro.control_value(), "locked");
     }
 }

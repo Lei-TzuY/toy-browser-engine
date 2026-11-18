@@ -207,6 +207,38 @@ impl KeyHandler {
     fn is_key_index_released(&self, idx: usize) -> bool {
         self.keys_released[idx] || (self.keys_prev[idx] && !self.keys[idx])
     }
+
+    /// Release all currently tracked physical/logical keys (for example on WM_KILLFOCUS)
+    /// so modifiers and held keys cannot remain stuck after focus leaves the window.
+    pub fn clear(&mut self) {
+        let codes: Vec<(u32, Key)> = self.native_keys.iter().map(|(&c, &k)| (c, k)).collect();
+        self.native_keys.clear();
+
+        if let Some(cb) = &mut self.key_callback {
+            let mut released_by_idx = [false; 512];
+            for (code, key) in codes {
+                released_by_idx[key as usize] = true;
+                cb.set_key_state_with_code(key, false, code);
+            }
+            for (idx, was_down) in self.keys.iter().enumerate() {
+                if *was_down && !released_by_idx[idx] && idx <= Key::Unknown as usize {
+                    // Safety: indices `0..=Key::Unknown as usize` match valid `Key` discriminants.
+                    let key: Key = unsafe { std::mem::transmute(idx as u8) };
+                    cb.set_key_state(key, false);
+                }
+            }
+        }
+
+        for (idx, was_down) in self.keys.iter_mut().enumerate() {
+            if *was_down || self.keys_pressed[idx] {
+                self.keys_released[idx] = true;
+            }
+            *was_down = false;
+            self.keys_prev[idx] = false;
+            self.keys_pressed[idx] = false;
+            self.keys_down_duration[idx] = -1.0;
+        }
+    }
 }
 
 
@@ -269,5 +301,36 @@ mod provenance_tests {
         assert!(h.is_key_down(Key::Enter));
         assert!(!h.is_key_pressed(Key::Enter, KeyRepeat::No));
         assert!(h.get_keys_pressed(KeyRepeat::Yes).is_empty());
+    }
+
+    #[test]
+    fn clear_releases_held_keys_and_notifies_callback() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Default)]
+        struct Log(Rc<RefCell<Vec<(Key, bool, u32)>>>);
+        impl InputCallback for Log {
+            fn add_char(&mut self, _: u32) {}
+            fn set_key_state_with_code(&mut self, key: Key, state: bool, code: u32) {
+                self.0.borrow_mut().push((key, state, code));
+            }
+        }
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut h = KeyHandler::new();
+        h.set_input_callback(Box::new(Log(Rc::clone(&log))));
+        h.set_key_state_with_code(Key::LeftAlt, true, 0x038);
+        h.set_key_state_with_code(Key::LeftCtrl, true, 0x01D);
+        h.update();
+
+        h.clear();
+        assert!(!h.is_key_down(Key::LeftAlt));
+        assert!(!h.is_key_down(Key::LeftCtrl));
+        assert!(h.get_keys().is_empty());
+        assert!(h.is_key_released(Key::LeftAlt));
+        let events = log.borrow();
+        assert!(events.contains(&(Key::LeftCtrl, false, 0x01D)));
+        assert!(events.contains(&(Key::LeftAlt, false, 0x038)));
     }
 }

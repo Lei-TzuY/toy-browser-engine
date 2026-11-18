@@ -29,6 +29,8 @@ struct CharacterQueue {
     down_codes: std::collections::BTreeSet<u32>,
     shortcut_keys: ShortcutKeyFilter,
     modifier_keys: [bool; 6],
+    ime_preedit: Option<(String, usize)>,
+    ime_activity: bool,
 }
 
 impl CharacterQueue {
@@ -69,7 +71,7 @@ impl CharacterQueue {
                 callback_pressed.remove(pos);
                 continue;
             }
-            if let Some(engine_key) = translate(key) {
+            if let Some(engine_key) = translate_with_modifiers(key, modifiers) {
                 events.push(KeyEvent::with_modifiers(engine_key, modifiers));
             }
         }
@@ -99,6 +101,15 @@ impl InputCallback for CharacterQueue {
             }
         }
         self.push_char(uni_char);
+    }
+
+    fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
+        self.ime_preedit = Some((text.to_string(), cursor));
+        self.ime_activity = true;
+    }
+
+    fn notify_ime_activity(&mut self) {
+        self.ime_activity = true;
     }
 
     fn set_key_state(&mut self, key: MinifbKey, down: bool) {
@@ -136,7 +147,7 @@ impl InputCallback for CharacterQueue {
             && !self.shortcut_keys.owns_physical(code)
             && !shortcut_key(key).is_some_and(|k| self.shortcut_keys.owns(k))
         {
-            if let Some(engine_key) = translate(key) {
+            if let Some(engine_key) = translate_with_modifiers(key, modifiers) {
                 self.characters
                     .push(KeyEvent::with_modifiers(engine_key, modifiers));
                 self.callback_pressed_keys.push(key);
@@ -170,12 +181,24 @@ impl InputAdapter {
     }
 
     /// Every key event produced since the last call, in order: typed
-    /// characters first, then the named keys pressed this frame.
+    /// characters and key-down transitions in callback order, then any
+    /// remaining keys pressed/repeated this frame.
     pub fn drain(&self, window: &Window) -> Vec<KeyEvent> {
         self.characters.borrow_mut().drain(
             window.get_keys_pressed(KeyRepeat::Yes),
             self.modifiers(window),
         )
+    }
+
+    /// Latest IME composition update `(text, cursor_in_chars)` since the last
+    /// check, if any. Empty `text` means the composition ended or was cleared.
+    pub fn take_ime_preedit(&self) -> Option<(String, usize)> {
+        self.characters.borrow_mut().ime_preedit.take()
+    }
+
+    /// True when an OS IME composition message was processed this frame.
+    pub fn take_ime_activity(&self) -> bool {
+        std::mem::replace(&mut self.characters.borrow_mut().ime_activity, false)
     }
 }
 
@@ -196,6 +219,12 @@ impl InputCallback for SharedQueue {
         self.0
             .borrow_mut()
             .add_char_with_key(uni_char, source, code);
+    }
+    fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
+        self.0.borrow_mut().set_ime_preedit(text, cursor);
+    }
+    fn notify_ime_activity(&mut self) {
+        self.0.borrow_mut().notify_ime_activity();
     }
 }
 
@@ -238,6 +267,24 @@ fn translate(key: MinifbKey) -> Option<EngineKey> {
         MinifbKey::PageDown => EngineKey::PageDown,
         _ => return None,
     })
+}
+
+/// Map a physical key to the engine's key names, including Ctrl+A/C/V/X
+/// editing chords (which arrive as control characters on the text channel).
+fn translate_with_modifiers(key: MinifbKey, modifiers: Modifiers) -> Option<EngineKey> {
+    if let Some(named) = translate(key) {
+        return Some(named);
+    }
+    if modifiers.ctrl && !modifiers.alt {
+        return match key {
+            MinifbKey::A => Some(EngineKey::Character('a')),
+            MinifbKey::C => Some(EngineKey::Character('c')),
+            MinifbKey::V => Some(EngineKey::Character('v')),
+            MinifbKey::X => Some(EngineKey::Character('x')),
+            _ => None,
+        };
+    }
+    None
 }
 
 #[cfg(test)]
@@ -603,6 +650,12 @@ mod tests {
 #[cfg(test)]
 mod reviewer_c_regressions {
     use super::*;
+    use crate::tabs::Tabs;
+    use browser_engine::{
+        browser::Browser,
+        net::{MemoryLoader, Url},
+        script::dom_api,
+    };
 
     fn ordinary_text(events: &[KeyEvent]) -> String {
         events
@@ -733,5 +786,172 @@ mod reviewer_c_regressions {
             q.drain(vec![MinifbKey::Backspace], Modifiers::NONE),
             vec![KeyEvent::new(EngineKey::Backspace)]
         );
+    }
+
+    #[test]
+    fn p1_ime_preedit_and_commit_update_dom_without_leaking_uncommitted_text() {
+        let mut loader = MemoryLoader::new();
+        loader.insert(
+            "demo:///ime",
+            r#"<html><body><input id="q"><p id="events">0</p><script>
+            let count = 0;
+            document.getElementById("q").addEventListener("input", function() {
+                count += 1;
+                document.getElementById("events").textContent = String(count);
+            });
+            </script></body></html>"#,
+        );
+        let b = Browser::open(Box::new(loader), &Url::parse("demo:///ime").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+
+        let mut q = CharacterQueue::default();
+        // Start Bopomofo composition: preedit "ㄓㄨㄥ" with cursor at 3.
+        q.set_ime_preedit("ㄓㄨㄥ", 3);
+        assert!(q.ime_activity);
+        let (preedit, cursor) = q.ime_preedit.take().unwrap();
+        tabs.active_mut().set_ime_preedit(&preedit, cursor);
+
+        // Preedit is visible on the element for inline rendering, NOT in value,
+        // and zero `input` events have fired.
+        let el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(el.ime_preedit(), Some(("ㄓㄨㄥ", 3)));
+        assert_eq!(el.control_value(), "");
+
+        // Cancel composition via Escape: preedit clears and value remains "".
+        q.set_ime_preedit("", 0);
+        let (preedit, cursor) = q.ime_preedit.take().unwrap();
+        tabs.active_mut().set_ime_preedit(&preedit, cursor);
+        let el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(el.ime_preedit(), None);
+        assert_eq!(el.control_value(), "");
+
+        // Compose again and commit "中文😀" via unassociated IME commit callbacks.
+        q.set_ime_preedit("ㄓㄨㄥㄨㄣˊ", 6);
+        let (preedit, cursor) = q.ime_preedit.take().unwrap();
+        tabs.active_mut().set_ime_preedit(&preedit, cursor);
+        for ch in "中文😀".chars() {
+            q.add_char_with_key(ch as u32, None, None);
+        }
+        q.set_ime_preedit("", 0);
+        let (preedit, cursor) = q.ime_preedit.take().unwrap();
+        tabs.active_mut().set_ime_preedit(&preedit, cursor);
+        let events = q.drain(vec![], Modifiers::NONE);
+        tabs.active_mut().handle_keys(events, false);
+
+        let el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(el.ime_preedit(), None);
+        assert_eq!(el.control_value(), "中文😀");
+    }
+
+    #[test]
+    fn p2_clipboard_copy_cut_paste_and_password_guard_work_in_address_and_dom() {
+        use crate::clipboard::{Clipboard, MemoryClipboard};
+
+        let mut loader = MemoryLoader::new();
+        loader.insert(
+            "demo:///clip",
+            r#"<html><body>
+                <input id="txt" value="Hello">
+                <input id="pwd" type="password" value="s3cr3t">
+                <textarea id="area"></textarea>
+            </body></html>"#,
+        );
+        let b = Browser::open(Box::new(loader), &Url::parse("demo:///clip").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let mut cb = MemoryClipboard::with_text("初始剪貼簿");
+
+        // 1. Address bar: focus, Ctrl+A (already selected), Ctrl+C, Ctrl+V.
+        let current = tabs.active().browser.url().to_string();
+        tabs.active_mut().toolbar.focus_address(&current);
+        let mut q = CharacterQueue::default();
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::C, true, 0x02E);
+        q.set_key_state_with_code(MinifbKey::C, false, 0x02E);
+        let events = q.drain(vec![], q.modifiers());
+        tabs.active_mut()
+            .handle_keys_with_clipboard(events, false, &mut cb);
+        assert_eq!(cb.get_text().as_deref(), Some("demo:///clip"));
+
+        cb.set_text("https://example.test/中文");
+        q.set_key_state_with_code(MinifbKey::V, true, 0x02F);
+        q.set_key_state_with_code(MinifbKey::V, false, 0x02F);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let events = q.drain(vec![], q.modifiers());
+        tabs.active_mut()
+            .handle_keys_with_clipboard(events, false, &mut cb);
+        assert_eq!(
+            tabs.active().toolbar.editor().unwrap().value(),
+            "https://example.test/中文"
+        );
+        tabs.active_mut().toolbar.cancel();
+
+        // 2. Password input: Ctrl+A then Ctrl+C / Ctrl+X must NEVER copy or cut password.
+        cb.set_text("safe-clipboard");
+        let pwd = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "pwd").unwrap();
+        tabs.active_mut().browser.click_node(&pwd);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::A, true, 0x01E);
+        q.set_key_state_with_code(MinifbKey::A, false, 0x01E);
+        q.set_key_state_with_code(MinifbKey::C, true, 0x02E);
+        q.set_key_state_with_code(MinifbKey::C, false, 0x02E);
+        q.set_key_state_with_code(MinifbKey::X, true, 0x02D);
+        q.set_key_state_with_code(MinifbKey::X, false, 0x02D);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let events = q.drain(vec![], q.modifiers());
+        tabs.active_mut()
+            .handle_keys_with_clipboard(events, false, &mut cb);
+        assert_eq!(cb.get_text().as_deref(), Some("safe-clipboard"));
+        let pwd_el = dom_api::node_at(&tabs.active().browser.document().dom, &pwd)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(pwd_el.control_value(), "s3cr3t");
+
+        // 3. Text input -> Cut ("Hello") -> Paste into textarea ("Hello\n中文").
+        let txt = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "txt").unwrap();
+        tabs.active_mut().browser.click_node(&txt);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::A, true, 0x01E);
+        q.set_key_state_with_code(MinifbKey::A, false, 0x01E);
+        q.set_key_state_with_code(MinifbKey::X, true, 0x02D);
+        q.set_key_state_with_code(MinifbKey::X, false, 0x02D);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let events = q.drain(vec![], q.modifiers());
+        tabs.active_mut()
+            .handle_keys_with_clipboard(events, false, &mut cb);
+        assert_eq!(cb.get_text().as_deref(), Some("Hello"));
+        let txt_el = dom_api::node_at(&tabs.active().browser.document().dom, &txt)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(txt_el.control_value(), "");
+
+        let area =
+            dom_api::get_element_by_id(&tabs.active().browser.document().dom, "area").unwrap();
+        tabs.active_mut().browser.click_node(&area);
+        cb.set_text("Hello\n台灣😀");
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::V, true, 0x02F);
+        q.set_key_state_with_code(MinifbKey::V, false, 0x02F);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let events = q.drain(vec![], q.modifiers());
+        tabs.active_mut()
+            .handle_keys_with_clipboard(events, false, &mut cb);
+        let area_el = dom_api::node_at(&tabs.active().browser.document().dom, &area)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(area_el.control_value(), "Hello\n台灣😀");
     }
 }

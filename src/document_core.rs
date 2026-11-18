@@ -133,10 +133,22 @@ fn edit_command_for(event: &KeyEvent, element: &ElementData) -> Option<EditComma
     if let Some(character) = event.typed_character() {
         return Some(EditCommand::Insert(character));
     }
+    let shift = event.modifiers.shift;
+    if event.modifiers.ctrl && !event.modifiers.alt {
+        if let Key::Character(character) = event.key {
+            return matches!(character, 'a' | 'A').then_some(EditCommand::SelectAll);
+        }
+    }
     Some(match event.key {
         Key::Enter => EditCommand::InsertNewline,
         Key::Backspace => EditCommand::Backspace,
         Key::Delete => EditCommand::Delete,
+        Key::ArrowLeft if shift => EditCommand::ExtendLeft,
+        Key::ArrowRight if shift => EditCommand::ExtendRight,
+        Key::ArrowUp if shift => EditCommand::ExtendUp,
+        Key::ArrowDown if shift => EditCommand::ExtendDown,
+        Key::Home if shift => EditCommand::ExtendToStart,
+        Key::End if shift => EditCommand::ExtendToEnd,
         Key::ArrowLeft => EditCommand::MoveLeft,
         Key::ArrowRight => EditCommand::MoveRight,
         Key::ArrowUp => EditCommand::MoveUp,
@@ -473,6 +485,12 @@ impl Document {
         };
         self.focus = None;
         self.runtime.focused = None;
+        // An uncommitted IME composition never follows focus elsewhere.
+        if let Some(NodeType::Element(element)) =
+            dom_api::node_at_mut(&mut self.dom, &path).map(|node| &mut node.node_type)
+        {
+            element.set_ime_preedit("", 0);
+        }
         self.dispatch(&path, "blur", EventInit::non_bubbling());
         self.dispatch(&path, "focusout", EventInit::bubbling());
     }
@@ -807,6 +825,12 @@ impl Document {
     /// release separately; [`Document::press_key`] does both for callers that
     /// only have one event.
     pub fn key_down(&mut self, event: &KeyEvent) -> PageAction {
+        self.key_down_outcome(event).0
+    }
+
+    /// Like [`Document::key_down`], also reporting whether a `keydown`
+    /// listener called `preventDefault()`.
+    pub fn key_down_outcome(&mut self, event: &KeyEvent) -> (PageAction, bool) {
         let target = self
             .focused_path()
             .or_else(|| dom_api::body_path(&self.dom))
@@ -818,18 +842,18 @@ impl Document {
 
         let outcome = self.dispatch(&target, "keydown", key_event_init(event));
         if outcome.default_prevented {
-            return PageAction::None;
+            return (PageAction::None, true);
         }
         // A keydown listener may move/remove the original select. Its old
         // path must never become the default action's new control target.
         let target = match select_id {
             Some(id) => match dom_api::path_of_element_id(&self.dom, id) {
                 Some(path) => path,
-                None => return PageAction::None,
+                None => return (PageAction::None, false),
             },
             None => target,
         };
-        self.default_key_action(&target, event)
+        (self.default_key_action(&target, event), false)
     }
 
     /// Dispatch `keyup` at the focused element. It has no default action.
@@ -1062,6 +1086,20 @@ impl Document {
         y: f32,
         viewport_width: f32,
     ) {
+        self.place_caret_from_point(target, x, y, viewport_width, false);
+    }
+
+    /// Like [`Document::place_caret_from_click`], but with `extend` the
+    /// selection anchor stays put (Shift+click, or dragging with the button
+    /// held), selecting the text in between.
+    pub fn place_caret_from_point(
+        &mut self,
+        target: &[usize],
+        x: f32,
+        y: f32,
+        viewport_width: f32,
+        extend: bool,
+    ) {
         let Some(box_info) = self.control_box(target, viewport_width) else {
             return;
         };
@@ -1094,7 +1132,108 @@ impl Document {
         } else {
             editing::caret_for_offset(&value, font_size, offset_x)
         };
-        element.set_caret(caret);
+        element.place_caret(caret, extend);
+    }
+
+    // ── Clipboard and IME text ───────────────────────────────────────────
+
+    /// Path of the focused text-entry control, if focus is on one.
+    fn focused_text_entry(&self) -> Option<NodePath> {
+        let path = self.focused_path()?;
+        let element = dom_api::node_at(&self.dom, &path)?.as_element()?;
+        element.is_text_entry().then_some(path)
+    }
+
+    fn focused_text_element(&self) -> Option<&ElementData> {
+        let path = self.focused_text_entry()?;
+        dom_api::node_at(&self.dom, &path)?.as_element()
+    }
+
+    /// Text that Ctrl+C would copy from the focused control: its selection.
+    /// `None` without a selection, and always for `type=password`, so a
+    /// password can never be copied out of the page.
+    pub fn copy_selection(&self) -> Option<String> {
+        let element = self.focused_text_element()?;
+        if element.tag_name == "input" && element.input_type() == "password" {
+            return None;
+        }
+        let text = element.selected_text();
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Ctrl+X: remove the focused control's selection and return it, firing
+    /// `input`. Refused for passwords, read-only and disabled controls.
+    pub fn cut_selection(&mut self) -> Option<String> {
+        self.copy_selection()?;
+        let path = self.focused_text_entry()?;
+        let text = match dom_api::node_at_mut(&mut self.dom, &path).map(|n| &mut n.node_type) {
+            Some(NodeType::Element(element)) => editing::cut_selection(element)?,
+            _ => return None,
+        };
+        self.dispatch(&path, "input", EventInit::bubbling());
+        Some(text)
+    }
+
+    /// Insert text at the focused control's caret, replacing its selection,
+    /// as a paste (Ctrl+V) or an IME commit does. Fires one `input` event when
+    /// the value changed. Returns whether it changed.
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        let Some(path) = self.focused_text_entry() else {
+            return false;
+        };
+        let result = match dom_api::node_at_mut(&mut self.dom, &path).map(|n| &mut n.node_type) {
+            Some(NodeType::Element(element)) => editing::insert_text(element, text),
+            _ => return false,
+        };
+        if result.value_changed {
+            self.dispatch(&path, "input", EventInit::bubbling());
+        }
+        result.value_changed
+    }
+
+    /// Show (or, with empty `text`, clear) an uncommitted IME composition in
+    /// the focused text control. The value is untouched until commit.
+    pub fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
+        let Some(path) = self.focused_text_entry() else {
+            return;
+        };
+        if let Some(NodeType::Element(element)) =
+            dom_api::node_at_mut(&mut self.dom, &path).map(|n| &mut n.node_type)
+        {
+            if !element.is_disabled() && !element.is_readonly() {
+                element.set_ime_preedit(text, cursor);
+            } else {
+                element.set_ime_preedit("", 0);
+            }
+        }
+    }
+
+    /// The focused text control's caret as a page-coordinate rectangle
+    /// `(x, y, height)`, used to place the OS IME candidate window.
+    pub fn focused_caret_rect(&self, viewport_width: f32) -> Option<(f32, f32, f32)> {
+        let path = self.focused_text_entry()?;
+        let box_info = self.control_box(&path, viewport_width)?;
+        let element = dom_api::node_at(&self.dom, &path)?.as_element()?;
+        let value = element.control_value();
+        let font_size = box_info.font_size;
+        let line_height = crate::text::line_metrics(font_size).new_line_size;
+        let (line, column) = editing::caret_line_column(&value, element.caret());
+        let mut prefix: String = value
+            .split('\n')
+            .nth(line)
+            .unwrap_or("")
+            .chars()
+            .take(column)
+            .collect();
+        if let Some((preedit, cursor)) = element.ime_preedit() {
+            prefix.extend(preedit.chars().take(cursor));
+        }
+        let line = if element.tag_name == "textarea" { line } else { 0 };
+        Some((
+            box_info.content_x + crate::text::measure_text(&prefix, font_size),
+            box_info.content_y + line as f32 * line_height,
+            line_height,
+        ))
     }
 
     /// Content-box origin and font size of a laid-out control.

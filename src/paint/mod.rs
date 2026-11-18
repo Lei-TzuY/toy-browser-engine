@@ -534,6 +534,18 @@ const PLACEHOLDER_TEXT: Color = Color {
     b: 172,
     a: 255,
 };
+const CONTROL_SELECTION: Color = Color {
+    r: 179,
+    g: 215,
+    b: 255,
+    a: 255,
+};
+const CONTROL_PREEDIT_BG: Color = Color {
+    r: 232,
+    g: 240,
+    b: 254,
+    a: 255,
+};
 
 /// Paint input, textarea and collapsed single-select widgets.
 ///
@@ -593,8 +605,19 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
     // Value, or placeholder when empty.
     let font_size = lb.font_size();
     let metrics = line_metrics(font_size);
-    let value = element.control_value();
-    let showing_placeholder = value.is_empty();
+    // A password is never painted as its characters. One bullet per char keeps
+    // caret and selection offsets (counted in chars) aligned with the value.
+    let value = if element.tag_name == "input" && element.input_type() == "password" {
+        "\u{2022}".repeat(element.control_value().chars().count())
+    } else {
+        element.control_value()
+    };
+    let preedit = if focused && !disabled {
+        element.ime_preedit()
+    } else {
+        None
+    };
+    let showing_placeholder = value.is_empty() && preedit.is_none();
     let text = if showing_placeholder {
         element.get_attr("placeholder").unwrap_or("").to_string()
     } else {
@@ -608,17 +631,143 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
     };
 
     list.push(DisplayCommand::PushClip(padding_box));
-    let lines: Vec<String> = if element.tag_name == "textarea" {
+    let is_textarea = element.tag_name == "textarea";
+    let lines: Vec<String> = if is_textarea {
         text.split('\n').map(str::to_string).collect()
     } else {
         // A single-line field shows newlines as spaces rather than wrapping.
         vec![text.replace('\n', " ")]
     };
+
+    // Selection highlight (drawn behind the value text).
+    if focused && !disabled {
+        if let Some((sel_start, sel_end)) = element.text_selection() {
+            if is_textarea {
+                let mut line_char_start = 0usize;
+                for (index, raw_line) in value.split('\n').enumerate() {
+                    let line_len = raw_line.chars().count();
+                    let line_char_end = line_char_start + line_len;
+                    let start_col = sel_start.max(line_char_start).min(line_char_end) - line_char_start;
+                    let end_col = sel_end.max(line_char_start).min(line_char_end) - line_char_start;
+                    if start_col < end_col {
+                        let before: String = raw_line.chars().take(start_col).collect();
+                        let mid: String = raw_line.chars().skip(start_col).take(end_col - start_col).collect();
+                        let x0 = content.x + measure_text(&before, font_size);
+                        let w = measure_text(&mid, font_size).max(2.0);
+                        let top = content.y + index as f32 * metrics.new_line_size;
+                        list.push(DisplayCommand::SolidColor(
+                            apply_opacity(CONTROL_SELECTION, opacity),
+                            Rect {
+                                x: x0,
+                                y: top,
+                                width: w,
+                                height: metrics.new_line_size - 2.0,
+                            },
+                        ));
+                    }
+                    line_char_start = line_char_end + 1;
+                }
+            } else if let Some(first_line) = lines.first() {
+                let before: String = first_line.chars().take(sel_start).collect();
+                let mid: String = first_line
+                    .chars()
+                    .skip(sel_start)
+                    .take(sel_end.saturating_sub(sel_start))
+                    .collect();
+                let x0 = content.x + measure_text(&before, font_size);
+                let w = measure_text(&mid, font_size).max(2.0);
+                list.push(DisplayCommand::SolidColor(
+                    apply_opacity(CONTROL_SELECTION, opacity),
+                    Rect {
+                        x: x0,
+                        y: content.y,
+                        width: w,
+                        height: metrics.new_line_size - 2.0,
+                    },
+                ));
+            }
+        }
+    }
+
+    let caret = element.caret();
+    let (caret_line, caret_col) = if is_textarea {
+        crate::editing::caret_line_column(&value, caret)
+    } else {
+        (0, caret.min(value.chars().count()))
+    };
+
     for (index, line) in lines.iter().enumerate() {
+        let top = content.y + index as f32 * metrics.new_line_size;
+        if let Some((preedit_text, _)) = preedit.filter(|_| index == caret_line && !showing_placeholder) {
+            let prefix: String = line.chars().take(caret_col).collect();
+            let suffix: String = line.chars().skip(caret_col).collect();
+            let prefix_w = measure_text(&prefix, font_size);
+            let preedit_w = measure_text(preedit_text, font_size);
+            if !prefix.is_empty() {
+                list.push(DisplayCommand::Text(TextFragment {
+                    text: prefix,
+                    rect: Rect {
+                        x: content.x,
+                        y: top,
+                        width: prefix_w,
+                        height: metrics.new_line_size,
+                    },
+                    baseline: top + metrics.ascent,
+                    color: apply_opacity(text_color, opacity),
+                    font_size,
+                    underline: false,
+                    strikethrough: false,
+                    text_shadow: None,
+                }));
+            }
+            if !preedit_text.is_empty() {
+                list.push(DisplayCommand::SolidColor(
+                    apply_opacity(CONTROL_PREEDIT_BG, opacity),
+                    Rect {
+                        x: content.x + prefix_w,
+                        y: top,
+                        width: preedit_w,
+                        height: metrics.new_line_size - 2.0,
+                    },
+                ));
+                list.push(DisplayCommand::Text(TextFragment {
+                    text: preedit_text.to_string(),
+                    rect: Rect {
+                        x: content.x + prefix_w,
+                        y: top,
+                        width: preedit_w,
+                        height: metrics.new_line_size,
+                    },
+                    baseline: top + metrics.ascent,
+                    color: apply_opacity(text_color, opacity),
+                    font_size,
+                    underline: true,
+                    strikethrough: false,
+                    text_shadow: None,
+                }));
+            }
+            if !suffix.is_empty() {
+                list.push(DisplayCommand::Text(TextFragment {
+                    text: suffix,
+                    rect: Rect {
+                        x: content.x + prefix_w + preedit_w,
+                        y: top,
+                        width: content.width,
+                        height: metrics.new_line_size,
+                    },
+                    baseline: top + metrics.ascent,
+                    color: apply_opacity(text_color, opacity),
+                    font_size,
+                    underline: false,
+                    strikethrough: false,
+                    text_shadow: None,
+                }));
+            }
+            continue;
+        }
         if line.is_empty() {
             continue;
         }
-        let top = content.y + index as f32 * metrics.new_line_size;
         list.push(DisplayCommand::Text(TextFragment {
             text: line.clone(),
             rect: Rect {
@@ -636,19 +785,20 @@ fn render_form_control(list: &mut DisplayList, lb: &LayoutBox, opacity: f32) {
         }));
     }
 
-    // Caret, drawn at the character offset the editing model reports.
+    // Caret, drawn at the character offset the editing model reports (plus any
+    // active IME composition cursor).
     if focused && !disabled {
-        let caret = element.caret();
-        let (line, column) = crate::editing::caret_line_column(&value, caret);
-        let line_text: String = value
-            .split('\n')
-            .nth(line)
-            .unwrap_or("")
-            .chars()
-            .take(column)
-            .collect();
+        let line_str = if is_textarea {
+            value.split('\n').nth(caret_line).unwrap_or("").to_string()
+        } else {
+            value.replace('\n', " ")
+        };
+        let mut line_text: String = line_str.chars().take(caret_col).collect();
+        if let Some((preedit_text, preedit_cursor)) = preedit {
+            line_text.extend(preedit_text.chars().take(preedit_cursor));
+        }
         let x = content.x + measure_text(&line_text, font_size);
-        let y = content.y + line as f32 * metrics.new_line_size;
+        let y = content.y + caret_line as f32 * metrics.new_line_size;
         let caret_color = styled.caret_color().unwrap_or(CONTROL_TEXT);
         list.push(DisplayCommand::SolidColor(
             apply_opacity(caret_color, opacity),

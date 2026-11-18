@@ -41,6 +41,27 @@ change the keysym, and handles two codes mapped to the same Key independently.
     message `lParam`, `GetCursorPos` polling only updates coordinates when the
     OS screen cursor actually moves, and non-minimized `WM_SIZE` updates
     window `width` and `height`.
+  - P0 (Modifiers, focus loss & fast-click latch): `key_from_scan_code` maps
+    `LeftAlt` (`0x038`), `RightAlt` (`0x138`), `LeftSuper` (`0x15B`), and
+    `RightSuper` (`0x15C`); `WM_SYSKEYDOWN` passes `VK_F4` to `DefWindowProcW`
+    for `Alt+F4` while suppressing system menu activation on browser `Alt`
+    chords; `WM_KILLFOCUS` invokes `KeyHandler::clear()` and resets mouse button
+    state, pending surrogate state, and active IME composition so modifiers and
+    buttons cannot remain stuck after focus leaves; same-frame mouse press+release
+    latches preserve the click's coordinates against trailing `WM_MOUSEMOVE`
+    events in the same pump.
+  - P1 (UTF-16 surrogate pairs & IMM32 composition): `WM_CHAR` and `WM_SYSCHAR`
+    combine UTF-16 surrogate pairs (`0xD800..=0xDBFF` + `0xDC00..=0xDFFF`) into
+    a single Unicode scalar and drop unpaired surrogates; `WM_IME_SETCONTEXT`
+    clears `ISC_SHOWUICOMPOSITIONWINDOW` so inline preedit replaces the default
+    OS floating box while keeping the OS candidate window; `WM_IME_STARTCOMPOSITION`,
+    `WM_IME_COMPOSITION` (`GCS_COMPSTR`, `GCS_CURSORPOS`, `GCS_RESULTSTR`), and
+    `WM_IME_ENDCOMPOSITION` report preedit and committed text through
+    `InputCallback::set_ime_preedit`, `InputCallback::notify_ime_activity`, and
+    unassociated `add_char_with_key(..., None, None)` (returning `0` on
+    `WM_IME_COMPOSITION` so `DefWindowProcW` does not duplicate committed
+    characters); `Window::set_ime_cursor_area` positions the composition and
+    candidate windows via `ImmSetCompositionWindow` and `ImmSetCandidateWindow`.
 - macOS: NSEvent.keyCode accompanies each character through the native callback
   signature. No native test is claimed.
 

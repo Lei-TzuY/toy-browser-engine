@@ -183,6 +183,14 @@ pub trait InputCallback {
         self.set_key_state(key, state);
     }
 
+    /// Called when an active OS IME composition updates or finishes.
+    /// `text` is the current preedit string (empty when cleared or ended)
+    /// and `cursor` is the scalar character offset within `text`.
+    fn set_ime_preedit(&mut self, _text: &str, _cursor: usize) {}
+
+    /// Called when an OS IME composition message is processed this frame
+    /// (for example starting, updating, committing, or canceling preedit).
+    fn notify_ime_activity(&mut self) {}
 }
 
 /// Window is used to open up a window. It's possible to optionally display a 32-bit buffer when
@@ -884,6 +892,15 @@ impl Window {
     #[inline]
     pub fn set_input_callback(&mut self, callback: Box<dyn InputCallback>) {
         self.0.set_input_callback(callback)
+    }
+
+    /// Position the OS IME composition and candidate popup relative to client coordinates.
+    #[inline]
+    pub fn set_ime_cursor_area(&mut self, x: i32, y: i32, line_height: i32) {
+        #[cfg(target_os = "windows")]
+        self.0.set_ime_cursor_area(x, y, line_height);
+        #[cfg(not(target_os = "windows"))]
+        let _ = (x, y, line_height);
     }
 
     /// This allows adding menus to your windows. As menus behaves a bit diffrently depending on

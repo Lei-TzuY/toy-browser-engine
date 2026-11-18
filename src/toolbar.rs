@@ -211,10 +211,25 @@ impl Toolbar {
         self.selecting = false;
     }
 
-    pub(crate) fn select_all(&mut self) {
+    pub(crate) fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
         if let Some(editor) = &mut self.editor {
-            editor.select_all();
+            editor.set_ime_preedit(text, cursor);
         }
+    }
+
+    /// Toolbar-local caret rectangle `(x, y, height)` while editing the address.
+    pub(crate) fn caret_rect(&self) -> Option<(f32, f32, f32)> {
+        let editor = self.editor.as_ref()?;
+        let field = self.rect(Control::Address);
+        let metrics = line_metrics(FONT_SIZE);
+        let baseline =
+            (field.y + (field.height - metrics.new_line_size) / 2.0 + metrics.ascent).round();
+        let line_top = baseline - metrics.ascent;
+        let mut x = self.text_origin() + prefix_width(editor.value(), editor.caret());
+        if let Some((preedit, cursor)) = editor.ime_preedit() {
+            x += prefix_width(preedit, cursor);
+        }
+        Some((x, line_top, metrics.new_line_size))
     }
 
     /// Leave the field without navigating.
@@ -251,7 +266,17 @@ impl Toolbar {
     /// While the field is focused it takes every key, and whatever follows
     /// an Enter or Escape in the same frame is dropped rather than leaking
     /// into the document the user was not typing into.
+    #[cfg(test)]
     pub(crate) fn dispatch_keys(&mut self, events: Vec<KeyEvent>) -> KeyDispatch {
+        let mut dummy = crate::clipboard::MemoryClipboard::new();
+        self.dispatch_keys_with_clipboard(events, &mut dummy)
+    }
+
+    pub(crate) fn dispatch_keys_with_clipboard(
+        &mut self,
+        events: Vec<KeyEvent>,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> KeyDispatch {
         if self.editor.is_none() {
             return KeyDispatch {
                 page: events,
@@ -259,7 +284,11 @@ impl Toolbar {
             };
         }
         for event in &events {
-            let action = self.editor.as_mut().expect("editing").handle(event);
+            let action = self
+                .editor
+                .as_mut()
+                .expect("editing")
+                .handle_with_clipboard(event, clipboard);
             match action {
                 LocationAction::Continue => self.error = None,
                 LocationAction::Cancel => {
@@ -489,24 +518,85 @@ impl Toolbar {
                 ));
             }
         }
-        canvas.paint(&DisplayCommand::Text(TextFragment {
-            text: text.to_string(),
-            rect: Rect {
-                x: origin,
-                y: line_top,
-                width: measure_text(text, FONT_SIZE),
-                height: metrics.new_line_size,
-            },
-            baseline,
-            color: TEXT,
-            font_size: FONT_SIZE,
-            underline: false,
-            strikethrough: false,
-            text_shadow: None,
-        }));
+        if let Some((preedit_text, _)) = self.editor.as_ref().and_then(|e| e.ime_preedit()) {
+            let caret_idx = self.editor.as_ref().map_or(0, |e| e.caret());
+            let prefix: String = text.chars().take(caret_idx).collect();
+            let suffix: String = text.chars().skip(caret_idx).collect();
+            let prefix_w = measure_text(&prefix, FONT_SIZE);
+            let preedit_w = measure_text(preedit_text, FONT_SIZE);
+            if !prefix.is_empty() {
+                canvas.paint(&DisplayCommand::Text(TextFragment {
+                    text: prefix,
+                    rect: Rect {
+                        x: origin,
+                        y: line_top,
+                        width: prefix_w,
+                        height: metrics.new_line_size,
+                    },
+                    baseline,
+                    color: TEXT,
+                    font_size: FONT_SIZE,
+                    underline: false,
+                    strikethrough: false,
+                    text_shadow: None,
+                }));
+            }
+            canvas.paint(&DisplayCommand::Text(TextFragment {
+                text: preedit_text.to_string(),
+                rect: Rect {
+                    x: origin + prefix_w,
+                    y: line_top,
+                    width: preedit_w,
+                    height: metrics.new_line_size,
+                },
+                baseline,
+                color: TEXT,
+                font_size: FONT_SIZE,
+                underline: true,
+                strikethrough: false,
+                text_shadow: None,
+            }));
+            if !suffix.is_empty() {
+                canvas.paint(&DisplayCommand::Text(TextFragment {
+                    text: suffix.clone(),
+                    rect: Rect {
+                        x: origin + prefix_w + preedit_w,
+                        y: line_top,
+                        width: measure_text(&suffix, FONT_SIZE),
+                        height: metrics.new_line_size,
+                    },
+                    baseline,
+                    color: TEXT,
+                    font_size: FONT_SIZE,
+                    underline: false,
+                    strikethrough: false,
+                    text_shadow: None,
+                }));
+            }
+        } else {
+            canvas.paint(&DisplayCommand::Text(TextFragment {
+                text: text.to_string(),
+                rect: Rect {
+                    x: origin,
+                    y: line_top,
+                    width: measure_text(text, FONT_SIZE),
+                    height: metrics.new_line_size,
+                },
+                baseline,
+                color: TEXT,
+                font_size: FONT_SIZE,
+                underline: false,
+                strikethrough: false,
+                text_shadow: None,
+            }));
+        }
         if let Some(editor) = &self.editor {
-            if editor.selection().is_none() {
-                let caret = (origin + prefix_width(text, editor.caret())).round();
+            if editor.selection().is_none() || editor.ime_preedit().is_some() {
+                let mut caret_x = origin + prefix_width(text, editor.caret());
+                if let Some((preedit, cursor)) = editor.ime_preedit() {
+                    caret_x += prefix_width(preedit, cursor);
+                }
+                let caret = caret_x.round();
                 canvas.paint(&DisplayCommand::SolidColor(
                     TEXT,
                     Rect {

@@ -71,19 +71,100 @@ impl Tab {
     /// Hand a frame's keystrokes to this tab: the address field takes them
     /// while focused, otherwise they go to the page (unless `chrome_only`,
     /// for Alt shortcuts). Returns the toolbar command they amount to.
+    #[cfg(test)]
     pub(crate) fn handle_keys(
         &mut self,
         events: Vec<KeyEvent>,
         chrome_only: bool,
     ) -> Option<Command> {
-        let dispatch = self.toolbar.dispatch_keys(events);
+        let mut dummy = crate::clipboard::MemoryClipboard::new();
+        self.handle_keys_with_clipboard(events, chrome_only, &mut dummy)
+    }
+
+    /// Like [`Tab::handle_keys`], routing Ctrl+C / Ctrl+X / Ctrl+V through
+    /// `clipboard` for either the address field or the focused page control.
+    pub(crate) fn handle_keys_with_clipboard(
+        &mut self,
+        events: Vec<KeyEvent>,
+        chrome_only: bool,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> Option<Command> {
+        let dispatch = self
+            .toolbar
+            .dispatch_keys_with_clipboard(events, clipboard);
         if !chrome_only {
             for event in dispatch.page {
-                let outcome = self.browser.press_key(&event);
+                let (outcome, prevented) = self.browser.press_key_with_default_check(&event);
+                if !prevented
+                    && !matches!(outcome, ClickOutcome::Navigated(_))
+                    && event.modifiers.ctrl
+                    && !event.modifiers.alt
+                    && !event.modifiers.shift
+                {
+                    match event.key {
+                        browser_engine::input::Key::Character('c' | 'C') => {
+                            if let Some(text) = self.browser.document().copy_selection() {
+                                clipboard.set_text(&text);
+                            }
+                        }
+                        browser_engine::input::Key::Character('x' | 'X') => {
+                            if let Some(text) = self.browser.document_mut().cut_selection() {
+                                clipboard.set_text(&text);
+                            }
+                        }
+                        browser_engine::input::Key::Character('v' | 'V') => {
+                            if let Some(text) = clipboard.get_text() {
+                                self.browser.document_mut().insert_text(&text);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 self.report_page_outcome(outcome);
             }
         }
         dispatch.command
+    }
+
+    /// Route an uncommitted IME composition to whichever surface has focus
+    /// (the address bar when editing, otherwise the document's focused input),
+    /// clearing the inactive one so stale preedit never lingers.
+    pub(crate) fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
+        if self.toolbar.is_editing() {
+            self.toolbar.set_ime_preedit(text, cursor);
+            self.browser.document_mut().set_ime_preedit("", 0);
+        } else {
+            self.browser.document_mut().set_ime_preedit(text, cursor);
+        }
+    }
+
+    /// Window-client caret rectangle `(x, y, line_height)` for positioning
+    /// the OS IME composition and candidate windows.
+    pub(crate) fn ime_cursor_area(
+        &self,
+        tab_strip_height: usize,
+        toolbar_height: usize,
+        width: usize,
+    ) -> Option<(i32, i32, i32)> {
+        if self.toolbar.is_editing() {
+            let (x, y, h) = self.toolbar.caret_rect()?;
+            Some((
+                x.round() as i32,
+                (y + tab_strip_height as f32).round() as i32,
+                h.ceil().max(1.0) as i32,
+            ))
+        } else {
+            let (x, y, h) = self
+                .browser
+                .document()
+                .focused_caret_rect(width as f32)?;
+            let client_y = y - self.scroll_y + (tab_strip_height + toolbar_height) as f32;
+            Some((
+                x.round() as i32,
+                client_y.round() as i32,
+                h.ceil().max(1.0) as i32,
+            ))
+        }
     }
 
     /// Carry out a toolbar button, Alt shortcut or address-field navigation.
