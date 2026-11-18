@@ -579,10 +579,26 @@ fn run_window(
             }
         }
         if let Some(command) = tab_key {
+            let pre_events = input.drain_pre_shortcut();
+            if !pre_events.is_empty() {
+                let (pre_cmd, _) = tabs.active_mut().route_frame_keys(
+                    pre_events,
+                    left_alt,
+                    right_alt,
+                    ctrl,
+                    &mut clipboard,
+                );
+                if let Some(cmd) = pre_cmd {
+                    tabs.active_mut().run_command(cmd);
+                }
+            }
+            let active_before = tabs.active_index();
             if !apply_tab_command(&mut tabs, &mut strip, command, &open_tab, &mut notice) {
                 break;
             }
-            ime_composing = false;
+            if ime_composing || tabs.active_index() != active_before {
+                ime_composing = false;
+            }
             press_on_page = false;
         }
 
@@ -763,6 +779,7 @@ fn run_window(
             hovered,
         };
 
+        #[cfg(target_os = "windows")]
         if let Some((cx, cy, ch)) =
             tab.ime_cursor_area(TAB_STRIP_HEIGHT, TOOLBAR_HEIGHT, width)
         {

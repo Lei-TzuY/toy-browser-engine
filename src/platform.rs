@@ -25,6 +25,10 @@ use crate::tabs::{ShortcutKey, ShortcutKeyFilter};
 #[derive(Default)]
 struct CharacterQueue {
     characters: Vec<KeyEvent>,
+    /// Characters queued in the same frame *before* a tab-switching shortcut
+    /// (`Ctrl+T/W/Tab/1..9`) arrived; they belong to the tab that was active
+    /// before the switch.
+    pre_shortcut_characters: Vec<KeyEvent>,
     callback_pressed_keys: Vec<MinifbKey>,
     down_codes: std::collections::BTreeSet<u32>,
     shortcut_keys: ShortcutKeyFilter,
@@ -62,8 +66,13 @@ impl CharacterQueue {
         }
     }
 
+    fn drain_pre_shortcut(&mut self) -> Vec<KeyEvent> {
+        std::mem::take(&mut self.pre_shortcut_characters)
+    }
+
     fn drain(&mut self, pressed: Vec<MinifbKey>, modifiers: Modifiers) -> Vec<KeyEvent> {
-        let mut events = std::mem::take(&mut self.characters);
+        let mut events = std::mem::take(&mut self.pre_shortcut_characters);
+        events.append(&mut self.characters);
         let mut callback_pressed = std::mem::take(&mut self.callback_pressed_keys);
         for key in pressed {
             if shortcut_key(key).is_some_and(|key| self.shortcut_keys.owns(key)) {
@@ -99,6 +108,9 @@ impl InputCallback for CharacterQueue {
                 modifiers.alt,
             );
             if self.shortcut_keys.owns_physical(code) {
+                if !self.characters.is_empty() {
+                    self.pre_shortcut_characters.append(&mut self.characters);
+                }
                 return;
             }
         }
@@ -146,6 +158,15 @@ impl InputCallback for CharacterQueue {
             self.down_codes.remove(&code)
         };
         if down
+            && (!was_down || key == MinifbKey::Tab)
+            && modifiers.ctrl
+            && !modifiers.alt
+            && shortcut_key(key).is_some()
+            && !self.characters.is_empty()
+        {
+            self.pre_shortcut_characters.append(&mut self.characters);
+        }
+        if down
             && !was_down
             && !self.shortcut_keys.owns_physical(code)
             && !shortcut_key(key).is_some_and(|k| self.shortcut_keys.owns(k))
@@ -181,6 +202,12 @@ impl InputAdapter {
                 || window.is_key_down(MinifbKey::RightCtrl),
             alt: window.is_key_down(MinifbKey::LeftAlt) || window.is_key_down(MinifbKey::RightAlt),
         }
+    }
+
+    /// Drain characters queued before a same-frame tab shortcut (`Ctrl+T/W/Tab/1..9`)
+    /// so they stay with the outgoing tab instead of landing on the newly focused tab.
+    pub fn drain_pre_shortcut(&self) -> Vec<KeyEvent> {
+        self.characters.borrow_mut().drain_pre_shortcut()
     }
 
     /// Every key event produced since the last call, in order: typed
@@ -1108,5 +1135,58 @@ mod reviewer_c_regressions {
             .handle_keys_with_clipboard(events, false, &mut cb);
         assert!(dom_api::outer_html(&tabs.active().browser.document().dom)
             .contains("keydown:|input:hi|keyup:hi"));
+    }
+
+    #[test]
+    fn char_typed_before_ctrl_number_in_same_frame_stays_on_previous_tab() {
+        let mut loader1 = MemoryLoader::new();
+        loader1.insert("demo:///t0", "<html><title>T0</title></html>");
+        let mut loader2 = MemoryLoader::new();
+        loader2.insert("demo:///t1", "<html><title>T1</title></html>");
+        let b0 = Browser::open(Box::new(loader1), &Url::parse("demo:///t0").unwrap()).unwrap();
+        let b1 = Browser::open(Box::new(loader2), &Url::parse("demo:///t1").unwrap()).unwrap();
+
+        let mut tabs = Tabs::new(b0, 800);
+        tabs.active_mut().toolbar.focus_address("seed");
+        // Move cursor to end of "seed" in Tab 0, then open Tab 1 and seed it too.
+        tabs.active_mut()
+            .handle_keys(vec![KeyEvent::new(EngineKey::End)], false);
+        tabs.open(b1);
+        tabs.active_mut().toolbar.focus_address("seed");
+        tabs.active_mut()
+            .handle_keys(vec![KeyEvent::new(EngineKey::End)], false);
+        assert_eq!(tabs.active_index(), 1);
+
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q = CharacterQueue::default();
+        // Rapid typing on Tab 1: 't', 'w', '1', immediately followed in the same
+        // message pump by Ctrl+1 switching back to Tab 0.
+        q.set_key_state_with_code(MinifbKey::T, true, 0x014);
+        q.add_char_with_key('t' as u32, Some(MinifbKey::T), Some(0x014));
+        q.set_key_state_with_code(MinifbKey::T, false, 0x014);
+        q.set_key_state_with_code(MinifbKey::W, true, 0x011);
+        q.add_char_with_key('w' as u32, Some(MinifbKey::W), Some(0x011));
+        q.set_key_state_with_code(MinifbKey::W, false, 0x011);
+        q.set_key_state_with_code(MinifbKey::Key1, true, 0x002);
+        q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(0x002));
+        q.set_key_state_with_code(MinifbKey::Key1, false, 0x002);
+
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::Key1, true, 0x002);
+        q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(0x002));
+        q.set_key_state_with_code(MinifbKey::Key1, false, 0x002);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+
+        // Pre-shortcut characters ('t', 'w', '1') flush to Tab 1 BEFORE switching.
+        let pre = q.drain_pre_shortcut();
+        assert_eq!(ordinary_text(&pre), "tw1");
+        tabs.active_mut()
+            .route_frame_keys(pre, false, false, false, &mut cb);
+        tabs.select(0);
+        let post = q.drain(vec![], Modifiers::NONE);
+        assert!(post.is_empty());
+
+        assert_eq!(tabs.get(1).unwrap().toolbar.editor().unwrap().value(), "seedtw1");
+        assert_eq!(tabs.get(0).unwrap().toolbar.editor().unwrap().value(), "seed");
     }
 }

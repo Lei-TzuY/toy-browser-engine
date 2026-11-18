@@ -218,6 +218,7 @@ impl Toolbar {
     }
 
     /// Toolbar-local caret rectangle `(x, y, height)` while editing the address.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn caret_rect(&self) -> Option<(f32, f32, f32)> {
         let editor = self.editor.as_ref()?;
         let field = self.rect(Control::Address);

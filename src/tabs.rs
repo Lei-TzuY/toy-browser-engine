@@ -192,6 +192,7 @@ impl Tab {
 
     /// Window-client caret rectangle `(x, y, line_height)` for positioning
     /// the OS IME composition and candidate windows.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn ime_cursor_area(
         &self,
         tab_strip_height: usize,
