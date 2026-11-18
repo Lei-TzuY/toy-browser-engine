@@ -33,8 +33,6 @@ import threading
 import time
 import urllib.parse
 
-from PIL import Image
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -298,6 +296,9 @@ def get_client_size(hwnd: int) -> tuple[int, int]:
 
 
 def capture_client_png(hwnd: int, path: Path) -> bool:
+    # GUI imaging is optional for network-only receipt safety tests on CI.
+    from PIL import Image
+
     user = c.WinDLL("user32", use_last_error=True)
     gdi = c.WinDLL("gdi32", use_last_error=True)
     user.GetClientRect.argtypes = [w.HWND, c.POINTER(w.RECT)]

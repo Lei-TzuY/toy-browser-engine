@@ -34,6 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: M2-R3 loopback receipt privacy tests (no GUI)
+        run: python -m unittest discover -s tests/gui -p test_windows_m2_r3_receipts.py -v
       - run: cargo build --locked
       - run: cargo test --locked
       - run: cargo build --release --locked

@@ -52,10 +52,12 @@ class WorkbenchReceiptSafetyTests(unittest.TestCase):
             urllib.request.urlopen(
                 urllib.request.Request(self.url + "other", data=b"a=b", method="POST"), timeout=5)
         self.assertEqual(unknown.exception.code, 404)
+        unknown.exception.close()
         with self.assertRaises(urllib.error.HTTPError) as large:
             urllib.request.urlopen(
                 urllib.request.Request(self.url + "submit", data=b"a" * 16385, method="POST"), timeout=5)
         self.assertEqual(large.exception.code, 413)
+        large.exception.close()
         self.assertEqual(self.server.receipts, [])
 
 
