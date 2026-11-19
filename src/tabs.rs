@@ -81,34 +81,6 @@ impl Tab {
         self.handle_keys_with_clipboard(events, chrome_only, &mut dummy)
     }
 
-    /// Route a frame's keystrokes between the toolbar/page and browser Alt
-    /// navigation, without blocking AltGr layout characters from web inputs.
-    pub(crate) fn route_frame_keys(
-        &mut self,
-        events: Vec<KeyEvent>,
-        left_alt: bool,
-        right_alt: bool,
-        ctrl: bool,
-        clipboard: &mut dyn crate::clipboard::Clipboard,
-    ) -> (Option<Command>, bool) {
-        let has_altgr_text = right_alt
-            && !left_alt
-            && events
-                .iter()
-                .any(|e| !e.modifiers.alt && !e.modifiers.ctrl && e.typed_character().is_some());
-        let allow_alt_nav = left_alt || (right_alt && !ctrl && !has_altgr_text);
-        let filtered_events = if right_alt && !left_alt {
-            events
-                .into_iter()
-                .filter(|e| !e.modifiers.alt && !e.modifiers.ctrl)
-                .collect()
-        } else {
-            events
-        };
-        let command = self.handle_keys_with_clipboard(filtered_events, left_alt, clipboard);
-        (command, allow_alt_nav)
-    }
-
     /// Like [`Tab::handle_keys`], routing Ctrl+C / Ctrl+X / Ctrl+V through
     /// `clipboard` for either the address field or the focused page control.
     pub(crate) fn handle_keys_with_clipboard(

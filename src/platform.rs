@@ -19,20 +19,57 @@ use minifb::{InputCallback, Key as MinifbKey, KeyRepeat, Window};
 
 use crate::tabs::{ShortcutKey, ShortcutKeyFilter};
 
-/// Callback-time text and ownership. Native backends supply each character's
-/// source explicitly; add_char alone means unassociated/IME text. There is no
-/// adjacency latch, pending character pairing, or frame-duration assumption.
+/// A keyboard-triggered tab shortcut captured at its exact callback instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabShortcut {
+    New,
+    CloseActive,
+    Next,
+    Previous,
+    Number(usize),
+}
+
+/// A browser-chrome shortcut captured at its exact callback instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChromeShortcut {
+    FocusAddress,
+    Back,
+    Forward,
+    Reload,
+    ScrollDown,
+    ScrollUp,
+}
+
+/// One chronological keyboard or shortcut action from a frame's event pump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FrameAction {
+    Tab(TabShortcut),
+    Chrome(ChromeShortcut),
+    Key(KeyEvent),
+}
+
+/// Callback-time text, shortcuts and ownership. Native backends supply each
+/// character's source explicitly; `add_char` alone means unassociated/IME text.
+/// Shortcuts are resolved at the exact callback instant rather than by pairing
+/// end-of-frame modifier state with E3-latched `is_key_pressed`, so a key
+/// pressed and released *before* `Ctrl`/`Alt` goes down can never become a
+/// shortcut in the same frame.
 #[derive(Default)]
 struct CharacterQueue {
-    characters: Vec<KeyEvent>,
-    /// Characters queued in the same frame *before* a tab-switching shortcut
-    /// (`Ctrl+T/W/Tab/1..9`) arrived; they belong to the tab that was active
-    /// before the switch.
-    pre_shortcut_characters: Vec<KeyEvent>,
+    actions: Vec<FrameAction>,
+    /// Physical keys whose initial press already ran through the callback in
+    /// this frame, so `drain_actions` does not double-emit or re-evaluate them
+    /// under a later modifier state.
     callback_pressed_keys: Vec<MinifbKey>,
     down_codes: std::collections::BTreeSet<u32>,
     shortcut_keys: ShortcutKeyFilter,
     modifier_keys: [bool; 6],
+    /// Physical key codes that produced an AltGr character on a text-first
+    /// backend while `RightAlt` was held, suppressing tentative `Reload`.
+    altgr_text_codes: std::collections::BTreeSet<u32>,
+    /// Tentative `ChromeShortcut::Reload` emitted on key-first `RightAlt+R`,
+    /// cancelled if an AltGr character arrives for the same physical code.
+    pending_right_alt_r: Option<(u32, usize)>,
     ime_preedit: Option<(String, usize)>,
     ime_activity: bool,
 }
@@ -58,35 +95,101 @@ impl CharacterQueue {
                     modifiers.ctrl = false;
                     modifiers.alt = false;
                 }
-                self.characters.push(KeyEvent::with_modifiers(
+                self.actions.push(FrameAction::Key(KeyEvent::with_modifiers(
                     EngineKey::Character(character),
                     modifiers,
-                ));
+                )));
             }
         }
     }
 
-    fn drain_pre_shortcut(&mut self) -> Vec<KeyEvent> {
-        std::mem::take(&mut self.pre_shortcut_characters)
-    }
-
-    fn drain(&mut self, pressed: Vec<MinifbKey>, modifiers: Modifiers) -> Vec<KeyEvent> {
-        let mut events = std::mem::take(&mut self.pre_shortcut_characters);
-        events.append(&mut self.characters);
+    /// Drain all chronological actions captured during callbacks, followed by
+    /// any genuine held-key auto-repeats reported by minifb for keys that are
+    /// still physically down.
+    fn drain_actions(
+        &mut self,
+        pressed: Vec<MinifbKey>,
+        still_down: impl Fn(MinifbKey) -> bool,
+        left_alt: bool,
+        right_alt: bool,
+        ctrl: bool,
+        shift: bool,
+    ) -> Vec<FrameAction> {
+        let mut actions = std::mem::take(&mut self.actions);
         let mut callback_pressed = std::mem::take(&mut self.callback_pressed_keys);
+        self.pending_right_alt_r = None;
+        let any_alt = left_alt || right_alt;
+        let modifiers = Modifiers {
+            shift,
+            ctrl,
+            alt: any_alt,
+        };
         for key in pressed {
-            if shortcut_key(key).is_some_and(|key| self.shortcut_keys.owns(key)) {
-                continue;
-            }
             if let Some(pos) = callback_pressed.iter().position(|&k| k == key) {
                 callback_pressed.remove(pos);
                 continue;
             }
+            // Only keys still physically held can produce an auto-repeat.
+            if !still_down(key) {
+                continue;
+            }
+            if shortcut_key(key).is_some_and(|k| self.shortcut_keys.owns(k)) {
+                if key == MinifbKey::Tab && ctrl && !any_alt {
+                    actions.push(FrameAction::Tab(if shift {
+                        TabShortcut::Previous
+                    } else {
+                        TabShortcut::Next
+                    }));
+                }
+                continue;
+            }
+            if !ctrl && any_alt {
+                match key {
+                    MinifbKey::Down => {
+                        actions.push(FrameAction::Chrome(ChromeShortcut::ScrollDown));
+                        continue;
+                    }
+                    MinifbKey::Up => {
+                        actions.push(FrameAction::Chrome(ChromeShortcut::ScrollUp));
+                        continue;
+                    }
+                    MinifbKey::Left | MinifbKey::Right | MinifbKey::R => continue,
+                    _ => {}
+                }
+            }
+            if ctrl && !any_alt && matches!(key, MinifbKey::A | MinifbKey::C | MinifbKey::X | MinifbKey::L) {
+                continue;
+            }
+            if key == MinifbKey::Escape {
+                continue;
+            }
             if let Some(engine_key) = translate_with_modifiers(key, modifiers) {
-                events.push(KeyEvent::with_modifiers(engine_key, modifiers));
+                actions.push(FrameAction::Key(KeyEvent::with_modifiers(
+                    engine_key, modifiers,
+                )));
             }
         }
-        events
+        actions
+    }
+
+    #[cfg(test)]
+    fn drain(&mut self, pressed: Vec<MinifbKey>, modifiers: Modifiers) -> Vec<KeyEvent> {
+        let left_alt = modifiers.alt && !self.modifier_keys[5];
+        let right_alt = modifiers.alt && self.modifier_keys[5];
+        self.drain_actions(
+            pressed,
+            |_| true,
+            left_alt,
+            right_alt,
+            modifiers.ctrl,
+            modifiers.shift,
+        )
+        .into_iter()
+        .filter_map(|action| match action {
+            FrameAction::Key(event) => Some(event),
+            _ => None,
+        })
+        .collect()
     }
 }
 
@@ -108,10 +211,19 @@ impl InputCallback for CharacterQueue {
                 modifiers.alt,
             );
             if self.shortcut_keys.owns_physical(code) {
-                if !self.characters.is_empty() {
-                    self.pre_shortcut_characters.append(&mut self.characters);
-                }
                 return;
+            }
+            if self.modifier_keys[5] && !self.modifier_keys[4] {
+                if let Some((pending_code, idx)) = self.pending_right_alt_r {
+                    if pending_code == code
+                        && self.actions.get(idx)
+                            == Some(&FrameAction::Chrome(ChromeShortcut::Reload))
+                    {
+                        self.actions.remove(idx);
+                        self.pending_right_alt_r = None;
+                    }
+                }
+                self.altgr_text_codes.insert(code);
             }
         }
         let unassociated_ime = source.is_none() && code.is_none();
@@ -155,32 +267,71 @@ impl InputCallback for CharacterQueue {
         let was_down = if down {
             !self.down_codes.insert(code)
         } else {
+            self.altgr_text_codes.remove(&code);
+            if self.pending_right_alt_r.is_some_and(|(c, _)| c == code) {
+                self.pending_right_alt_r = None;
+            }
             self.down_codes.remove(&code)
         };
-        if down
-            && (!was_down || key == MinifbKey::Tab)
-            && modifiers.ctrl
-            && !modifiers.alt
-            && shortcut_key(key).is_some()
-            && !self.characters.is_empty()
-        {
-            self.pre_shortcut_characters.append(&mut self.characters);
+        if !down || was_down {
+            return;
         }
-        if down
-            && !was_down
-            && !self.shortcut_keys.owns_physical(code)
+        // Record every initial key-down seen this frame so `drain_actions`
+        // never re-processes a key pressed (and possibly released) before a
+        // later modifier went down.
+        self.callback_pressed_keys.push(key);
+
+        let left_alt = self.modifier_keys[4];
+        let right_alt = self.modifier_keys[5];
+        let any_alt = left_alt || right_alt;
+
+        if modifiers.ctrl && !any_alt {
+            if let Some(tab_shortcut) = tab_shortcut_for(key, modifiers.shift) {
+                self.actions.push(FrameAction::Tab(tab_shortcut));
+                return;
+            }
+            if key == MinifbKey::L {
+                self.actions
+                    .push(FrameAction::Chrome(ChromeShortcut::FocusAddress));
+                return;
+            }
+        }
+
+        if any_alt && !modifiers.ctrl {
+            let chrome = match key {
+                MinifbKey::Left => Some(ChromeShortcut::Back),
+                MinifbKey::Right => Some(ChromeShortcut::Forward),
+                MinifbKey::Down => Some(ChromeShortcut::ScrollDown),
+                MinifbKey::Up => Some(ChromeShortcut::ScrollUp),
+                MinifbKey::R if left_alt => Some(ChromeShortcut::Reload),
+                MinifbKey::R if right_alt && !self.altgr_text_codes.contains(&code) => {
+                    let idx = self.actions.len();
+                    self.actions
+                        .push(FrameAction::Chrome(ChromeShortcut::Reload));
+                    self.pending_right_alt_r = Some((code, idx));
+                    return;
+                }
+                _ => None,
+            };
+            if let Some(chrome) = chrome {
+                self.actions.push(FrameAction::Chrome(chrome));
+                return;
+            }
+        }
+
+        if !self.shortcut_keys.owns_physical(code)
             && !shortcut_key(key).is_some_and(|k| self.shortcut_keys.owns(k))
         {
             if let Some(engine_key) = translate_with_modifiers(key, modifiers) {
-                self.characters
-                    .push(KeyEvent::with_modifiers(engine_key, modifiers));
-                self.callback_pressed_keys.push(key);
+                self.actions.push(FrameAction::Key(KeyEvent::with_modifiers(
+                    engine_key, modifiers,
+                )));
             }
         }
     }
 }
 
-/// Collects window input and hands the engine a stream of key events.
+/// Collects window input and hands the engine a chronological stream of frame actions.
 pub struct InputAdapter {
     characters: Rc<RefCell<CharacterQueue>>,
 }
@@ -193,30 +344,23 @@ impl InputAdapter {
         InputAdapter { characters }
     }
 
-    /// Modifier keys currently held.
-    pub fn modifiers(&self, window: &Window) -> Modifiers {
-        Modifiers {
-            shift: window.is_key_down(MinifbKey::LeftShift)
-                || window.is_key_down(MinifbKey::RightShift),
-            ctrl: window.is_key_down(MinifbKey::LeftCtrl)
-                || window.is_key_down(MinifbKey::RightCtrl),
-            alt: window.is_key_down(MinifbKey::LeftAlt) || window.is_key_down(MinifbKey::RightAlt),
-        }
-    }
-
-    /// Drain characters queued before a same-frame tab shortcut (`Ctrl+T/W/Tab/1..9`)
-    /// so they stay with the outgoing tab instead of landing on the newly focused tab.
-    pub fn drain_pre_shortcut(&self) -> Vec<KeyEvent> {
-        self.characters.borrow_mut().drain_pre_shortcut()
-    }
-
-    /// Every key event produced since the last call, in order: typed
-    /// characters and key-down transitions in callback order, then any
-    /// remaining keys pressed/repeated this frame.
-    pub fn drain(&self, window: &Window) -> Vec<KeyEvent> {
-        self.characters.borrow_mut().drain(
+    /// Every tab shortcut, chrome shortcut and key event produced since the
+    /// last frame in exact chronological callback order, plus genuine held-key
+    /// auto-repeats.
+    pub(crate) fn drain_actions(&self, window: &Window) -> Vec<FrameAction> {
+        let left_alt = window.is_key_down(MinifbKey::LeftAlt);
+        let right_alt = window.is_key_down(MinifbKey::RightAlt);
+        let ctrl =
+            window.is_key_down(MinifbKey::LeftCtrl) || window.is_key_down(MinifbKey::RightCtrl);
+        let shift =
+            window.is_key_down(MinifbKey::LeftShift) || window.is_key_down(MinifbKey::RightShift);
+        self.characters.borrow_mut().drain_actions(
             window.get_keys_pressed(KeyRepeat::Yes),
-            self.modifiers(window),
+            |key| window.is_key_down(key),
+            left_alt,
+            right_alt,
+            ctrl,
+            shift,
         )
     }
 
@@ -272,6 +416,30 @@ fn shortcut_key(key: MinifbKey) -> Option<ShortcutKey> {
         MinifbKey::Key7 => ShortcutKey::Key7,
         MinifbKey::Key8 => ShortcutKey::Key8,
         MinifbKey::Key9 => ShortcutKey::Key9,
+        _ => return None,
+    })
+}
+
+fn tab_shortcut_for(key: MinifbKey, shift: bool) -> Option<TabShortcut> {
+    Some(match key {
+        MinifbKey::T => TabShortcut::New,
+        MinifbKey::W => TabShortcut::CloseActive,
+        MinifbKey::Tab => {
+            if shift {
+                TabShortcut::Previous
+            } else {
+                TabShortcut::Next
+            }
+        }
+        MinifbKey::Key1 => TabShortcut::Number(1),
+        MinifbKey::Key2 => TabShortcut::Number(2),
+        MinifbKey::Key3 => TabShortcut::Number(3),
+        MinifbKey::Key4 => TabShortcut::Number(4),
+        MinifbKey::Key5 => TabShortcut::Number(5),
+        MinifbKey::Key6 => TabShortcut::Number(6),
+        MinifbKey::Key7 => TabShortcut::Number(7),
+        MinifbKey::Key8 => TabShortcut::Number(8),
+        MinifbKey::Key9 => TabShortcut::Number(9),
         _ => return None,
     })
 }
@@ -991,6 +1159,13 @@ mod reviewer_c_regressions {
         loader.insert("demo:///altgr", r#"<html><body><input id="q"></body></html>"#);
         let b = Browser::open(Box::new(loader), &Url::parse("demo:///altgr").unwrap()).unwrap();
         let mut tabs = Tabs::new(b, 800);
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
         let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
         tabs.active_mut().browser.click_node(&q_path);
 
@@ -999,30 +1174,103 @@ mod reviewer_c_regressions {
         // Windows AltGr (LeftCtrl + RightAlt) typing '@' and an AltGr+R layout char 'ŕ'.
         queue.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
         queue.set_key_state_with_code(MinifbKey::RightAlt, true, 0x138);
+        queue.set_key_state_with_code(MinifbKey::Key2, true, 0x003);
         queue.add_char_with_key('@' as u32, Some(MinifbKey::Key2), Some(0x003));
+        queue.set_key_state_with_code(MinifbKey::Key2, false, 0x003);
+        queue.set_key_state_with_code(MinifbKey::R, true, 0x013);
         queue.add_char_with_key('ŕ' as u32, Some(MinifbKey::R), Some(0x013));
-        let events = queue.drain(vec![], queue.modifiers());
-        let (cmd, allow_nav) = tabs
-            .active_mut()
-            .route_frame_keys(events, false, true, true, &mut cb);
-        assert_eq!(cmd, None);
-        assert!(!allow_nav, "AltGr must not trigger browser Alt navigation");
+        queue.set_key_state_with_code(MinifbKey::R, false, 0x013);
+        let actions = queue.drain_actions(
+            vec![MinifbKey::LeftCtrl, MinifbKey::RightAlt, MinifbKey::Key2, MinifbKey::R],
+            |k| matches!(k, MinifbKey::LeftCtrl | MinifbKey::RightAlt),
+            false,
+            true,
+            true,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None, "AltGr must not trigger browser Alt navigation");
         let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
             .unwrap()
             .as_element()
             .unwrap();
         assert_eq!(q_el.control_value(), "@ŕ");
 
-        // LeftAlt + Left arrow MUST still block page events and allow Alt nav.
-        queue.set_key_state_with_code(MinifbKey::RightAlt, false, 0x138);
+        // Pure RightAlt+R producing an AltGr character (key-first AND text-first)
+        // must cancel tentative Reload and deliver the character.
         queue.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        queue.set_key_state_with_code(MinifbKey::R, true, 0x013);
+        queue.add_char_with_key('ř' as u32, Some(MinifbKey::R), Some(0x013));
+        queue.set_key_state_with_code(MinifbKey::R, false, 0x013);
+        queue.add_char_with_key('®' as u32, Some(MinifbKey::R), Some(0x013));
+        queue.set_key_state_with_code(MinifbKey::R, true, 0x013);
+        queue.set_key_state_with_code(MinifbKey::R, false, 0x013);
+        let actions = queue.drain_actions(
+            vec![MinifbKey::R],
+            |k| k == MinifbKey::RightAlt,
+            false,
+            true,
+            false,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None, "RightAlt+R AltGr text must cancel Reload");
+        let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "@ŕř®");
+
+        // LeftAlt + Left arrow MUST still block page events and emit Back.
+        queue.set_key_state_with_code(MinifbKey::RightAlt, false, 0x138);
         queue.set_key_state_with_code(MinifbKey::LeftAlt, true, 0x038);
         queue.set_key_state_with_code(MinifbKey::Left, true, 0x14B);
-        let events = queue.drain(vec![MinifbKey::Left], queue.modifiers());
-        let (_, allow_nav) = tabs
-            .active_mut()
-            .route_frame_keys(events, true, false, false, &mut cb);
-        assert!(allow_nav);
+        let actions = queue.drain_actions(
+            vec![MinifbKey::LeftAlt, MinifbKey::Left],
+            |k| matches!(k, MinifbKey::LeftAlt | MinifbKey::Left),
+            true,
+            false,
+            false,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, Some(crate::toolbar::Command::Back));
     }
 
     #[test]
@@ -1137,8 +1385,7 @@ mod reviewer_c_regressions {
             .contains("keydown:|input:hi|keyup:hi"));
     }
 
-    #[test]
-    fn char_typed_before_ctrl_number_in_same_frame_stays_on_previous_tab() {
+    fn two_seeded_editing_tabs() -> (Tabs, crate::tab_strip::TabStrip) {
         let mut loader1 = MemoryLoader::new();
         loader1.insert("demo:///t0", "<html><title>T0</title></html>");
         let mut loader2 = MemoryLoader::new();
@@ -1148,7 +1395,6 @@ mod reviewer_c_regressions {
 
         let mut tabs = Tabs::new(b0, 800);
         tabs.active_mut().toolbar.focus_address("seed");
-        // Move cursor to end of "seed" in Tab 0, then open Tab 1 and seed it too.
         tabs.active_mut()
             .handle_keys(vec![KeyEvent::new(EngineKey::End)], false);
         tabs.open(b1);
@@ -1156,37 +1402,516 @@ mod reviewer_c_regressions {
         tabs.active_mut()
             .handle_keys(vec![KeyEvent::new(EngineKey::End)], false);
         assert_eq!(tabs.active_index(), 1);
+        (tabs, crate::tab_strip::TabStrip::new(800))
+    }
 
+    #[test]
+    fn char_typed_before_ctrl_number_in_same_frame_stays_on_previous_tab() {
+        let (mut tabs, mut strip) = two_seeded_editing_tabs();
         let mut cb = crate::clipboard::MemoryClipboard::new();
         let mut q = CharacterQueue::default();
-        // Rapid typing on Tab 1: 't', 'w', '1', immediately followed in the same
-        // message pump by Ctrl+1 switching back to Tab 0.
-        q.set_key_state_with_code(MinifbKey::T, true, 0x014);
-        q.add_char_with_key('t' as u32, Some(MinifbKey::T), Some(0x014));
-        q.set_key_state_with_code(MinifbKey::T, false, 0x014);
-        q.set_key_state_with_code(MinifbKey::W, true, 0x011);
-        q.add_char_with_key('w' as u32, Some(MinifbKey::W), Some(0x011));
-        q.set_key_state_with_code(MinifbKey::W, false, 0x011);
-        q.set_key_state_with_code(MinifbKey::Key1, true, 0x002);
-        q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(0x002));
-        q.set_key_state_with_code(MinifbKey::Key1, false, 0x002);
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
 
+        // Rapid typing on Tab 1: 't', 'w', '1', immediately followed in the same
+        // message pump by a complete sub-frame Ctrl+1 switching back to Tab 0
+        // (ctrl is already false by end of frame) and 'x' typed onto Tab 0.
+        for &(key, ch, code) in &[
+            (MinifbKey::T, 't', 0x014),
+            (MinifbKey::W, 'w', 0x011),
+            (MinifbKey::Key1, '1', 0x002),
+        ] {
+            q.set_key_state_with_code(key, true, code);
+            q.add_char_with_key(ch as u32, Some(key), Some(code));
+            q.set_key_state_with_code(key, false, code);
+        }
         q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
         q.set_key_state_with_code(MinifbKey::Key1, true, 0x002);
         q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(0x002));
         q.set_key_state_with_code(MinifbKey::Key1, false, 0x002);
         q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        q.set_key_state_with_code(MinifbKey::X, true, 0x02D);
+        q.add_char_with_key('x' as u32, Some(MinifbKey::X), Some(0x02D));
+        q.set_key_state_with_code(MinifbKey::X, false, 0x02D);
 
-        // Pre-shortcut characters ('t', 'w', '1') flush to Tab 1 BEFORE switching.
-        let pre = q.drain_pre_shortcut();
-        assert_eq!(ordinary_text(&pre), "tw1");
-        tabs.active_mut()
-            .route_frame_keys(pre, false, false, false, &mut cb);
-        tabs.select(0);
-        let post = q.drain(vec![], Modifiers::NONE);
-        assert!(post.is_empty());
+        let actions = q.drain_actions(
+            vec![
+                MinifbKey::T,
+                MinifbKey::W,
+                MinifbKey::Key1,
+                MinifbKey::LeftCtrl,
+                MinifbKey::X,
+            ],
+            |_| false,
+            false,
+            false,
+            false,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None);
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.get(1).unwrap().toolbar.editor().unwrap().value(), "seedtw1");
+        assert_eq!(tabs.get(0).unwrap().toolbar.editor().unwrap().value(), "seedx");
+    }
 
+    #[test]
+    fn m2_r4_split_frame_plain_1_then_ctrl_does_not_fabricate_ctrl_1_or_corrupt_tabs() {
+        // Exact root cause of X11 CI failure ("rapid switching with focused address editing"):
+        // Frame N receives plain '1' down+up (E3 keeps Key1 latched in keys_pressed),
+        // then LeftCtrl down arrives before the frame ends, while Key1 of Ctrl+1 lands
+        // in Frame N+1. Previously polling is_key_down(Ctrl) && is_key_pressed(Key1)
+        // fabricated a premature Ctrl+1 on Frame N and dumped '1' into Tab 0 ("tw11"/"tw").
+        let (mut tabs, mut strip) = two_seeded_editing_tabs();
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
+
+        // Frame N on Tab 1: 't', 'w', '1' (down+up), then LeftCtrl down.
+        for &(key, ch, code) in &[
+            (MinifbKey::T, 't', 28),
+            (MinifbKey::W, 'w', 25),
+            (MinifbKey::Key1, '1', 10),
+        ] {
+            q.set_key_state_with_code(key, true, code);
+            q.add_char_with_key(ch as u32, Some(key), Some(code));
+            q.set_key_state_with_code(key, false, code);
+        }
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 37);
+
+        let frame_n = q.drain_actions(
+            vec![MinifbKey::T, MinifbKey::W, MinifbKey::Key1, MinifbKey::LeftCtrl],
+            |k| k == MinifbKey::LeftCtrl,
+            false,
+            false,
+            true,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            frame_n,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None);
+        assert_eq!(
+            tabs.active_index(),
+            1,
+            "plain '1' released before LeftCtrl must stay on Tab 1"
+        );
         assert_eq!(tabs.get(1).unwrap().toolbar.editor().unwrap().value(), "seedtw1");
         assert_eq!(tabs.get(0).unwrap().toolbar.editor().unwrap().value(), "seed");
+
+        // Frame N+1: Key1 down while LeftCtrl is still held -> real Ctrl+1 switches to Tab 0,
+        // then releases and types "tw1" into Tab 0.
+        q.set_key_state_with_code(MinifbKey::Key1, true, 10);
+        q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(10));
+        q.set_key_state_with_code(MinifbKey::Key1, false, 10);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 37);
+        for &(key, ch, code) in &[
+            (MinifbKey::T, 't', 28),
+            (MinifbKey::W, 'w', 25),
+            (MinifbKey::Key1, '1', 10),
+        ] {
+            q.set_key_state_with_code(key, true, code);
+            q.add_char_with_key(ch as u32, Some(key), Some(code));
+            q.set_key_state_with_code(key, false, code);
+        }
+        let frame_n1 = q.drain_actions(
+            vec![MinifbKey::Key1, MinifbKey::T, MinifbKey::W],
+            |_| false,
+            false,
+            false,
+            false,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            frame_n1,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None);
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.get(0).unwrap().toolbar.editor().unwrap().value(), "seedtw1");
+        assert_eq!(tabs.get(1).unwrap().toolbar.editor().unwrap().value(), "seedtw1");
+    }
+
+    #[test]
+    fn m2_r4_twenty_rapid_tab_switches_under_all_frame_splits_stay_exact() {
+        let (mut tabs, mut strip) = two_seeded_editing_tabs();
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
+
+        let mut expected = [String::from("seed"), String::from("seed")];
+
+        let mut pump_frame = |q: &mut CharacterQueue,
+                              tabs: &mut Tabs,
+                              strip: &mut crate::tab_strip::TabStrip,
+                              pressed: Vec<MinifbKey>,
+                              ctrl_held: bool| {
+            let actions = q.drain_actions(
+                pressed,
+                |k| ctrl_held && k == MinifbKey::LeftCtrl,
+                false,
+                false,
+                ctrl_held,
+                false,
+            );
+            let (keep_open, cmd) = crate::dispatch_frame_actions(
+                actions,
+                tabs,
+                strip,
+                &no_tab,
+                &mut notice,
+                &mut cb,
+                &mut ime_composing,
+                false,
+                false,
+                &mut press_on_page,
+            );
+            assert!(keep_open);
+            assert_eq!(cmd, None);
+        };
+
+        for iter in 0..20usize {
+            let target = iter % 2;
+            let (num_key, num_ch, num_code) = if target == 0 {
+                (MinifbKey::Key1, '1', 10)
+            } else {
+                (MinifbKey::Key2, '2', 11)
+            };
+
+            match iter % 3 {
+                0 => {
+                    // Split A: Ctrl down in prior frame's tail, digit in next frame.
+                    q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 37);
+                    pump_frame(&mut q, &mut tabs, &mut strip, vec![MinifbKey::Key1, MinifbKey::LeftCtrl], true);
+
+                    q.set_key_state_with_code(num_key, true, num_code);
+                    q.add_char_with_key(num_ch as u32, Some(num_key), Some(num_code));
+                    q.set_key_state_with_code(num_key, false, num_code);
+                    q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 37);
+                    for &(k, c, code) in &[
+                        (MinifbKey::T, 't', 28),
+                        (MinifbKey::W, 'w', 25),
+                        (MinifbKey::Key1, '1', 10),
+                    ] {
+                        q.set_key_state_with_code(k, true, code);
+                        q.add_char_with_key(c as u32, Some(k), Some(code));
+                        q.set_key_state_with_code(k, false, code);
+                    }
+                    pump_frame(
+                        &mut q,
+                        &mut tabs,
+                        &mut strip,
+                        vec![num_key, MinifbKey::T, MinifbKey::W, MinifbKey::Key1],
+                        false,
+                    );
+                }
+                1 => {
+                    // Split B: complete sub-frame Ctrl+N tap + "tw" in Frame 1, "'1' + next Ctrl down" in Frame 2.
+                    q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 37);
+                    q.set_key_state_with_code(num_key, true, num_code);
+                    q.add_char_with_key(num_ch as u32, Some(num_key), Some(num_code));
+                    q.set_key_state_with_code(num_key, false, num_code);
+                    q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 37);
+                    for &(k, c, code) in &[(MinifbKey::T, 't', 28), (MinifbKey::W, 'w', 25)] {
+                        q.set_key_state_with_code(k, true, code);
+                        q.add_char_with_key(c as u32, Some(k), Some(code));
+                        q.set_key_state_with_code(k, false, code);
+                    }
+                    pump_frame(
+                        &mut q,
+                        &mut tabs,
+                        &mut strip,
+                        vec![MinifbKey::LeftCtrl, num_key, MinifbKey::T, MinifbKey::W],
+                        false,
+                    );
+                    q.set_key_state_with_code(MinifbKey::Key1, true, 10);
+                    q.add_char_with_key('1' as u32, Some(MinifbKey::Key1), Some(10));
+                    q.set_key_state_with_code(MinifbKey::Key1, false, 10);
+                    pump_frame(&mut q, &mut tabs, &mut strip, vec![MinifbKey::Key1], false);
+                }
+                _ => {
+                    // Split C: Ctrl+N and full "tw1" all inside one single frame.
+                    q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 37);
+                    q.set_key_state_with_code(num_key, true, num_code);
+                    q.add_char_with_key(num_ch as u32, Some(num_key), Some(num_code));
+                    q.set_key_state_with_code(num_key, false, num_code);
+                    q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 37);
+                    for &(k, c, code) in &[
+                        (MinifbKey::T, 't', 28),
+                        (MinifbKey::W, 'w', 25),
+                        (MinifbKey::Key1, '1', 10),
+                    ] {
+                        q.set_key_state_with_code(k, true, code);
+                        q.add_char_with_key(c as u32, Some(k), Some(code));
+                        q.set_key_state_with_code(k, false, code);
+                    }
+                    pump_frame(
+                        &mut q,
+                        &mut tabs,
+                        &mut strip,
+                        vec![MinifbKey::LeftCtrl, num_key, MinifbKey::T, MinifbKey::W, MinifbKey::Key1],
+                        false,
+                    );
+                }
+            }
+            expected[target].push_str("tw1");
+        }
+
+        assert_eq!(tabs.get(0).unwrap().toolbar.editor().unwrap().value(), expected[0]);
+        assert_eq!(tabs.get(1).unwrap().toolbar.editor().unwrap().value(), expected[1]);
+    }
+
+    #[test]
+    fn m2_r4_plain_keys_before_ctrl_or_alt_never_trigger_spurious_shortcuts() {
+        let mut loader = MemoryLoader::new();
+        loader.insert("demo:///home", "<html><body><input id=\"q\"></body></html>");
+        let b = Browser::open(Box::new(loader), &Url::parse("demo:///home").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+        let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("plain 't' released before Ctrl must never open a new tab")
+        };
+
+        // Plain 'w', 't', 'l' pressed and released BEFORE LeftCtrl goes down in the same frame:
+        // must type "wtl" and must NOT close the window (Ctrl+W), open a tab (Ctrl+T), or focus address (Ctrl+L).
+        for &(key, ch, code) in &[
+            (MinifbKey::W, 'w', 0x011),
+            (MinifbKey::T, 't', 0x014),
+            (MinifbKey::L, 'l', 0x026),
+        ] {
+            q.set_key_state_with_code(key, true, code);
+            q.add_char_with_key(ch as u32, Some(key), Some(code));
+            q.set_key_state_with_code(key, false, code);
+        }
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+
+        let actions = q.drain_actions(
+            vec![MinifbKey::W, MinifbKey::T, MinifbKey::L, MinifbKey::LeftCtrl],
+            |k| k == MinifbKey::LeftCtrl,
+            false,
+            false,
+            true,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open, "plain 'w' before Ctrl must never close the window");
+        assert_eq!(cmd, None);
+        assert_eq!(tabs.len(), 1);
+        assert!(!tabs.active().toolbar.is_editing(), "plain 'l' before Ctrl must not focus address");
+        let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "wtl");
+
+        // Release Ctrl, then plain 'r' down+up before LeftAlt goes down: must type 'r', NOT Reload.
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        q.set_key_state_with_code(MinifbKey::R, true, 0x013);
+        q.add_char_with_key('r' as u32, Some(MinifbKey::R), Some(0x013));
+        q.set_key_state_with_code(MinifbKey::R, false, 0x013);
+        q.set_key_state_with_code(MinifbKey::LeftAlt, true, 0x038);
+        let actions = q.drain_actions(
+            vec![MinifbKey::R, MinifbKey::LeftAlt],
+            |k| k == MinifbKey::LeftAlt,
+            true,
+            false,
+            false,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None, "plain 'r' before LeftAlt must never trigger Reload");
+        let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "wtlr");
+    }
+
+    #[test]
+    fn m2_r4_escape_in_address_bar_blocks_trailing_page_leak_and_held_ctrl_tab_repeats_cleanly() {
+        let mut loader1 = MemoryLoader::new();
+        loader1.insert("demo:///a", r#"<html><body><input id="q"></body></html>"#);
+        let mut loader2 = MemoryLoader::new();
+        loader2.insert("demo:///b", r#"<html><body><input id="r"></body></html>"#);
+        let b0 = Browser::open(Box::new(loader1), &Url::parse("demo:///a").unwrap()).unwrap();
+        let b1 = Browser::open(Box::new(loader2), &Url::parse("demo:///b").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b0, 800);
+        let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+        tabs.active_mut().focus_address();
+        tabs.open(b1);
+        tabs.select(0);
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
+
+        // Escape cancels address bar and drops trailing 'x' in the same frame without closing window.
+        q.set_key_state_with_code(MinifbKey::Escape, true, 0x001);
+        q.set_key_state_with_code(MinifbKey::Escape, false, 0x001);
+        q.set_key_state_with_code(MinifbKey::X, true, 0x02D);
+        q.add_char_with_key('x' as u32, Some(MinifbKey::X), Some(0x02D));
+        q.set_key_state_with_code(MinifbKey::X, false, 0x02D);
+        let actions = q.drain_actions(
+            vec![MinifbKey::Escape, MinifbKey::X],
+            |_| false,
+            false,
+            false,
+            false,
+            false,
+        );
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None);
+        assert!(!tabs.active().toolbar.is_editing());
+        let q_el = dom_api::node_at(&tabs.get(0).unwrap().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "");
+
+        // Held Ctrl+Tab repeats switch tabs while Ctrl is held, and stop (no DOM leak)
+        // when Ctrl is released before Tab.
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::Tab, true, 0x00F);
+        let first = q.drain_actions(
+            vec![MinifbKey::LeftCtrl, MinifbKey::Tab],
+            |k| matches!(k, MinifbKey::LeftCtrl | MinifbKey::Tab),
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(first, vec![FrameAction::Tab(TabShortcut::Next)]);
+        let (keep_open, _) = crate::dispatch_frame_actions(
+            first,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(tabs.active_index(), 1);
+
+        // Repeat frame while Ctrl+Tab are both still physically down.
+        let repeat = q.drain_actions(
+            vec![MinifbKey::Tab],
+            |k| matches!(k, MinifbKey::LeftCtrl | MinifbKey::Tab),
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(repeat, vec![FrameAction::Tab(TabShortcut::Next)]);
+
+        // Ctrl released while Tab stays held: owned Tab repeat must emit NOTHING.
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let staggered = q.drain_actions(
+            vec![MinifbKey::Tab],
+            |k| k == MinifbKey::Tab,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(staggered.is_empty(), "staggered Tab after Ctrl release must never leak");
     }
 }
