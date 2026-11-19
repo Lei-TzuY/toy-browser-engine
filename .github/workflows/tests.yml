@@ -126,6 +126,11 @@ jobs:
           $revision = (git rev-parse HEAD).Trim()
           python tests/gui/usability/windows_usability.py --mode native --binary target/release/browser_engine.exe --output ci-windows-native-gui --revision $revision --selected U13,U14,U18
           if ($LASTEXITCODE -ne 0) { throw "WIN_NATIVE_GUI_FAILED_OR_BLOCKED; inspect ci-windows-native-gui receipts" }
+      - name: Real Windows synthetic Unicode clipboard Copy/Cut/Paste (not IME)
+        shell: pwsh
+        run: |
+          python tests/gui/usability/windows_clipboard_ci.py
+          if ($LASTEXITCODE -ne 0) { throw "WIN_CLIPBOARD_FAILED_OR_BLOCKED; inspect ci-windows-native-clipboard receipt" }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -135,3 +140,4 @@ jobs:
           path: |
             ci-windows-native-gui/
             ci-windows-native-gui-desktop-preflight.json
+            ci-windows-native-clipboard/
