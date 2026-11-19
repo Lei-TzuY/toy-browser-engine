@@ -285,13 +285,18 @@ impl Toolbar {
             };
         }
         for event in &events {
-            let action = self
-                .editor
-                .as_mut()
-                .expect("editing")
-                .handle_with_clipboard(event, clipboard);
+            let editor = self.editor.as_mut().expect("editing");
+            let previous_value = editor.value().to_string();
+            let action = editor.handle_with_clipboard(event, clipboard);
             match action {
-                LocationAction::Continue => self.error = None,
+                LocationAction::Continue => {
+                    // No-op events (such as Tab or a delayed key callback)
+                    // must not silently clear a failed-navigation message.
+                    // Retain it until the user actually edits the address.
+                    if self.editor.as_ref().expect("editing").value() != previous_value {
+                        self.error = None;
+                    }
+                }
                 LocationAction::Cancel => {
                     self.cancel();
                     break;
@@ -928,6 +933,12 @@ mod tests {
         assert!(toolbar.is_editing());
         assert_eq!(toolbar.editor().unwrap().value(), "nope://x");
         assert!(toolbar.error().is_some());
+        // Non-editing keys may arrive after a failed Enter. They must not
+        // make an already displayed connection error disappear.
+        toolbar.dispatch_keys(vec![key(Key::Tab)]);
+        assert!(toolbar.error().is_some(), "a no-op Tab must retain the error");
+        toolbar.dispatch_keys(vec![key(Key::ArrowLeft)]);
+        assert!(toolbar.error().is_some(), "moving the caret must retain the error");
         // Editing again clears the error.
         toolbar.dispatch_keys(vec![key(Key::Backspace)]);
         assert!(toolbar.error().is_none());
