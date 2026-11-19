@@ -272,7 +272,19 @@ class Case:
                     self.invoke("navigate", unavailable.url)
                 except Exception as error:
                     self.observations.append({"label": "expected unavailable navigation exception", "actual": repr(error)})
-                time.sleep(0.3)
+                # Bounded independent observations: detect a lost or transient
+                # window title after a network error without weakening U23.
+                title_trace = []
+                for _ in range(30):
+                    title_trace.append({
+                        "elapsed_seconds": round(time.monotonic() - self.started, 3),
+                        "title": self.title(),
+                    })
+                    time.sleep(0.05)
+                self.observations.append({
+                    "label": "unavailable navigation title timeline (diagnostic only)",
+                    "samples": title_trace,
+                })
                 actual = self.observe("unavailable navigation feedback")
                 raw_actions = getattr(self.adapter, "actions", [])
                 error = getattr(self.adapter, "last_navigation_error", None)

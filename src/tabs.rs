@@ -236,6 +236,9 @@ impl Tab {
                         eprintln!("could not open {url}: {error}");
                         self.navigation_notice = Some(message.clone());
                         self.toolbar.navigation_failed(message);
+                        if std::env::var_os("TOY_NAV_DEBUG").is_some() {
+                            eprintln!("TBE_NAV_DBG post_failure_tab_status={:?}", self.status());
+                        }
                     }
                 }
             }
