@@ -496,16 +496,20 @@ fn dispatch_frame_actions(
                     TabShortcut::Number(n) => TabCommand::Number(n),
                 };
                 let active_before = tabs.active_index();
+                let len_before = tabs.len();
                 if !apply_tab_command(tabs, strip, tab_cmd, open_tab, notice) {
                     return (false, None);
                 }
-                if tabs.active_index() != active_before {
+                if tabs.active_index() != active_before || tabs.len() != len_before {
                     *ime_composing = false;
                 }
                 *press_on_page = false;
                 toolbar_exited = false;
             }
             FrameAction::Chrome(shortcut) => {
+                if let Some(cmd) = command.take() {
+                    tabs.active_mut().run_command(cmd);
+                }
                 let tab = tabs.active_mut();
                 match shortcut {
                     ChromeShortcut::FocusAddress => {
@@ -530,12 +534,18 @@ fn dispatch_frame_actions(
                     _ => {}
                 }
             }
+            FrameAction::ImePreedit { text, cursor } => {
+                if let Some(cmd) = command.take() {
+                    tabs.active_mut().run_command(cmd);
+                }
+                *ime_composing = !text.is_empty();
+                tabs.active_mut().set_ime_preedit(&text, cursor);
+            }
             FrameAction::Key(event) => {
                 if toolbar_exited {
                     continue;
                 }
-                let tab = tabs.active_mut();
-                let was_editing = tab.toolbar.is_editing();
+                let was_editing = tabs.active().toolbar.is_editing();
                 if !was_editing
                     && event.key == browser_engine::input::Key::Escape
                     && !event.modifiers.ctrl
@@ -549,6 +559,10 @@ fn dispatch_frame_actions(
                 if !was_editing && event.modifiers.alt {
                     continue;
                 }
+                if let Some(cmd) = command.take() {
+                    tabs.active_mut().run_command(cmd);
+                }
+                let tab = tabs.active_mut();
                 if let Some(cmd) =
                     tab.handle_keys_with_clipboard(vec![event], false, clipboard)
                 {
@@ -646,10 +660,6 @@ fn run_window(
 
         let ime_activity = input.take_ime_activity();
         let had_ime_preedit = ime_composing;
-        if let Some((preedit, cursor)) = input.take_ime_preedit() {
-            ime_composing = !preedit.is_empty();
-            tabs.active_mut().set_ime_preedit(&preedit, cursor);
-        }
 
         if let Some((_, wheel_y)) = window.get_scroll_wheel() {
             if wheel_y != 0.0 {

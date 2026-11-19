@@ -40,12 +40,13 @@ pub(crate) enum ChromeShortcut {
     ScrollUp,
 }
 
-/// One chronological keyboard or shortcut action from a frame's event pump.
+/// One chronological keyboard, shortcut or IME action from a frame's event pump.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FrameAction {
     Tab(TabShortcut),
     Chrome(ChromeShortcut),
     Key(KeyEvent),
+    ImePreedit { text: String, cursor: usize },
 }
 
 /// Callback-time text, shortcuts and ownership. Native backends supply each
@@ -70,7 +71,6 @@ struct CharacterQueue {
     /// Tentative `ChromeShortcut::Reload` emitted on key-first `RightAlt+R`,
     /// cancelled if an AltGr character arrives for the same physical code.
     pending_right_alt_r: Option<(u32, usize)>,
-    ime_preedit: Option<(String, usize)>,
     ime_activity: bool,
 }
 
@@ -201,15 +201,38 @@ impl InputCallback for CharacterQueue {
     }
 
     fn add_char_with_key(&mut self, uni_char: u32, source: Option<MinifbKey>, code: Option<u32>) {
+        let modifiers = self.modifiers();
+        // Text-first backends (such as Wayland's xkb_keysym_to_utf32) report
+        // printable ASCII for Ctrl+L/A/C/V/X before `set_key_state_with_code`.
+        // Those chords are emitted explicitly on key-down, so suppress the raw
+        // text event here to prevent DOM leakage (Ctrl+L) or double-paste (Ctrl+V).
+        // Windows AltGr (LeftCtrl+RightAlt) has `modifiers.alt == true` and is
+        // intentionally unaffected.
+        if modifiers.ctrl
+            && !modifiers.alt
+            && matches!(
+                source,
+                Some(
+                    MinifbKey::L
+                        | MinifbKey::A
+                        | MinifbKey::C
+                        | MinifbKey::V
+                        | MinifbKey::X
+                )
+            )
+        {
+            return;
+        }
         if let Some(code) = code {
-            let modifiers = self.modifiers();
-            self.shortcut_keys.native_key_state(
-                code,
-                source.and_then(shortcut_key),
-                true,
-                modifiers.ctrl,
-                modifiers.alt,
-            );
+            if !self.down_codes.contains(&code) {
+                self.shortcut_keys.native_key_state(
+                    code,
+                    source.and_then(shortcut_key),
+                    true,
+                    modifiers.ctrl,
+                    modifiers.alt,
+                );
+            }
             if self.shortcut_keys.owns_physical(code) {
                 return;
             }
@@ -231,7 +254,10 @@ impl InputCallback for CharacterQueue {
     }
 
     fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
-        self.ime_preedit = Some((text.to_string(), cursor));
+        self.actions.push(FrameAction::ImePreedit {
+            text: text.to_string(),
+            cursor,
+        });
         self.ime_activity = true;
     }
 
@@ -257,13 +283,6 @@ impl InputCallback for CharacterQueue {
             self.modifier_keys[index] = down;
         }
         let modifiers = self.modifiers();
-        self.shortcut_keys.native_key_state(
-            code,
-            shortcut_key(key),
-            down,
-            modifiers.ctrl,
-            modifiers.alt,
-        );
         let was_down = if down {
             !self.down_codes.insert(code)
         } else {
@@ -273,6 +292,18 @@ impl InputCallback for CharacterQueue {
             }
             self.down_codes.remove(&code)
         };
+        // Only an initial key-down (never an OS auto-repeat of a key pressed
+        // before Ctrl went down) may acquire shortcut ownership; key-up always
+        // releases it.
+        if !down || !was_down {
+            self.shortcut_keys.native_key_state(
+                code,
+                shortcut_key(key),
+                down,
+                modifiers.ctrl,
+                modifiers.alt,
+            );
+        }
         if !down || was_down {
             return;
         }
@@ -362,12 +393,6 @@ impl InputAdapter {
             ctrl,
             shift,
         )
-    }
-
-    /// Latest IME composition update `(text, cursor_in_chars)` since the last
-    /// check, if any. Empty `text` means the composition ended or was cleared.
-    pub fn take_ime_preedit(&self) -> Option<(String, usize)> {
-        self.characters.borrow_mut().ime_preedit.take()
     }
 
     /// True when an OS IME composition message was processed this frame.
@@ -1001,6 +1026,14 @@ mod reviewer_c_regressions {
         );
         let b = Browser::open(Box::new(loader), &Url::parse("demo:///ime").unwrap()).unwrap();
         let mut tabs = Tabs::new(b, 800);
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+        let mut notice = None;
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
         let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
         tabs.active_mut().browser.click_node(&q_path);
 
@@ -1008,8 +1041,20 @@ mod reviewer_c_regressions {
         // Start Bopomofo composition: preedit "ㄓㄨㄥ" with cursor at 3.
         q.set_ime_preedit("ㄓㄨㄥ", 3);
         assert!(q.ime_activity);
-        let (preedit, cursor) = q.ime_preedit.take().unwrap();
-        tabs.active_mut().set_ime_preedit(&preedit, cursor);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            true,
+            &mut press_on_page,
+        );
+        assert!(ime_composing);
 
         // Preedit is visible on the element for inline rendering, NOT in value,
         // and zero `input` events have fired.
@@ -1022,8 +1067,20 @@ mod reviewer_c_regressions {
 
         // Cancel composition via Escape: preedit clears and value remains "".
         q.set_ime_preedit("", 0);
-        let (preedit, cursor) = q.ime_preedit.take().unwrap();
-        tabs.active_mut().set_ime_preedit(&preedit, cursor);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            true,
+            true,
+            &mut press_on_page,
+        );
+        assert!(!ime_composing);
         let el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
             .unwrap()
             .as_element()
@@ -1033,16 +1090,24 @@ mod reviewer_c_regressions {
 
         // Compose again and commit "中文😀" via unassociated IME commit callbacks.
         q.set_ime_preedit("ㄓㄨㄥㄨㄣˊ", 6);
-        let (preedit, cursor) = q.ime_preedit.take().unwrap();
-        tabs.active_mut().set_ime_preedit(&preedit, cursor);
         for ch in "中文😀".chars() {
             q.add_char_with_key(ch as u32, None, None);
         }
         q.set_ime_preedit("", 0);
-        let (preedit, cursor) = q.ime_preedit.take().unwrap();
-        tabs.active_mut().set_ime_preedit(&preedit, cursor);
-        let events = q.drain(vec![], Modifiers::NONE);
-        tabs.active_mut().handle_keys(events, false);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            true,
+            &mut press_on_page,
+        );
+        assert!(!ime_composing);
 
         let el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
             .unwrap()
@@ -1913,5 +1978,344 @@ mod reviewer_c_regressions {
             false,
         );
         assert!(staggered.is_empty(), "staggered Tab after Ctrl release must never leak");
+    }
+
+    #[test]
+    fn m2_r4_ctrl_w_closing_non_last_composing_tab_clears_ime_composing_for_escape() {
+        // Reviewer C MAJOR-1: closing Tab 0 of 2 keeps active_index == 0 while changing
+        // tabs.len(), so ime_composing must still reset to false.
+        let mut loader1 = MemoryLoader::new();
+        loader1.insert("demo:///a", r#"<html><body><input id="q"></body></html>"#);
+        let mut loader2 = MemoryLoader::new();
+        loader2.insert("demo:///b", r#"<html><body><input id="r"></body></html>"#);
+        let b0 = Browser::open(Box::new(loader1), &Url::parse("demo:///a").unwrap()).unwrap();
+        let b1 = Browser::open(Box::new(loader2), &Url::parse("demo:///b").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b0, 800);
+        tabs.open(b1);
+        tabs.select(0);
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = true;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
+
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::W, true, 0x011);
+        q.set_key_state_with_code(MinifbKey::W, false, 0x011);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        let (keep_open, _) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            true,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs.active_index(), 0);
+        assert!(!ime_composing, "closing active Tab 0 must clear ime_composing");
+
+        // Next frame: plain Escape on surviving non-composing tab must close window.
+        q.set_key_state_with_code(MinifbKey::Escape, true, 0x001);
+        q.set_key_state_with_code(MinifbKey::Escape, false, 0x001);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        let had_ime = ime_composing;
+        let (keep_open, _) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            had_ime,
+            false,
+            &mut press_on_page,
+        );
+        assert!(!keep_open, "Escape must close window after composing tab was closed");
+    }
+
+    #[test]
+    fn m2_r4_chrome_back_flushes_chronologically_before_ctrl_l_navigate_and_scroll() {
+        // Reviewer C MAJOR-2: Alt+Left followed by Ctrl+L + URL + Enter in one frame
+        // must run Back FIRST and then Navigate to c.html, never rolling back afterward.
+        let mut loader = MemoryLoader::new();
+        loader.insert("demo:///a.html", "<title>A</title><div style=\"height:2000px\">a</div>");
+        loader.insert("demo:///b.html", "<title>B</title><div style=\"height:2000px\">b</div>");
+        loader.insert("demo:///c.html", "<title>C</title><div style=\"height:2000px\">c</div>");
+        let mut b = Browser::open(Box::new(loader), &Url::parse("demo:///a.html").unwrap()).unwrap();
+        b.navigate(&Url::parse("demo:///b.html").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
+
+        // Alt+Left (Back to a.html), then Ctrl+L, type demo:///c.html, press Enter.
+        q.set_key_state_with_code(MinifbKey::LeftAlt, true, 0x038);
+        q.set_key_state_with_code(MinifbKey::Left, true, 0x14B);
+        q.set_key_state_with_code(MinifbKey::Left, false, 0x14B);
+        q.set_key_state_with_code(MinifbKey::LeftAlt, false, 0x038);
+
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q.set_key_state_with_code(MinifbKey::L, true, 0x026);
+        q.set_key_state_with_code(MinifbKey::L, false, 0x026);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+
+        for ch in "demo:///c.html".chars() {
+            q.add_char(ch as u32);
+        }
+        q.set_key_state_with_code(MinifbKey::Enter, true, 0x01C);
+        q.set_key_state_with_code(MinifbKey::Enter, false, 0x01C);
+
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        if let Some(cmd) = cmd {
+            tabs.active_mut().run_command(cmd);
+        }
+        assert_eq!(tabs.active().browser.url().to_string(), "demo:///c.html");
+
+        // Also Alt+Left followed by Alt+Down in one frame runs Back (resetting scroll_y)
+        // BEFORE scrolling down by 40px.
+        tabs.active_mut().scroll_y = 200.0;
+        q.set_key_state_with_code(MinifbKey::LeftAlt, true, 0x038);
+        q.set_key_state_with_code(MinifbKey::Left, true, 0x14B);
+        q.set_key_state_with_code(MinifbKey::Left, false, 0x14B);
+        q.set_key_state_with_code(MinifbKey::Down, true, 0x150);
+        q.set_key_state_with_code(MinifbKey::Down, false, 0x150);
+        q.set_key_state_with_code(MinifbKey::LeftAlt, false, 0x038);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        let (keep_open, cmd) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(cmd, None);
+        assert_eq!(tabs.active().browser.url().to_string(), "demo:///a.html");
+        assert_eq!(tabs.active().scroll_y, 40.0);
+    }
+
+    #[test]
+    fn m2_r4_wayland_text_first_ctrl_l_and_ctrl_v_do_not_leak_or_double_paste() {
+        // Reviewer C MAJOR-3: Wayland emits printable ASCII via add_char_with_key BEFORE
+        // set_key_state_with_code for Ctrl+L and Ctrl+V. Ctrl+L must not leak keydown('l')
+        // to the DOM, Ctrl+V must paste once, and Windows AltGr (LeftCtrl+RightAlt+L) must
+        // still deliver layout characters like 'ł'.
+        let mut loader = MemoryLoader::new();
+        loader.insert(
+            "demo:///wl",
+            r#"<html><body><input id="q"><p id="log">empty</p><script>
+            var log = "";
+            document.body.addEventListener("keydown", function(e) {
+                log += e.key;
+                document.getElementById("log").textContent = log;
+            });
+            </script></body></html>"#,
+        );
+        let b = Browser::open(Box::new(loader), &Url::parse("demo:///wl").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b, 800);
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+        let q_path = dom_api::get_element_by_id(&tabs.active().browser.document().dom, "q").unwrap();
+        tabs.active_mut().browser.click_node(&q_path);
+
+        let mut cb = crate::clipboard::MemoryClipboard::with_text("hi");
+        let mut q = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
+
+        // 1. Wayland text-first Ctrl+V: must paste "hi" ONCE, not "hihi".
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 29);
+        q.add_char_with_key('v' as u32, Some(MinifbKey::V), Some(47));
+        q.set_key_state_with_code(MinifbKey::V, true, 47);
+        q.set_key_state_with_code(MinifbKey::V, false, 47);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 29);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "hi");
+
+        // 2. Windows AltGr (LeftCtrl+RightAlt+L) typing 'ł' must still insert 'ł'.
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 29);
+        q.set_key_state_with_code(MinifbKey::RightAlt, true, 100);
+        q.add_char_with_key('ł' as u32, Some(MinifbKey::L), Some(38));
+        q.set_key_state_with_code(MinifbKey::L, true, 38);
+        q.set_key_state_with_code(MinifbKey::L, false, 38);
+        q.set_key_state_with_code(MinifbKey::RightAlt, false, 100);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 29);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        let q_el = dom_api::node_at(&tabs.active().browser.document().dom, &q_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(q_el.control_value(), "hił");
+        assert!(!tabs.active().toolbar.is_editing());
+
+        // 3. Wayland text-first Ctrl+L: must focus address bar without leaking 'l' to DOM.
+        let log_before = dom_api::outer_html(&tabs.active().browser.document().dom);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 29);
+        q.add_char_with_key('l' as u32, Some(MinifbKey::L), Some(38));
+        q.set_key_state_with_code(MinifbKey::L, true, 38);
+        q.set_key_state_with_code(MinifbKey::L, false, 38);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, false, 29);
+        let actions = q.drain_actions(vec![], |_| false, false, false, false, false);
+        crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            false,
+            &mut press_on_page,
+        );
+        assert!(tabs.active().toolbar.is_editing());
+        assert_eq!(
+            dom_api::outer_html(&tabs.active().browser.document().dom),
+            log_before,
+            "Wayland Ctrl+L must not leak keydown('l') to DOM before FocusAddress"
+        );
+    }
+
+    #[test]
+    fn m2_r4_plain_held_tab_os_repeat_after_ctrl_and_same_frame_tab_switch_ime_preedit() {
+        // Reviewer C MINOR-1: plain Tab held before LeftCtrl goes down must NOT acquire
+        // ShortcutKeyFilter ownership on an OS auto-repeat and emit TabShortcut::Next.
+        let mut q = CharacterQueue::default();
+        q.set_key_state_with_code(MinifbKey::Tab, true, 0x00F);
+        let _ = q.drain_actions(vec![MinifbKey::Tab], |k| k == MinifbKey::Tab, false, false, false, false);
+        q.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        // OS auto-repeat fires set_key_state_with_code(Tab, true) while Tab is already down.
+        q.set_key_state_with_code(MinifbKey::Tab, true, 0x00F);
+        let actions = q.drain_actions(
+            vec![MinifbKey::Tab],
+            |k| matches!(k, MinifbKey::Tab | MinifbKey::LeftCtrl),
+            false,
+            false,
+            true,
+            false,
+        );
+        assert!(
+            !actions.iter().any(|a| matches!(a, FrameAction::Tab(_))),
+            "plain held Tab OS repeat after Ctrl must not hijack into TabShortcut: {actions:?}"
+        );
+
+        // Reviewer C MINOR-3: Ctrl+2 followed by set_ime_preedit("ㄓ", 1) in the same
+        // frame must apply the preedit to Tab 1 (the destination tab), not wipe it on Tab 0.
+        let mut loader1 = MemoryLoader::new();
+        loader1.insert("demo:///a", r#"<html><body><input id="q"></body></html>"#);
+        let mut loader2 = MemoryLoader::new();
+        loader2.insert("demo:///b", r#"<html><body><input id="r"></body></html>"#);
+        let b0 = Browser::open(Box::new(loader1), &Url::parse("demo:///a").unwrap()).unwrap();
+        let b1 = Browser::open(Box::new(loader2), &Url::parse("demo:///b").unwrap()).unwrap();
+        let mut tabs = Tabs::new(b0, 800);
+        tabs.open(b1);
+        let r_path = dom_api::get_element_by_id(&tabs.get(1).unwrap().browser.document().dom, "r").unwrap();
+        tabs.active_mut().browser.click_node(&r_path);
+        tabs.select(0);
+
+        let mut strip = crate::tab_strip::TabStrip::new(800);
+        let mut cb = crate::clipboard::MemoryClipboard::new();
+        let mut q2 = CharacterQueue::default();
+        let mut notice = None;
+        let mut ime_composing = false;
+        let mut press_on_page = false;
+        let no_tab = || -> Result<Browser, browser_engine::net::LoadError> {
+            panic!("unexpected tab open")
+        };
+
+        q2.set_key_state_with_code(MinifbKey::LeftCtrl, true, 0x01D);
+        q2.set_key_state_with_code(MinifbKey::Key2, true, 0x003);
+        q2.set_key_state_with_code(MinifbKey::Key2, false, 0x003);
+        q2.set_key_state_with_code(MinifbKey::LeftCtrl, false, 0x01D);
+        q2.set_ime_preedit("ㄓ", 1);
+
+        let actions = q2.drain_actions(vec![], |_| false, false, false, false, false);
+        let (keep_open, _) = crate::dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &no_tab,
+            &mut notice,
+            &mut cb,
+            &mut ime_composing,
+            false,
+            true,
+            &mut press_on_page,
+        );
+        assert!(keep_open);
+        assert_eq!(tabs.active_index(), 1);
+        assert!(ime_composing);
+        let r_el = dom_api::node_at(&tabs.get(1).unwrap().browser.document().dom, &r_path)
+            .unwrap()
+            .as_element()
+            .unwrap();
+        assert_eq!(r_el.ime_preedit(), Some(("ㄓ", 1)));
     }
 }
