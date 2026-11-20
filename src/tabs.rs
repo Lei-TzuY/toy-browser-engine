@@ -37,14 +37,6 @@ pub(crate) enum TabCommand {
     Number(usize),
 }
 
-/// Keep user-facing failure captions short; full networking details are logged.
-fn failed_navigation_caption(url: &str) -> String {
-    let mut chars = url.chars();
-    let prefix: String = chars.by_ref().take(120).collect();
-    let ellipsis = if chars.next().is_some() { "…" } else { "" };
-    format!("Could not open {prefix}{ellipsis}")
-}
-
 pub(crate) struct Tab {
     pub browser: Browser,
     pub toolbar: Toolbar,
@@ -222,7 +214,7 @@ impl Tab {
             Command::Reload => {
                 if let Err(error) = self.browser.reload() {
                     eprintln!("reload failed: {error}");
-                    self.navigation_notice = Some("Could not reload".to_string());
+                    self.navigation_notice = Some(format!("Could not reload: {error}"));
                 } else {
                     self.navigation_notice = None;
                 }
@@ -240,7 +232,7 @@ impl Tab {
                         // Keep the previously loaded page and editable URL.
                         // The visible tab-owned notice is independent from
                         // transient address-editor focus and keyup events.
-                        let message = failed_navigation_caption(&url.to_string());
+                        let message = format!("Could not open {url}: {error}");
                         eprintln!("could not open {url}: {error}");
                         self.navigation_notice = Some(message.clone());
                         self.toolbar.navigation_failed(message);
@@ -263,7 +255,7 @@ impl Tab {
             }
             ClickOutcome::NavigationFailed { url, error } => {
                 eprintln!("could not open {url}: {error}");
-                self.navigation_notice = Some(failed_navigation_caption(&url.to_string()));
+                self.navigation_notice = Some(format!("Could not open {url}: {error}"));
             }
             ClickOutcome::Script | ClickOutcome::Ignored => {}
         }
@@ -775,19 +767,6 @@ mod tests {
         assert_eq!(url(&tabs, 0), "demo:///c.html");
         assert_eq!(tabs.get(0).unwrap().browser.history().len(), 2);
         assert_eq!(tabs.get(1).unwrap().browser.history().len(), 2);
-    }
-
-    #[test]
-    fn failure_caption_is_short_and_does_not_echo_network_internals() {
-        assert_eq!(
-            failed_navigation_caption("demo:///missing.html"),
-            "Could not open demo:///missing.html"
-        );
-        let long_url = format!("https://example.test/{}", "x".repeat(800));
-        let caption = failed_navigation_caption(&long_url);
-        assert!(caption.starts_with("Could not open https://example.test/"));
-        assert!(caption.ends_with('…'));
-        assert!(caption.chars().count() <= 136);
     }
 
     #[test]
