@@ -16,6 +16,8 @@ pub(crate) struct LocationInput {
     /// The other end of the selection. Equal to `caret` when nothing is
     /// selected.
     anchor: usize,
+    /// Active uncommitted IME composition `(text, cursor_in_chars)`.
+    ime_preedit: Option<(String, usize)>,
 }
 
 pub(crate) enum LocationAction {
@@ -35,6 +37,7 @@ impl LocationInput {
             value: current_url,
             caret: len,
             anchor: 0,
+            ime_preedit: None,
         }
     }
 
@@ -52,6 +55,56 @@ impl LocationInput {
             .then(|| (self.anchor.min(self.caret), self.anchor.max(self.caret)))
     }
 
+    /// Currently selected text, if any.
+    pub(crate) fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection()?;
+        Some(
+            self.value
+                .chars()
+                .skip(start)
+                .take(end - start)
+                .collect(),
+        )
+    }
+
+    /// Ctrl+X: remove the selected text and return it.
+    pub(crate) fn cut_selection(&mut self) -> Option<String> {
+        let text = self.selected_text()?;
+        self.delete_selection();
+        Some(text)
+    }
+
+    /// Insert `text` at the caret, replacing any selection (for Ctrl+V or IME commit).
+    pub(crate) fn insert_text(&mut self, text: &str) {
+        self.delete_selection();
+        for ch in text.chars().filter(|c| !c.is_control()) {
+            if self.len() >= MAX_LOCATION_CHARS {
+                break;
+            }
+            let at = self.byte_offset(self.caret);
+            self.value.insert(at, ch);
+            self.caret += 1;
+            self.anchor = self.caret;
+        }
+    }
+
+    /// Active IME preedit `(text, cursor_in_chars)`, if composing.
+    pub(crate) fn ime_preedit(&self) -> Option<(&str, usize)> {
+        self.ime_preedit
+            .as_ref()
+            .map(|(text, cursor)| (text.as_str(), *cursor))
+    }
+
+    /// Update or clear (`text.is_empty()`) the active IME composition.
+    pub(crate) fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
+        if text.is_empty() {
+            self.ime_preedit = None;
+        } else {
+            let cursor = cursor.min(text.chars().count());
+            self.ime_preedit = Some((text.to_string(), cursor));
+        }
+    }
+
     pub(crate) fn select_all(&mut self) {
         self.anchor = 0;
         self.caret = self.len();
@@ -66,7 +119,17 @@ impl LocationInput {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn handle(&mut self, event: &KeyEvent) -> LocationAction {
+        let mut dummy = crate::clipboard::MemoryClipboard::new();
+        self.handle_with_clipboard(event, &mut dummy)
+    }
+
+    pub(crate) fn handle_with_clipboard(
+        &mut self,
+        event: &KeyEvent,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> LocationAction {
         let shift = event.modifiers.shift;
         let command = event.modifiers.has_command_modifier();
         match &event.key {
@@ -112,6 +175,27 @@ impl LocationInput {
             Key::End => self.place_caret(self.len(), shift),
             Key::Character('a' | 'A') if event.modifiers.ctrl && !event.modifiers.alt => {
                 self.select_all();
+            }
+            Key::Character('c' | 'C')
+                if !shift && event.modifiers.ctrl && !event.modifiers.alt =>
+            {
+                if let Some(text) = self.selected_text() {
+                    clipboard.set_text(&text);
+                }
+            }
+            Key::Character('x' | 'X')
+                if !shift && event.modifiers.ctrl && !event.modifiers.alt =>
+            {
+                if let Some(text) = self.cut_selection() {
+                    clipboard.set_text(&text);
+                }
+            }
+            Key::Character('v' | 'V')
+                if !shift && event.modifiers.ctrl && !event.modifiers.alt =>
+            {
+                if let Some(text) = clipboard.get_text() {
+                    self.insert_text(&text);
+                }
             }
             Key::Character(character) if !command && !character.is_control() => {
                 self.insert(*character);
