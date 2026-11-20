@@ -828,11 +828,6 @@ fn run_window(
             None => tabs.active().status(),
         };
         if status != title {
-            if std::env::var_os("TOY_NAV_DEBUG").is_some()
-                && (status.contains("Could not open") || title.contains("Could not open"))
-            {
-                eprintln!("TBE_NAV_DBG title_before={title:?} title_after={status:?}");
-            }
             window.set_title(&status);
             title = status;
         }

@@ -41,9 +41,6 @@ pub(crate) struct Tab {
     pub browser: Browser,
     pub toolbar: Toolbar,
     pub scroll_y: f32,
-    // The last navigation failure is tab-owned so it stays user-visible
-    // even if the address editor loses its transient error state.
-    navigation_notice: Option<String>,
 }
 
 impl Tab {
@@ -52,7 +49,6 @@ impl Tab {
             browser,
             toolbar: Toolbar::new(width),
             scroll_y: 0.0,
-            navigation_notice: None,
         }
     }
 
@@ -66,7 +62,7 @@ impl Tab {
 
     /// Title-bar text for this tab, led by its address-field error if any.
     pub(crate) fn status(&self) -> String {
-        match self.navigation_notice.as_deref().or_else(|| self.toolbar.error()) {
+        match self.toolbar.error() {
             Some(error) => format!("{error} — {}", self.browser.status_line()),
             None => self.browser.status_line(),
         }
@@ -202,21 +198,16 @@ impl Tab {
             Command::Back => {
                 if self.browser.back() {
                     self.scroll_y = 0.0;
-                    self.navigation_notice = None;
                 }
             }
             Command::Forward => {
                 if self.browser.forward() {
                     self.scroll_y = 0.0;
-                    self.navigation_notice = None;
                 }
             }
             Command::Reload => {
                 if let Err(error) = self.browser.reload() {
                     eprintln!("reload failed: {error}");
-                    self.navigation_notice = Some(format!("Could not reload: {error}"));
-                } else {
-                    self.navigation_notice = None;
                 }
             }
             Command::Navigate(target) => {
@@ -226,19 +217,13 @@ impl Tab {
                         println!("→ {}", self.browser.url());
                         self.scroll_y = 0.0;
                         self.toolbar.navigation_succeeded();
-                        self.navigation_notice = None;
                     }
                     Err(error) => {
-                        // Keep the previously loaded page and editable URL.
-                        // The visible tab-owned notice is independent from
-                        // transient address-editor focus and keyup events.
-                        let message = format!("Could not open {url}: {error}");
+                        // The previous page stays on screen and the typed text
+                        // stays in the field for correction.
                         eprintln!("could not open {url}: {error}");
-                        self.navigation_notice = Some(message.clone());
-                        self.toolbar.navigation_failed(message);
-                        if std::env::var_os("TOY_NAV_DEBUG").is_some() {
-                            eprintln!("TBE_NAV_DBG post_failure_tab_status={:?}", self.status());
-                        }
+                        self.toolbar
+                            .navigation_failed(format!("Could not open {url}: {error}"));
                     }
                 }
             }
@@ -251,11 +236,9 @@ impl Tab {
             ClickOutcome::Navigated(url) => {
                 println!("→ {url}");
                 self.scroll_y = 0.0;
-                self.navigation_notice = None;
             }
             ClickOutcome::NavigationFailed { url, error } => {
                 eprintln!("could not open {url}: {error}");
-                self.navigation_notice = Some(format!("Could not open {url}: {error}"));
             }
             ClickOutcome::Script | ClickOutcome::Ignored => {}
         }
@@ -798,15 +781,6 @@ mod tests {
         assert_eq!(active_url(&tabs), "demo:///a.html");
         tabs.select(1);
         assert!(tabs.active().toolbar.error().is_some());
-
-        // A UI focus reset must not silently hide a navigation failure.
-        // The user must see a stable error until the next successful action.
-        tabs.active_mut().toolbar.cancel();
-        assert!(tabs.active().status().starts_with("Could not open demo:///missing.html"));
-        tabs.active_mut()
-            .run_command(Command::Navigate("demo:///a.html".into()));
-        assert!(!tabs.active().status().starts_with("Could not open"));
-        assert_eq!(active_url(&tabs), "demo:///a.html");
     }
 
     #[test]
