@@ -297,12 +297,6 @@ impl Toolbar {
                     break;
                 }
                 LocationAction::Go(target) => {
-                    #[cfg(windows)]
-                    if minifb::u23_trace::enabled() {
-                        let value = self.editor.as_ref().expect("editing").value();
-                        minifb::u23_trace::event("Command::Navigate", format_args!("address={:?} target={:?}",
-                            minifb::u23_trace::fixture_url(value), minifb::u23_trace::fixture_url(&target)));
-                    }
                     return KeyDispatch {
                         page: Vec::new(),
                         command: Some(Command::Navigate(target)),

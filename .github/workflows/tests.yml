@@ -127,11 +127,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "HOSTED_IME_INVENTORY_FAILED" }
       - name: Real Windows owned-window keyboard and pointer smoke (local fixtures)
         shell: pwsh
-        env:
-          TBE_HOSTED_U23_TRACE: '1'
         run: |
           $revision = (git rev-parse HEAD).Trim()
-          python tests/gui/usability/windows_usability.py --mode native --binary target/release/browser_engine.exe --output ci-windows-native-gui --revision $revision --selected U22,U23
+          python tests/gui/usability/windows_usability.py --mode native --binary target/release/browser_engine.exe --output ci-windows-native-gui --revision $revision --selected U01,U02,U03,U04,U05,U06,U07,U08,U09,U10,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U25,U26
           if ($LASTEXITCODE -ne 0) { throw "WIN_NATIVE_GUI_FAILED_OR_BLOCKED; inspect ci-windows-native-gui receipts" }
       - name: Real Windows synthetic Unicode clipboard Copy/Cut/Paste (not IME)
         shell: pwsh

@@ -514,21 +514,7 @@ fn exchange(
     let mut last_error = None;
     let mut tcp = None;
     for address in addresses {
-        #[cfg(windows)]
-        let trace = minifb::u23_trace::enabled() && address.ip().is_loopback();
-        #[cfg(windows)]
-        if trace {
-            minifb::u23_trace::event("tcp.connect.start", format_args!("port={} timeout_ms={}",
-                address.port(), config.timeout.as_millis()));
-        }
-        let connection = TcpStream::connect_timeout(&address, config.timeout);
-        #[cfg(windows)]
-        if trace {
-            let error = connection.as_ref().err();
-            minifb::u23_trace::event("tcp.connect.end", format_args!("port={} kind={:?} os_error={:?}",
-                address.port(), error.map(std::io::Error::kind), error.and_then(std::io::Error::raw_os_error)));
-        }
-        match connection {
+        match TcpStream::connect_timeout(&address, config.timeout) {
             Ok(stream) => { tcp = Some(stream); break; }
             Err(e) => last_error = Some(e),
         }

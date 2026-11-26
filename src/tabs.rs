@@ -212,14 +212,7 @@ impl Tab {
             }
             Command::Navigate(target) => {
                 let url = url_from_argument(&target);
-                #[cfg(windows)]
-                minifb::u23_trace::event("Browser::navigate.start", format_args!("url={:?}",
-                    minifb::u23_trace::fixture_url(&target)));
-                let result = self.browser.navigate(&url);
-                #[cfg(windows)]
-                minifb::u23_trace::event("Browser::navigate.end", format_args!("ok={} history_len={} history_index={}",
-                    result.is_ok(), self.browser.history().len(), self.browser.history_index()));
-                match result {
+                match self.browser.navigate(&url) {
                     Ok(()) => {
                         println!("→ {}", self.browser.url());
                         self.scroll_y = 0.0;
@@ -231,9 +224,6 @@ impl Tab {
                         eprintln!("could not open {url}: {error}");
                         self.toolbar
                             .navigation_failed(format!("Could not open {url}: {error}"));
-                        #[cfg(windows)]
-                        minifb::u23_trace::event("toolbar.navigation_failed", format_args!("editing={} toolbar_error={}",
-                            self.toolbar.is_editing(), self.toolbar.error().is_some()));
                     }
                 }
             }

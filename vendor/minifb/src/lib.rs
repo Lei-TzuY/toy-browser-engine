@@ -21,9 +21,6 @@ mod key;
 mod key_handler;
 mod os;
 mod rate;
-#[cfg(windows)]
-#[doc(hidden)]
-pub mod u23_trace;
 
 use raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, WindowHandle};
 use std::{ffi::c_void, fmt, time::Duration};
