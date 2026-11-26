@@ -142,12 +142,212 @@ fn key_from_scan_code(wparam: u32) -> Option<Key> {
         0x04A => Some(Key::NumPadMinus),
         0x04E => Some(Key::NumPadPlus),
         0x11C => Some(Key::NumPadEnter),
+        0x038 => Some(Key::LeftAlt),
+        0x138 => Some(Key::RightAlt),
+        0x15B => Some(Key::LeftSuper),
+        0x15C => Some(Key::RightSuper),
         _ => None,
+    }
+}
+
+// ── IMM32 (Windows IME) ────────────────────────────────────────────────────
+// Declared directly so no extra winapi features or crates are needed.
+type Himc = *mut c_void;
+
+const WM_IME_STARTCOMPOSITION: minwindef::UINT = 0x010D;
+const WM_IME_ENDCOMPOSITION: minwindef::UINT = 0x010E;
+const WM_IME_COMPOSITION: minwindef::UINT = 0x010F;
+const WM_IME_SETCONTEXT: minwindef::UINT = 0x0281;
+const ISC_SHOWUICOMPOSITIONWINDOW: usize = 0x8000_0000;
+const GCS_COMPSTR: minwindef::DWORD = 0x0008;
+const GCS_CURSORPOS: minwindef::DWORD = 0x0080;
+const GCS_RESULTSTR: minwindef::DWORD = 0x0800;
+const CFS_POINT: minwindef::DWORD = 0x0002;
+const CFS_EXCLUDE: minwindef::DWORD = 0x0080;
+
+#[repr(C)]
+struct CompositionForm {
+    dw_style: minwindef::DWORD,
+    pt_current_pos: windef::POINT,
+    rc_area: windef::RECT,
+}
+
+#[repr(C)]
+struct CandidateForm {
+    dw_index: minwindef::DWORD,
+    dw_style: minwindef::DWORD,
+    pt_current_pos: windef::POINT,
+    rc_area: windef::RECT,
+}
+
+#[link(name = "imm32")]
+extern "system" {
+    fn ImmGetContext(hwnd: windef::HWND) -> Himc;
+    fn ImmReleaseContext(hwnd: windef::HWND, himc: Himc) -> minwindef::BOOL;
+    fn ImmGetCompositionStringW(
+        himc: Himc,
+        index: minwindef::DWORD,
+        buf: *mut c_void,
+        buf_len: minwindef::DWORD,
+    ) -> ntdef::LONG;
+    fn ImmSetCompositionWindow(himc: Himc, form: *mut CompositionForm) -> minwindef::BOOL;
+    fn ImmSetCandidateWindow(himc: Himc, form: *mut CandidateForm) -> minwindef::BOOL;
+}
+
+/// Read one IMM composition string (`GCS_COMPSTR` / `GCS_RESULTSTR`) as UTF-16.
+unsafe fn ime_composition_units(himc: Himc, index: minwindef::DWORD) -> Vec<u16> {
+    let bytes = ImmGetCompositionStringW(himc, index, std::ptr::null_mut(), 0);
+    if bytes <= 0 {
+        return Vec::new();
+    }
+    let mut units = vec![0u16; (bytes as usize + 1) / 2];
+    let got = ImmGetCompositionStringW(
+        himc,
+        index,
+        units.as_mut_ptr() as *mut c_void,
+        (units.len() * 2) as minwindef::DWORD,
+    );
+    if got <= 0 {
+        return Vec::new();
+    }
+    units.truncate(got as usize / 2);
+    units
+}
+
+/// Combine one UTF-16 code unit from WM_CHAR with a pending high surrogate.
+/// Returns a Unicode scalar when complete; lone or unpaired surrogates are dropped.
+fn combine_utf16_unit(pending: &mut Option<u16>, unit: u16) -> Option<u32> {
+    match unit {
+        0xD800..=0xDBFF => {
+            *pending = Some(unit);
+            None
+        }
+        0xDC00..=0xDFFF => {
+            let high = pending.take()?;
+            Some(0x10000 + (((high as u32) - 0xD800) << 10) + ((unit as u32) - 0xDC00))
+        }
+        _ => {
+            *pending = None;
+            Some(unit as u32)
+        }
+    }
+}
+
+/// Convert an IME cursor offset in UTF-16 units into a Unicode scalar offset.
+fn utf16_cursor_to_char_index(units: &[u16], cursor_units: usize) -> usize {
+    let end = cursor_units.min(units.len());
+    char::decode_utf16(units[..end].iter().copied()).count()
+}
+
+/// True when a button went down and back up within the frame not yet consumed
+/// by the application: its press coordinates must not be overwritten.
+#[inline]
+fn mouse_click_latched(mouse: &MouseData) -> bool {
+    (0..3).any(|i| mouse.pressed[i] && !mouse.state[i])
+}
+
+unsafe fn ime_composition_message(wnd: &mut Window, lparam: minwindef::LPARAM) {
+    let himc = ImmGetContext(wnd.hwnd);
+    if himc.is_null() {
+        return;
+    }
+    let flags = lparam as u32;
+    if flags == 0 {
+        wnd.ime_composing = false;
+        if let Some(ref mut callback) = wnd.key_handler.key_callback {
+            callback.set_ime_preedit("", 0);
+        }
+        ImmReleaseContext(wnd.hwnd, himc);
+        return;
+    }
+    if flags & GCS_RESULTSTR != 0 {
+        let units = ime_composition_units(himc, GCS_RESULTSTR);
+        if let Some(ref mut callback) = wnd.key_handler.key_callback {
+            // Committed IME text has no physical key source.
+            for ch in char::decode_utf16(units.iter().copied()).flatten() {
+                callback.add_char_with_key(ch as u32, None, None);
+            }
+        }
+    }
+    if flags & GCS_COMPSTR != 0 {
+        let units = ime_composition_units(himc, GCS_COMPSTR);
+        let cursor_units = if flags & GCS_CURSORPOS != 0 {
+            ImmGetCompositionStringW(himc, GCS_CURSORPOS, std::ptr::null_mut(), 0).max(0) as usize
+        } else {
+            units.len()
+        };
+        let text: String = char::decode_utf16(units.iter().copied()).flatten().collect();
+        let cursor = utf16_cursor_to_char_index(&units, cursor_units);
+        if let Some(ref mut callback) = wnd.key_handler.key_callback {
+            callback.set_ime_preedit(&text, cursor);
+        }
+    } else if flags & GCS_RESULTSTR != 0 {
+        if let Some(ref mut callback) = wnd.key_handler.key_callback {
+            callback.set_ime_preedit("", 0);
+        }
+    }
+    ImmReleaseContext(wnd.hwnd, himc);
+}
+
+unsafe fn apply_ime_cursor_area(wnd: &Window) {
+    let Some((x, y, h)) = wnd.ime_cursor else {
+        return;
+    };
+    let himc = ImmGetContext(wnd.hwnd);
+    if himc.is_null() {
+        return;
+    }
+    let s = wnd.scale_factor.max(1);
+    let (x, y, h) = (x * s, y * s, h.max(1) * s);
+    let mut comp = CompositionForm {
+        dw_style: CFS_POINT,
+        pt_current_pos: windef::POINT { x, y },
+        rc_area: windef::RECT { left: 0, top: 0, right: 0, bottom: 0 },
+    };
+    ImmSetCompositionWindow(himc, &mut comp);
+    let mut cand = CandidateForm {
+        dw_index: 0,
+        dw_style: CFS_EXCLUDE,
+        pt_current_pos: windef::POINT { x, y: y + h },
+        rc_area: windef::RECT { left: x, top: y, right: x + 1, bottom: y + h },
+    };
+    ImmSetCandidateWindow(himc, &mut cand);
+    ImmReleaseContext(wnd.hwnd, himc);
+}
+
+fn notify_ime(wnd: &mut Window) {
+    if let Some(ref mut callback) = wnd.key_handler.key_callback {
+        callback.notify_ime_activity();
     }
 }
 
 fn update_key_state(window: &mut Window, scan: u32, state: bool) {
     window.key_handler.set_key_state_with_code(key_from_scan_code(scan).unwrap_or(Key::Unknown), state, scan & 0x1ff);
+}
+
+#[inline]
+fn is_ime_process_key(wparam: minwindef::WPARAM) -> bool {
+    (wparam & 0xffff) == winuser::VK_PROCESSKEY as usize
+}
+
+#[inline]
+fn mouse_coords_from_lparam(lparam: minwindef::LPARAM) -> (f32, f32) {
+    let x = (lparam & 0xffff) as i16 as f32;
+    let y = ((lparam >> 16) & 0xffff) as i16 as f32;
+    (x, y)
+}
+
+#[inline]
+fn client_size_from_wm_size(
+    wparam: minwindef::WPARAM,
+    lparam: minwindef::LPARAM,
+) -> Option<(i32, i32)> {
+    if wparam == winuser::SIZE_MINIMIZED {
+        return None;
+    }
+    let width = ((lparam as u32) & 0xffff) as i32;
+    let height = (((lparam as u32) >> 16) & 0xffff) as i32;
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 #[inline]
@@ -241,27 +441,100 @@ unsafe extern "system" fn wnd_proc(
         }
 
         winuser::WM_KEYDOWN => {
-            update_key_state(wnd, (lparam as u32) >> 16, true);
+            if !is_ime_process_key(wparam) {
+                update_key_state(wnd, (lparam as u32) >> 16, true);
+            }
             return 0;
         }
 
         winuser::WM_SYSKEYDOWN => {
-            update_key_state(wnd, (lparam as u32) >> 16, true);
+            if !is_ime_process_key(wparam) {
+                update_key_state(wnd, (lparam as u32) >> 16, true);
+            }
+            // Alt+F4 keeps the system close behavior; other Alt chords are
+            // browser shortcuts and must not activate the window menu.
+            if (wparam & 0xffff) == winuser::VK_F4 as usize {
+                return winuser::DefWindowProcW(window, msg, wparam, lparam);
+            }
             return 0;
         }
 
-        winuser::WM_CHAR => {
-            char_down(wnd, wparam as u32, (lparam as u32) >> 16);
+        winuser::WM_CHAR | winuser::WM_SYSCHAR => {
+            let unit = (wparam & 0xffff) as u16;
+            if let Some(code_point) = combine_utf16_unit(&mut wnd.pending_surrogate, unit) {
+                char_down(wnd, code_point, (lparam as u32) >> 16);
+            }
+            return 0;
         }
 
-        winuser::WM_SYSCHAR => {
-            char_down(wnd, wparam as u32, (lparam as u32) >> 16);
+        winuser::WM_KILLFOCUS => {
+            // Focus left: release every held key/button so nothing stays stuck,
+            // and drop any half-received surrogate or visible preedit.
+            wnd.key_handler.clear();
+            wnd.mouse.state = [false; 8];
+            wnd.pending_surrogate = None;
+            if wnd.ime_composing {
+                wnd.ime_composing = false;
+                if let Some(ref mut callback) = wnd.key_handler.key_callback {
+                    callback.set_ime_preedit("", 0);
+                }
+                notify_ime(wnd);
+            }
         }
 
-        winuser::WM_LBUTTONDOWN => wnd.mouse.state[0] = true,
-        winuser::WM_LBUTTONUP => wnd.mouse.state[0] = false,
+        WM_IME_SETCONTEXT => {
+            // The application draws the composition string inline itself;
+            // the IME still shows its own candidate list.
+            let lparam = ((lparam as usize) & !ISC_SHOWUICOMPOSITIONWINDOW) as LPARAM;
+            return winuser::DefWindowProcW(window, msg, wparam, lparam);
+        }
+
+        WM_IME_STARTCOMPOSITION => {
+            wnd.ime_composing = true;
+            notify_ime(wnd);
+            apply_ime_cursor_area(wnd);
+            return 0;
+        }
+
+        WM_IME_COMPOSITION => {
+            notify_ime(wnd);
+            ime_composition_message(wnd, lparam);
+            // Handled: returning 0 stops DefWindowProc from re-sending the
+            // committed text as WM_IME_CHAR/WM_CHAR (no double insertion).
+            return 0;
+        }
+
+        WM_IME_ENDCOMPOSITION => {
+            wnd.ime_composing = false;
+            if let Some(ref mut callback) = wnd.key_handler.key_callback {
+                callback.set_ime_preedit("", 0);
+            }
+            notify_ime(wnd);
+            return 0;
+        }
+
+        winuser::WM_LBUTTONDOWN => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[0] = true;
+            wnd.mouse.pressed[0] = true;
+        }
+        winuser::WM_LBUTTONUP => {
+            if !wnd.mouse.pressed[0] {
+                let (x, y) = mouse_coords_from_lparam(lparam);
+                wnd.mouse.x = x;
+                wnd.mouse.y = y;
+            }
+            wnd.mouse.state[0] = false;
+        }
 
         winuser::WM_MOUSEMOVE => {
+            if !mouse_click_latched(&wnd.mouse) {
+                let (x, y) = mouse_coords_from_lparam(lparam);
+                wnd.mouse.x = x;
+                wnd.mouse.y = y;
+            }
             let button_checks = [
                 winuser::MK_LBUTTON,
                 winuser::MK_MBUTTON,
@@ -269,14 +542,44 @@ unsafe extern "system" fn wnd_proc(
             ];
 
             for (i, button) in button_checks.iter().enumerate() {
-                wnd.mouse.state[i] = (wparam & *button) == *button;
+                let down = (wparam & *button) == *button;
+                if down && !wnd.mouse.state[i] {
+                    wnd.mouse.pressed[i] = true;
+                }
+                wnd.mouse.state[i] = down;
             }
         }
 
-        winuser::WM_MBUTTONDOWN => wnd.mouse.state[1] = true,
-        winuser::WM_MBUTTONUP => wnd.mouse.state[1] = false,
-        winuser::WM_RBUTTONDOWN => wnd.mouse.state[2] = true,
-        winuser::WM_RBUTTONUP => wnd.mouse.state[2] = false,
+        winuser::WM_MBUTTONDOWN => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[1] = true;
+            wnd.mouse.pressed[1] = true;
+        }
+        winuser::WM_MBUTTONUP => {
+            if !wnd.mouse.pressed[1] {
+                let (x, y) = mouse_coords_from_lparam(lparam);
+                wnd.mouse.x = x;
+                wnd.mouse.y = y;
+            }
+            wnd.mouse.state[1] = false;
+        }
+        winuser::WM_RBUTTONDOWN => {
+            let (x, y) = mouse_coords_from_lparam(lparam);
+            wnd.mouse.x = x;
+            wnd.mouse.y = y;
+            wnd.mouse.state[2] = true;
+            wnd.mouse.pressed[2] = true;
+        }
+        winuser::WM_RBUTTONUP => {
+            if !wnd.mouse.pressed[2] {
+                let (x, y) = mouse_coords_from_lparam(lparam);
+                wnd.mouse.x = x;
+                wnd.mouse.y = y;
+            }
+            wnd.mouse.state[2] = false;
+        }
 
         winuser::WM_CLOSE => {
             wnd.is_open = false;
@@ -306,10 +609,10 @@ unsafe extern "system" fn wnd_proc(
         }
         */
         winuser::WM_SIZE => {
-            let width = (lparam as u32) & 0xffff;
-            let height = ((lparam as u32) >> 16) & 0xffff;
-            wnd.width = width as i32;
-            wnd.height = height as i32;
+            if let Some((width, height)) = client_size_from_wm_size(wparam, lparam) {
+                wnd.width = width;
+                wnd.height = height;
+            }
         }
 
         winuser::WM_PAINT => {
@@ -473,7 +776,9 @@ fn to_wstring(str: &str) -> Vec<u16> {
 struct MouseData {
     pub x: f32,
     pub y: f32,
+    pub last_screen: Option<(i32, i32)>,
     pub state: [bool; 8],
+    pub pressed: [bool; 8],
     pub scroll: f32,
 }
 
@@ -514,6 +819,9 @@ pub struct Window {
     cursors: [windef::HCURSOR; 8],
     draw_params: DrawParameters,
     mouse: MouseData,
+    pending_surrogate: Option<u16>,
+    ime_composing: bool,
+    ime_cursor: Option<(i32, i32, i32)>,
 }
 
 impl HasWindowHandle for Window {
@@ -685,6 +993,9 @@ impl Window {
                     scale_mode: opts.scale_mode,
                     ..DrawParameters::default()
                 },
+                pending_surrogate: None,
+                ime_composing: false,
+                ime_cursor: None,
             };
 
             if opts.topmost {
@@ -837,9 +1148,9 @@ impl Window {
     #[inline]
     pub fn get_mouse_down(&self, button: MouseButton) -> bool {
         match button {
-            MouseButton::Left => self.mouse.state[0],
-            MouseButton::Middle => self.mouse.state[1],
-            MouseButton::Right => self.mouse.state[2],
+            MouseButton::Left => self.mouse.state[0] || self.mouse.pressed[0],
+            MouseButton::Middle => self.mouse.state[1] || self.mouse.pressed[1],
+            MouseButton::Right => self.mouse.state[2] || self.mouse.pressed[2],
         }
     }
 
@@ -892,6 +1203,23 @@ impl Window {
         self.key_handler.set_input_callback(callback)
     }
 
+    /// Remember the caret rectangle (client coordinates, before scaling) and
+    /// move the IME composition/candidate windows next to it when it changes.
+    pub fn set_ime_cursor_area(&mut self, x: i32, y: i32, line_height: i32) {
+        let area = Some((x, y, line_height));
+        if self.ime_cursor != area {
+            self.ime_cursor = area;
+            unsafe {
+                // Temporarily clear GWLP_USERDATA so synchronous IMM messages
+                // cannot alias `&mut self` via `wnd_proc`.
+                let prev = get_window_long(self.hwnd);
+                set_window_long(self.hwnd, 0);
+                apply_ime_cursor_area(self);
+                set_window_long(self.hwnd, prev);
+            }
+        }
+    }
+
     #[inline]
     pub fn set_key_repeat_delay(&mut self, delay: f32) {
         self.key_handler.set_key_repeat_delay(delay)
@@ -921,12 +1249,17 @@ impl Window {
         unsafe {
             let mut point: windef::POINT = std::mem::zeroed();
 
-            winuser::GetCursorPos(&mut point);
-            winuser::ScreenToClient(window, &mut point);
-
-            self.mouse.x = point.x as f32;
-            self.mouse.y = point.y as f32;
+            if winuser::GetCursorPos(&mut point) != 0 {
+                let screen = (point.x, point.y);
+                if self.mouse.last_screen != Some(screen) {
+                    self.mouse.last_screen = Some(screen);
+                    winuser::ScreenToClient(window, &mut point);
+                    self.mouse.x = point.x as f32;
+                    self.mouse.y = point.y as f32;
+                }
+            }
             self.mouse.scroll = 0.0;
+            self.mouse.pressed = [false; 8];
 
             self.key_handler.update();
 
@@ -1404,8 +1737,92 @@ impl Menu {
 impl Drop for Window {
     fn drop(&mut self) {
         unsafe {
+            set_window_long(self.hwnd, 0);
             winuser::ReleaseDC(self.hwnd, self.dc);
             winuser::DestroyWindow(self.hwnd);
         }
+    }
+}
+
+#[cfg(test)]
+mod windows_input_tests {
+    use super::*;
+
+    #[test]
+    fn e1_identifies_vk_processkey_and_preserves_normal_virtual_keys() {
+        assert!(is_ime_process_key(winuser::VK_PROCESSKEY as usize));
+        assert!(is_ime_process_key(0x00E5));
+        assert!(!is_ime_process_key(winuser::VK_RETURN as usize));
+        assert!(!is_ime_process_key(winuser::VK_BACK as usize));
+        assert!(!is_ime_process_key(winuser::VK_ESCAPE as usize));
+    }
+
+    #[test]
+    fn e4_extracts_signed_mouse_coords_and_non_minimized_wm_size() {
+        let lparam = ((138u32) << 16) | 280u32;
+        assert_eq!(mouse_coords_from_lparam(lparam as isize), (280.0, 138.0));
+
+        assert_eq!(
+            client_size_from_wm_size(winuser::SIZE_RESTORED, ((468u32 << 16) | 500u32) as isize),
+            Some((500, 468))
+        );
+        assert_eq!(
+            client_size_from_wm_size(winuser::SIZE_MINIMIZED, 0),
+            None
+        );
+        assert_eq!(
+            client_size_from_wm_size(winuser::SIZE_RESTORED, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn p0_alt_and_super_scan_codes_are_mapped() {
+        assert_eq!(key_from_scan_code(0x038), Some(Key::LeftAlt));
+        assert_eq!(key_from_scan_code(0x138), Some(Key::RightAlt));
+        assert_eq!(key_from_scan_code(0x15B), Some(Key::LeftSuper));
+        assert_eq!(key_from_scan_code(0x15C), Some(Key::RightSuper));
+        // Extended-key bit distinguishes right from left modifiers.
+        assert_eq!(key_from_scan_code(0x01D), Some(Key::LeftCtrl));
+        assert_eq!(key_from_scan_code(0x11D), Some(Key::RightCtrl));
+    }
+
+    #[test]
+    fn p1_utf16_surrogate_pairs_combine_and_lone_surrogates_drop() {
+        let mut pending = None;
+        // U+1F600 GRINNING FACE = D83D DE00
+        assert_eq!(combine_utf16_unit(&mut pending, 0xD83D), None);
+        assert_eq!(combine_utf16_unit(&mut pending, 0xDE00), Some(0x1F600));
+        assert_eq!(pending, None);
+        // BMP CJK passes straight through.
+        assert_eq!(combine_utf16_unit(&mut pending, 0x4E2D), Some(0x4E2D));
+        // Lone low surrogate is dropped.
+        assert_eq!(combine_utf16_unit(&mut pending, 0xDE00), None);
+        // A high surrogate followed by a BMP unit drops the high surrogate.
+        assert_eq!(combine_utf16_unit(&mut pending, 0xD83D), None);
+        assert_eq!(combine_utf16_unit(&mut pending, 0x0041), Some(0x41));
+        assert_eq!(combine_utf16_unit(&mut pending, 0xDE00), None);
+    }
+
+    #[test]
+    fn p1_ime_cursor_counts_scalars_not_utf16_units() {
+        let units: Vec<u16> = "中😀ㄓ".encode_utf16().collect();
+        assert_eq!(units.len(), 4);
+        assert_eq!(utf16_cursor_to_char_index(&units, 0), 0);
+        assert_eq!(utf16_cursor_to_char_index(&units, 1), 1);
+        assert_eq!(utf16_cursor_to_char_index(&units, 3), 2);
+        assert_eq!(utf16_cursor_to_char_index(&units, 4), 3);
+        assert_eq!(utf16_cursor_to_char_index(&units, 99), 3);
+    }
+
+    #[test]
+    fn p0_same_frame_click_latch_preserves_press_coordinates() {
+        let mut mouse = MouseData::default();
+        assert!(!mouse_click_latched(&mouse));
+        mouse.pressed[0] = true;
+        mouse.state[0] = true;
+        assert!(!mouse_click_latched(&mouse), "still held: moves update coords");
+        mouse.state[0] = false;
+        assert!(mouse_click_latched(&mouse), "down+up in one frame is latched");
     }
 }

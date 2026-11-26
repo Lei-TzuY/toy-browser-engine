@@ -71,19 +71,125 @@ impl Tab {
     /// Hand a frame's keystrokes to this tab: the address field takes them
     /// while focused, otherwise they go to the page (unless `chrome_only`,
     /// for Alt shortcuts). Returns the toolbar command they amount to.
+    #[cfg(test)]
     pub(crate) fn handle_keys(
         &mut self,
         events: Vec<KeyEvent>,
         chrome_only: bool,
     ) -> Option<Command> {
-        let dispatch = self.toolbar.dispatch_keys(events);
+        let mut dummy = crate::clipboard::MemoryClipboard::new();
+        self.handle_keys_with_clipboard(events, chrome_only, &mut dummy)
+    }
+
+    /// Like [`Tab::handle_keys`], routing Ctrl+C / Ctrl+X / Ctrl+V through
+    /// `clipboard` for either the address field or the focused page control.
+    pub(crate) fn handle_keys_with_clipboard(
+        &mut self,
+        events: Vec<KeyEvent>,
+        chrome_only: bool,
+        clipboard: &mut dyn crate::clipboard::Clipboard,
+    ) -> Option<Command> {
+        let dispatch = self
+            .toolbar
+            .dispatch_keys_with_clipboard(events, clipboard);
         if !chrome_only {
             for event in dispatch.page {
-                let outcome = self.browser.press_key(&event);
+                let (outcome, prevented) = self.browser.key_down_with_default_check(&event);
+                if !prevented
+                    && !matches!(outcome, ClickOutcome::Navigated(_))
+                    && event.modifiers.ctrl
+                    && !event.modifiers.alt
+                    && !event.modifiers.shift
+                {
+                    match event.key {
+                        browser_engine::input::Key::Character('c' | 'C') => {
+                            if let Some(text) = self.browser.document().copy_selection() {
+                                clipboard.set_text(&text);
+                            }
+                        }
+                        browser_engine::input::Key::Character('x' | 'X') => {
+                            if let Some(text) = self.browser.document_mut().cut_selection() {
+                                clipboard.set_text(&text);
+                            }
+                        }
+                        browser_engine::input::Key::Character('v' | 'V') => {
+                            if let Some(text) = clipboard.get_text() {
+                                self.browser.document_mut().insert_text(&text);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // `keyup` runs after any clipboard edit so listeners observe the updated value.
+                if !matches!(outcome, ClickOutcome::Navigated(_)) {
+                    self.browser.key_up(&event);
+                }
                 self.report_page_outcome(outcome);
             }
         }
         dispatch.command
+    }
+
+    /// Clear any uncommitted IME preedit on both the address bar and the DOM.
+    pub(crate) fn clear_ime_preedit(&mut self) {
+        self.toolbar.set_ime_preedit("", 0);
+        self.browser.document_mut().set_ime_preedit("", 0);
+    }
+
+    /// Focus the address bar (`Ctrl+L`) and drop any stale DOM IME preedit.
+    pub(crate) fn focus_address(&mut self) {
+        let current = self.browser.url().to_string();
+        self.toolbar.focus_address(&current);
+        self.browser.document_mut().set_ime_preedit("", 0);
+    }
+
+    /// Deliver a toolbar pointer press and drop stale DOM preedit if editing began.
+    pub(crate) fn press_toolbar(&mut self, x: f32, y: f32, shift: bool) {
+        let current = self.browser.url().to_string();
+        self.toolbar.press(x, y, &current, shift);
+        self.browser.document_mut().set_ime_preedit("", 0);
+    }
+
+    /// Route an uncommitted IME composition to whichever surface has focus
+    /// (the address bar when editing, otherwise the document's focused input),
+    /// clearing the inactive one so stale preedit never lingers.
+    pub(crate) fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
+        if self.toolbar.is_editing() {
+            self.toolbar.set_ime_preedit(text, cursor);
+            self.browser.document_mut().set_ime_preedit("", 0);
+        } else {
+            self.browser.document_mut().set_ime_preedit(text, cursor);
+        }
+    }
+
+    /// Window-client caret rectangle `(x, y, line_height)` for positioning
+    /// the OS IME composition and candidate windows.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn ime_cursor_area(
+        &self,
+        tab_strip_height: usize,
+        toolbar_height: usize,
+        width: usize,
+    ) -> Option<(i32, i32, i32)> {
+        if self.toolbar.is_editing() {
+            let (x, y, h) = self.toolbar.caret_rect()?;
+            Some((
+                x.round() as i32,
+                (y + tab_strip_height as f32).round() as i32,
+                h.ceil().max(1.0) as i32,
+            ))
+        } else {
+            let (x, y, h) = self
+                .browser
+                .document()
+                .focused_caret_rect(width as f32)?;
+            let client_y = y - self.scroll_y + (tab_strip_height + toolbar_height) as f32;
+            Some((
+                x.round() as i32,
+                client_y.round() as i32,
+                h.ceil().max(1.0) as i32,
+            ))
+        }
     }
 
     /// Carry out a toolbar button, Alt shortcut or address-field navigation.
@@ -181,6 +287,13 @@ impl Tabs {
         }
     }
 
+    pub(crate) fn set_width(&mut self, width: usize) {
+        self.width = width;
+        for tab in &mut self.tabs {
+            tab.toolbar.set_width(width);
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.tabs.len()
     }
@@ -275,9 +388,10 @@ impl Tabs {
         if index >= self.tabs.len() || index == self.active {
             return false;
         }
-        // A gesture that started in the old tab's toolbar must not finish
-        // in it while hidden. Its typed address text is kept.
+        // A gesture or uncommitted IME composition from the outgoing tab
+        // must not persist while hidden or leak back when revisiting it.
         self.tabs[self.active].toolbar.reset_pointer();
+        self.tabs[self.active].clear_ime_preedit();
         self.active = index;
         true
     }

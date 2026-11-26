@@ -125,6 +125,37 @@ class Case:
     def navigate(self, route):
         self.invoke("navigate", self.server.base + route)
 
+    def check_windows_unavailable(self, url):
+        previous = self.title()
+        self.invoke("navigate", url)
+        # SendInput returning only confirms injection. The Windows TCP refusal
+        # can take about two seconds, during which the old caption is valid.
+        # Use the suite's normal navigation deadline before sending recovery.
+        prefix = f"Could not open {url}: "
+        started = time.monotonic()
+        deadline = started + 6
+        while True:
+            caption = self.title()
+            now = time.monotonic()
+            if caption.startswith(prefix) or now >= deadline:
+                break
+            time.sleep(min(0.05, deadline - now))
+        feedback = caption.startswith(prefix)
+        self.observations.append({
+            "label": "unavailable navigation feedback",
+            "at_seconds": round(now - self.started, 6),
+            "wait_seconds": round(now - started, 6),
+            "title": caption,
+        })
+        if self.check("unavailable navigation has observable failure", feedback, prefix, caption):
+            self.check(
+                "unavailable navigation retains the previous page and history",
+                caption.endswith(" — " + previous),
+                previous,
+                caption,
+            )
+            self.shot("unavailable-error-client")
+
     def execute(self):
         cid = self.spec["id"]
         if cid == "U24":
@@ -268,18 +299,24 @@ class Case:
         elif cid == "U23":
             unavailable = UnavailableEndpoint()
             try:
-                try:
-                    self.invoke("navigate", unavailable.url)
-                except Exception as error:
-                    self.observations.append({"label": "expected unavailable navigation exception", "actual": repr(error)})
-                time.sleep(0.3)
-                actual = self.observe("unavailable navigation feedback")
-                raw_actions = getattr(self.adapter, "actions", [])
-                error = getattr(self.adapter, "last_navigation_error", None)
-                feedback = "Could not open" in actual["title"] or "ERR_" in json.dumps(raw_actions[-3:]) or bool(error)
-                self.check("unavailable navigation has observable failure", feedback, "GUI error or actual reference navigation error", {"caption": actual["title"], "navigation_error": error, "adapter_actions": raw_actions[-3:]})
+                native_windows = self.adapter.mode == "native-windows-gui"
+                if native_windows:
+                    self.check_windows_unavailable(unavailable.url)
+                else:
+                    try:
+                        self.invoke("navigate", unavailable.url)
+                    except Exception as error:
+                        self.observations.append({"label": "expected unavailable navigation exception", "actual": repr(error)})
+                    time.sleep(0.3)
+                    actual = self.observe("unavailable navigation feedback")
+                    raw_actions = getattr(self.adapter, "actions", [])
+                    error = getattr(self.adapter, "last_navigation_error", None)
+                    feedback = "Could not open" in actual["title"] or "ERR_" in json.dumps(raw_actions[-3:]) or bool(error)
+                    self.check("unavailable navigation has observable failure", feedback, "GUI error or actual reference navigation error", {"caption": actual["title"], "navigation_error": error, "adapter_actions": raw_actions[-3:]})
                 self.navigate("/target.html")
                 self.expect_title("Target")
+                if native_windows:
+                    self.expect_url("/target.html")
                 self.expect_request("/target.html")
             finally:
                 unavailable.close()

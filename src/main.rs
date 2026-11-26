@@ -16,8 +16,9 @@ use browser_engine::{
     layout::{BoxType, LayoutBox},
     net::{url_from_argument, DefaultLoader, LoadError, Url},
 };
-use minifb::{CursorStyle, Key, Window, WindowOptions};
+use minifb::{CursorStyle, Key, ScaleMode, Window, WindowOptions};
 
+mod clipboard;
 mod demo;
 mod location_input;
 mod platform;
@@ -461,39 +462,176 @@ fn node_label(node: &browser_engine::dom::Node) -> String {
 /// `requestAnimationFrame` callbacks get to run.
 const FRAME_RATE: usize = 60;
 
-/// With Ctrl, these pick a tab by position.
-const NUMBER_KEYS: [Key; 9] = [
-    Key::Key1,
-    Key::Key2,
-    Key::Key3,
-    Key::Key4,
-    Key::Key5,
-    Key::Key6,
-    Key::Key7,
-    Key::Key8,
-    Key::Key9,
-];
+/// Execute one frame's chronological keyboard and shortcut actions in exact
+/// arrival order. Returns `(keep_window_open, pending_toolbar_command)`.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_frame_actions(
+    actions: Vec<platform::FrameAction>,
+    tabs: &mut Tabs,
+    strip: &mut TabStrip,
+    open_tab: &impl Fn() -> Result<Browser, LoadError>,
+    notice: &mut Option<String>,
+    clipboard: &mut dyn clipboard::Clipboard,
+    ime_composing: &mut bool,
+    had_ime_preedit: bool,
+    ime_activity: bool,
+    press_on_page: &mut bool,
+) -> (bool, Option<Command>) {
+    use platform::{ChromeShortcut, FrameAction, TabShortcut};
+
+    let mut command: Option<Command> = None;
+    let mut toolbar_exited = false;
+
+    for action in actions {
+        match action {
+            FrameAction::Tab(shortcut) => {
+                if let Some(cmd) = command.take() {
+                    tabs.active_mut().run_command(cmd);
+                }
+                let tab_cmd = match shortcut {
+                    TabShortcut::New => TabCommand::New,
+                    TabShortcut::CloseActive => TabCommand::Close(tabs.active_index()),
+                    TabShortcut::Next => TabCommand::Next,
+                    TabShortcut::Previous => TabCommand::Previous,
+                    TabShortcut::Number(n) => TabCommand::Number(n),
+                };
+                let active_before = tabs.active_index();
+                let len_before = tabs.len();
+                if !apply_tab_command(tabs, strip, tab_cmd, open_tab, notice) {
+                    return (false, None);
+                }
+                if tabs.active_index() != active_before || tabs.len() != len_before {
+                    *ime_composing = false;
+                }
+                *press_on_page = false;
+                toolbar_exited = false;
+            }
+            FrameAction::Chrome(shortcut) => {
+                if let Some(cmd) = command.take() {
+                    tabs.active_mut().run_command(cmd);
+                }
+                let tab = tabs.active_mut();
+                match shortcut {
+                    ChromeShortcut::FocusAddress => {
+                        tab.focus_address();
+                        toolbar_exited = false;
+                    }
+                    ChromeShortcut::Back if !tab.toolbar.is_editing() => {
+                        command = Some(Command::Back);
+                    }
+                    ChromeShortcut::Forward if !tab.toolbar.is_editing() => {
+                        command = Some(Command::Forward);
+                    }
+                    ChromeShortcut::Reload if !tab.toolbar.is_editing() => {
+                        command = Some(Command::Reload);
+                    }
+                    ChromeShortcut::ScrollDown if !tab.toolbar.is_editing() => {
+                        tab.scroll_y += 40.0;
+                    }
+                    ChromeShortcut::ScrollUp if !tab.toolbar.is_editing() => {
+                        tab.scroll_y -= 40.0;
+                    }
+                    _ => {}
+                }
+            }
+            FrameAction::ImePreedit { text, cursor } => {
+                if let Some(cmd) = command.take() {
+                    tabs.active_mut().run_command(cmd);
+                }
+                *ime_composing = !text.is_empty();
+                tabs.active_mut().set_ime_preedit(&text, cursor);
+            }
+            FrameAction::Key(event) => {
+                if toolbar_exited {
+                    continue;
+                }
+                let was_editing = tabs.active().toolbar.is_editing();
+                if !was_editing
+                    && event.key == browser_engine::input::Key::Escape
+                    && !event.modifiers.ctrl
+                    && !event.modifiers.alt
+                {
+                    if !had_ime_preedit && !*ime_composing && !ime_activity {
+                        return (false, None);
+                    }
+                    continue;
+                }
+                if !was_editing && event.modifiers.alt {
+                    continue;
+                }
+                if let Some(cmd) = command.take() {
+                    tabs.active_mut().run_command(cmd);
+                }
+                let tab = tabs.active_mut();
+                if let Some(cmd) =
+                    tab.handle_keys_with_clipboard(vec![event], false, clipboard)
+                {
+                    if was_editing {
+                        tab.run_command(cmd);
+                        toolbar_exited = true;
+                    } else {
+                        command = Some(cmd);
+                    }
+                } else if was_editing && !tab.toolbar.is_editing() {
+                    // Escape cancelled address entry: drop any trailing keys
+                    // queued in the same frame so they cannot leak to the page.
+                    toolbar_exited = true;
+                }
+            }
+        }
+    }
+    (true, command)
+}
+
+/// Synchronize the page viewport, tab strip and every tab's toolbar with the
+/// live client size of the OS window, returning the full framebuffer height.
+fn sync_window_size(
+    window_size: (usize, usize),
+    width: &mut usize,
+    height: &mut usize,
+    strip: &mut TabStrip,
+    tabs: &mut Tabs,
+) -> usize {
+    let chrome_height = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT;
+    let (win_width, win_height) = window_size;
+    if win_width > 0 && win_height > 0 {
+        let next_width = win_width.max(1);
+        let next_height = win_height.saturating_sub(chrome_height).max(1);
+        if next_width != *width || next_height != *height {
+            *width = next_width;
+            *height = next_height;
+            strip.set_width(*width);
+            tabs.set_width(*width);
+        }
+    }
+    chrome_height + *height
+}
 
 /// Drive the window until it is closed, then hand back the session of the
 /// tab that was active at the time. `open_tab` starts each new tab.
 fn run_window(
     browser: Browser,
     open_tab: impl Fn() -> Result<Browser, LoadError>,
-    width: usize,
-    height: usize,
+    mut width: usize,
+    mut height: usize,
 ) -> Result<Browser, minifb::Error> {
     // The page keeps the full `--size` viewport; the tab strip and toolbar
     // sit above it.
-    let window_height = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT + height;
+    let mut window_height = TAB_STRIP_HEIGHT + TOOLBAR_HEIGHT + height;
     let mut window = Window::new(
         &browser.status_line(),
         width,
         window_height,
-        WindowOptions::default(),
+        WindowOptions {
+            resize: true,
+            scale_mode: ScaleMode::UpperLeft,
+            ..WindowOptions::default()
+        },
     )?;
     // Pace the loop so animations run at a steady rate and an idle page does
     // not spin the CPU. minifb sleeps for us inside `update_with_buffer`.
     window.set_target_fps(FRAME_RATE);
+    let mut clipboard = clipboard::SystemClipboard::new(&window);
     let input = platform::InputAdapter::attach(&mut window);
 
     let mut tabs = Tabs::new(browser, width);
@@ -503,6 +641,7 @@ fn run_window(
     // Whether the button went down over the page, so dragging in from the
     // chrome does not paint page elements as :active.
     let mut press_on_page = false;
+    let mut ime_composing = false;
     let mut title = String::new();
     let mut text_cursor = false;
     // A window-level message, such as a new tab that failed to load. It
@@ -510,96 +649,48 @@ fn run_window(
     let mut notice: Option<String> = None;
 
     while window.is_open() {
-        let chrome = window.is_key_down(Key::LeftAlt) || window.is_key_down(Key::RightAlt);
-        let ctrl = window.is_key_down(Key::LeftCtrl) || window.is_key_down(Key::RightCtrl);
+        window_height = sync_window_size(
+            window.get_size(),
+            &mut width,
+            &mut height,
+            &mut strip,
+            &mut tabs,
+        );
         let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
 
-        // ── Tab shortcuts ─────────────────────────────────────────────────
-        // First, so the rest of the frame already works on the tab they
-        // pick. The adapter removes only the keys owned by the shortcut.
-        let mut tab_key = None;
-        if ctrl && !chrome {
-            if window.is_key_pressed(Key::T, minifb::KeyRepeat::No) {
-                tab_key = Some(TabCommand::New);
-            }
-            if window.is_key_pressed(Key::W, minifb::KeyRepeat::No) {
-                tab_key = Some(TabCommand::Close(tabs.active_index()));
-            }
-            if window.is_key_pressed(Key::Tab, minifb::KeyRepeat::Yes) {
-                tab_key = Some(if shift {
-                    TabCommand::Previous
-                } else {
-                    TabCommand::Next
-                });
-            }
-            for (index, &key) in NUMBER_KEYS.iter().enumerate() {
-                if window.is_key_pressed(key, minifb::KeyRepeat::No) {
-                    tab_key = Some(TabCommand::Number(index + 1));
-                }
+        let ime_activity = input.take_ime_activity();
+        let had_ime_preedit = ime_composing;
+
+        if let Some((_, wheel_y)) = window.get_scroll_wheel() {
+            if wheel_y != 0.0 {
+                tabs.active_mut().scroll_y -= wheel_y * 30.0;
             }
         }
-        if let Some(command) = tab_key {
-            if !apply_tab_command(&mut tabs, &mut strip, command, &open_tab, &mut notice) {
-                break;
-            }
-            press_on_page = false;
+
+        // ── Chronological keyboard, tab & chrome actions ──────────────────
+        // Every shortcut was resolved at its exact callback-time modifier state,
+        // so a plain key pressed and released before Ctrl/Alt goes down in the
+        // same frame can never be misread as a shortcut or delivered to the
+        // wrong tab.
+        let actions = input.drain_actions(&window);
+        let (keep_open, mut command) = dispatch_frame_actions(
+            actions,
+            &mut tabs,
+            &mut strip,
+            &open_tab,
+            &mut notice,
+            &mut clipboard,
+            &mut ime_composing,
+            had_ime_preedit,
+            ime_activity,
+            &mut press_on_page,
+        );
+        if !keep_open {
+            break;
         }
 
         let count = tabs.len();
         let tab = tabs.active_mut();
-
-        // Escape cancels address entry; outside entry it retains the window's
-        // existing Escape-to-close shortcut.
-        if !tab.toolbar.is_editing() && window.is_key_pressed(Key::Escape, minifb::KeyRepeat::No) {
-            break;
-        }
-        // ── Browser chrome shortcuts ──────────────────────────────────────
-        // These are the window's own keys; everything else goes to the page.
-        if let Some((_, wheel_y)) = window.get_scroll_wheel() {
-            if wheel_y != 0.0 {
-                tab.scroll_y -= wheel_y * 30.0;
-            }
-        }
-        let address_opened = ctrl && window.is_key_pressed(Key::L, minifb::KeyRepeat::No);
-        if address_opened {
-            // The current URL starts selected, like a familiar address field.
-            // All editor keys stay in window chrome, never in the page's DOM.
-            let current = tab.browser.url().to_string();
-            tab.toolbar.focus_address(&current);
-        }
-        if tab.toolbar.is_editing() && ctrl && window.is_key_pressed(Key::A, minifb::KeyRepeat::No)
-        {
-            // Ctrl+A arrives as a control character, which the text channel
-            // drops, so select-all is read from the physical key.
-            tab.toolbar.select_all();
-        }
-        let mut command = None;
-        if chrome && !tab.toolbar.is_editing() {
-            if window.is_key_pressed(Key::Left, minifb::KeyRepeat::No) {
-                command = Some(Command::Back);
-            }
-            if window.is_key_pressed(Key::Right, minifb::KeyRepeat::No) {
-                command = Some(Command::Forward);
-            }
-            if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
-                command = Some(Command::Reload);
-            }
-            if window.is_key_pressed(Key::Down, minifb::KeyRepeat::Yes) {
-                tab.scroll_y += 40.0;
-            }
-            if window.is_key_pressed(Key::Up, minifb::KeyRepeat::Yes) {
-                tab.scroll_y -= 40.0;
-            }
-        }
-
-        // ── Keyboard → address field or page ─────────────────────────────
-        // Consume once per frame, even for Alt shortcuts, so old text input
-        // cannot leak into a document on a later frame. Tab shortcut keys,
-        // including their auto-repeats, never reach a tab.
-        let events = input.drain(&window);
-        if !address_opened {
-            command = command.or(tab.handle_keys(events, chrome));
-        }
 
         // ── Pointer → tab strip, toolbar or page ──────────────────────────
         let is_mouse_down = window.get_mouse_down(minifb::MouseButton::Left);
@@ -631,8 +722,7 @@ fn run_window(
             match point {
                 Some(WindowPoint::TabStrip { x, y }) => tab_click = strip.press(x, y, count),
                 Some(WindowPoint::Toolbar { x, y }) => {
-                    let current = tab.browser.url().to_string();
-                    tab.toolbar.press(x, y, &current, shift);
+                    tab.press_toolbar(x, y, shift);
                 }
                 Some(WindowPoint::Page { x, y }) => {
                     if tab.toolbar.is_editing() {
@@ -641,11 +731,16 @@ fn run_window(
                         tab.toolbar.cancel();
                     } else {
                         press_on_page = true;
-                        let outcome = tab.browser.click_at(x, y, width as f32);
+                        let outcome =
+                            tab.browser.click_at_with_shift(x, y, width as f32, shift);
                         tab.report_page_outcome(outcome);
                     }
                 }
                 _ => {}
+            }
+        } else if is_mouse_down && was_mouse_down && press_on_page {
+            if let Some(WindowPoint::Page { x, y }) = point {
+                tab.browser.drag_selection_to(x, y, width as f32);
             }
         }
         if !is_mouse_down && was_mouse_down {
@@ -674,6 +769,7 @@ fn run_window(
             if !apply_tab_command(&mut tabs, &mut strip, command, &open_tab, &mut notice) {
                 break;
             }
+            ime_composing = false;
             press_on_page = false;
         }
 
@@ -710,6 +806,12 @@ fn run_window(
             hovered,
         };
 
+        #[cfg(target_os = "windows")]
+        if let Some((cx, cy, ch)) =
+            tab.ime_cursor_area(TAB_STRIP_HEIGHT, TOOLBAR_HEIGHT, width)
+        {
+            window.set_ime_cursor_area(cx, cy, ch);
+        }
         let page = tab.browser.render(width, height, tab.scroll_y, &pointer);
         let navigation = tab.navigation();
         let bar = tab
@@ -887,5 +989,52 @@ mod tests {
         let mut tabs = Tabs::new(browser("demo:///a.html"), WIDTH);
         let mut strip = TabStrip::new(WIDTH);
         assert!(!apply(&mut tabs, &mut strip, TabCommand::Close(0)));
+    }
+
+    #[test]
+    fn e4_sync_window_size_updates_viewport_and_routes_resized_page_coordinates() {
+        let mut site = MemoryLoader::new();
+        site.insert(
+            "demo:///resize.html",
+            r#"<!doctype html><html><head><title>Init</title><style>
+                html, body { margin: 0; padding: 0; }
+                #b { display: block; width: 120px; height: 40px; margin-left: 50%; margin-top: 10px; }
+            </style></head><body><input id="b"><script>
+                let b = document.getElementById("b");
+                b.addEventListener("focus", function() {
+                    document.querySelector("title").textContent = "FocusedB";
+                });
+            </script></body></html>"#,
+        );
+        let b = Browser::open(Box::new(site), &Url::parse("demo:///resize.html").unwrap()).unwrap();
+        let mut width = 800;
+        let mut height = 600;
+        let mut tabs = Tabs::new(b, width);
+        let mut strip = TabStrip::new(width);
+
+        // At width=800, #b starts at x=400, so page x=280 misses #b.
+        if let WindowPoint::Page { x, y } =
+            route_window(&tabs.active().toolbar, 280.0, 88.0, height, 0.0)
+        {
+            tabs.active_mut().browser.click_at(x, y, width as f32);
+        }
+        assert_ne!(
+            tabs.active().browser.document().title().as_deref(),
+            Some("FocusedB")
+        );
+
+        // After resizing client area to 500x468, viewport becomes 500x400 and #b starts at x=250.
+        let win_h = sync_window_size((500, 468), &mut width, &mut height, &mut strip, &mut tabs);
+        assert_eq!((width, height, win_h), (500, 400, 468));
+
+        if let WindowPoint::Page { x, y } =
+            route_window(&tabs.active().toolbar, 280.0, 88.0, height, 0.0)
+        {
+            tabs.active_mut().browser.click_at(x, y, width as f32);
+        }
+        assert_eq!(
+            tabs.active().browser.document().title().as_deref(),
+            Some("FocusedB")
+        );
     }
 }

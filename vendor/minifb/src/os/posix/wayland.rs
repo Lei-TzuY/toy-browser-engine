@@ -767,6 +767,8 @@ impl Window {
     }
 
     pub fn update(&mut self) {
+        self.key_handler.update();
+
         self.try_dispatch_events();
 
         if let Some(resize) = (*self.toplevel_info.0.borrow_mut()).take() {
@@ -955,8 +957,6 @@ impl Window {
                 _ => {}
             }
         }
-
-        self.key_handler.update();
     }
 
     fn handle_key(

@@ -65,6 +65,13 @@ pub struct ControlState {
     selected_indices: Option<Vec<usize>>,
     /// Caret position, counted in characters from the start of the value.
     caret: usize,
+    /// The other end of the text selection, in characters. Equal to `caret`
+    /// when nothing is selected.
+    anchor: usize,
+    /// Uncommitted IME composition text shown inline at the caret, with the
+    /// composition cursor in characters. Never part of the value, so forms,
+    /// scripts and `input` events only ever see committed text.
+    ime_preedit: Option<(String, usize)>,
 }
 
 /// Data stored on an element node.
@@ -261,6 +268,7 @@ impl ElementData {
         let control = self.control_mut();
         control.value = Some(value);
         control.caret = control.caret.min(caret);
+        control.anchor = control.anchor.min(caret);
     }
 
     /// Drop live control state back to its content-attribute/default state.
@@ -274,6 +282,7 @@ impl ElementData {
             control.value = None;
             control.selected_indices = None;
             control.caret = 0;
+            control.anchor = 0;
         }
     }
 
@@ -351,8 +360,80 @@ impl ElementData {
     }
 
     pub fn set_caret(&mut self, position: usize) {
+        self.place_caret(position, false);
+    }
+
+    /// Move the caret to `position` (clamped). With `extend` the selection
+    /// anchor stays put, as for Shift+Arrow, Shift+click or a drag;
+    /// otherwise the selection collapses at the caret.
+    pub fn place_caret(&mut self, position: usize, extend: bool) {
         let length = self.control_value().chars().count();
-        self.control_mut().caret = position.min(length);
+        let control = self.control_mut();
+        control.caret = position.min(length);
+        if extend {
+            // The anchor equals the caret whenever the selection is collapsed,
+            // so a first extension starts from the old caret.
+            control.anchor = control.anchor.min(length);
+        } else {
+            control.anchor = control.caret;
+        }
+    }
+
+    /// The selection anchor, clamped into the current value.
+    pub fn selection_anchor(&self) -> usize {
+        let length = self.control_value().chars().count();
+        self.control
+            .as_ref()
+            .map(|c| c.anchor)
+            .unwrap_or(0)
+            .min(length)
+    }
+
+    /// The selected character range `(start, end)`, if any.
+    pub fn text_selection(&self) -> Option<(usize, usize)> {
+        let (caret, anchor) = (self.caret(), self.selection_anchor());
+        (caret != anchor).then(|| (caret.min(anchor), caret.max(anchor)))
+    }
+
+    /// The currently selected text (empty when nothing is selected).
+    pub fn selected_text(&self) -> String {
+        match self.text_selection() {
+            Some((start, end)) => self
+                .control_value()
+                .chars()
+                .skip(start)
+                .take(end - start)
+                .collect(),
+            None => String::new(),
+        }
+    }
+
+    /// Select the whole value.
+    pub fn select_all_text(&mut self) {
+        let length = self.control_value().chars().count();
+        let control = self.control_mut();
+        control.anchor = 0;
+        control.caret = length;
+    }
+
+    /// The IME composition shown inline, if any: `(text, cursor)`.
+    pub fn ime_preedit(&self) -> Option<(&str, usize)> {
+        self.control
+            .as_ref()
+            .and_then(|c| c.ime_preedit.as_ref())
+            .map(|(text, cursor)| (text.as_str(), *cursor))
+    }
+
+    /// Show (non-empty `text`) or clear (empty `text`) an IME composition.
+    pub fn set_ime_preedit(&mut self, text: &str, cursor: usize) {
+        if text.is_empty() {
+            if let Some(control) = self.control.as_mut() {
+                control.ime_preedit = None;
+            }
+        } else {
+            let cursor = cursor.min(text.chars().count());
+            self.control_mut().ime_preedit = Some((text.to_string(), cursor));
+        }
     }
 
     /// True when a placeholder should be shown instead of the value
