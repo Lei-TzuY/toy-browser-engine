@@ -273,11 +273,24 @@ class Case:
                 except Exception as error:
                     self.observations.append({"label": "expected unavailable navigation exception", "actual": repr(error)})
                 time.sleep(0.3)
+                trace = getattr(self.adapter, "trace_navigation", False)
+                if trace:
+                    self.adapter.trace("original_feedback_sample")
                 actual = self.observe("unavailable navigation feedback")
                 raw_actions = getattr(self.adapter, "actions", [])
                 error = getattr(self.adapter, "last_navigation_error", None)
                 feedback = "Could not open" in actual["title"] or "ERR_" in json.dumps(raw_actions[-3:]) or bool(error)
                 self.check("unavailable navigation has observable failure", feedback, "GUI error or actual reference navigation error", {"caption": actual["title"], "navigation_error": error, "adapter_actions": raw_actions[-3:]})
+                if trace:
+                    # Additional observations leave the original pass/fail value intact.
+                    end = time.monotonic() + 6
+                    prefix = f"Could not open {unavailable.url}: "
+                    while time.monotonic() < end and not self.title().startswith(prefix):
+                        time.sleep(0.05)
+                    later = self.observe("diagnostic feedback before recovery input")
+                    if later["title"].startswith(prefix):
+                        self.shot("unavailable-error-client")
+                    self.adapter.trace("before_recovery")
                 self.navigate("/target.html")
                 self.expect_title("Target")
                 self.expect_request("/target.html")

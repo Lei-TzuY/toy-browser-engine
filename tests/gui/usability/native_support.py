@@ -7,6 +7,7 @@ import ctypes as c
 from ctypes import wintypes as w
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -50,6 +51,19 @@ class WindowsToy:
         self.output.mkdir(parents=True, exist_ok=True)
         self.capabilities = {**self.capabilities, "os_version": str(sys.getwindowsversion())}
         self.actions, self.held = [], set()
+        self.trace_navigation = self.output.name in {"U22", "U23"} and all(
+            os.environ.get(key) == value for key, value in (
+                ("TBE_HOSTED_U23_TRACE", "1"), ("RUNNER_ENVIRONMENT", "github-hosted"),
+                ("GITHUB_ACTIONS", "true"), ("GITHUB_REPOSITORY", "Lei-TzuY/toy-browser-engine"),
+            )
+        )
+        self.trace_count = 0
+        if self.trace_navigation:
+            self.qpc_kernel = c.WinDLL("kernel32")
+            hz = c.c_longlong()
+            if not self.qpc_kernel.QueryPerformanceFrequency(c.byref(hz)):
+                raise RuntimeError("No QueryPerformanceFrequency")
+            self.qpc_hz = hz.value
         self.user, self.gdi = c.WinDLL("user32", use_last_error=True), c.WinDLL("gdi32", use_last_error=True)
         u = self.user
         u.GetForegroundWindow.restype = w.HWND
@@ -150,6 +164,17 @@ class WindowsToy:
     def record(self, action, **data):
         self.actions.append({"action": action, "monotonic": time.monotonic(), **data})
 
+    def qpc(self):
+        value = c.c_longlong()
+        if not self.qpc_kernel.QueryPerformanceCounter(c.byref(value)):
+            raise RuntimeError("No QueryPerformanceCounter")
+        return value.value
+
+    def trace(self, event, **data):
+        if self.trace_navigation and self.trace_count < 240:
+            self.trace_count += 1
+            self.record("u23_trace", event=event, qpc=self.qpc(), hz=self.qpc_hz, **data)
+
     def _first_painted_frame(self):
         from PIL import Image
         path = self.output / "first-painted-frame.png"
@@ -201,7 +226,12 @@ class WindowsToy:
         item = self.Input()
         item.kind = 1
         item.event.keyboard = self.Keyboard(0, scan if unicode else scan & 0xff, flags, 0, 0)
+        trace_key = self.trace_navigation and not unicode and vk in (13, 17, 76)
+        if trace_key:
+            self.trace("SendInput.start", vk=vk, down=down, scan=scan, owned=self.user.GetForegroundWindow() == self.hwnd)
         self._input(item)
+        if trace_key:
+            self.trace("SendInput.end", vk=vk, down=down, accepted=1)
         if not unicode:
             self.held.add(vk) if down else self.held.discard(vk)
 
@@ -286,7 +316,14 @@ class WindowsToy:
 
     def title(self):
         text = c.create_unicode_buffer(8192)
-        self.user.GetWindowTextW(self.hwnd, text, len(text))
+        before = self.qpc() if self.trace_navigation else None
+        copied = self.user.GetWindowTextW(self.hwnd, text, len(text))
+        if self.trace_navigation:
+            caption = text.value
+            self.trace("GetWindowTextW", start_qpc=before, copied=copied,
+                       unavailable=caption.startswith("Could not open ") and "/unavailable:" in caption,
+                       http404="HTTP 404" in caption,
+                       page="Target" if "Target — " in caption else "Home" if "Home — " in caption else "other")
         return text.value
 
     def url(self):

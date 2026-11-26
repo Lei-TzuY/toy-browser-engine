@@ -514,6 +514,8 @@ fn dispatch_frame_actions(
                 match shortcut {
                     ChromeShortcut::FocusAddress => {
                         tab.focus_address();
+                        #[cfg(windows)]
+                        minifb::u23_trace::event("address.focus", format_args!("editing={}", tab.toolbar.is_editing()));
                         toolbar_exited = false;
                     }
                     ChromeShortcut::Back if !tab.toolbar.is_editing() => {
@@ -828,6 +830,9 @@ fn run_window(
             None => tabs.active().status(),
         };
         if status != title {
+            #[cfg(windows)]
+            minifb::u23_trace::event("frame.status", format_args!("active_tab={} toolbar_error={}",
+                tabs.active_index(), tabs.active().toolbar.error().is_some()));
             window.set_title(&status);
             title = status;
         }

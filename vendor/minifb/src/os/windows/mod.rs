@@ -441,6 +441,9 @@ unsafe extern "system" fn wnd_proc(
         }
 
         winuser::WM_KEYDOWN => {
+            if matches!(wparam, 0x0d | 0x11 | 0x4c) {
+                crate::u23_trace::event("WM_KEYDOWN", format_args!("vk={wparam:#x}"));
+            }
             if !is_ime_process_key(wparam) {
                 update_key_state(wnd, (lparam as u32) >> 16, true);
             }
@@ -586,6 +589,9 @@ unsafe extern "system" fn wnd_proc(
         }
 
         winuser::WM_KEYUP => {
+            if matches!(wparam, 0x0d | 0x11 | 0x4c) {
+                crate::u23_trace::event("WM_KEYUP", format_args!("vk={wparam:#x}"));
+            }
             update_key_state(wnd, (lparam as u32) >> 16, false);
             return 0;
         }
@@ -1010,7 +1016,18 @@ impl Window {
     pub fn set_title(&mut self, title: &str) {
         unsafe {
             let title_name = to_wstring(title);
-            winuser::SetWindowTextW(self.hwnd, title_name.as_ptr());
+            let trace = crate::u23_trace::enabled();
+            if trace {
+                crate::u23_trace::event("SetWindowTextW.start", format_args!(
+                    "utf16_units={} error={} http404={}", title_name.len() - 1,
+                    title.starts_with("Could not open "), title.contains("HTTP 404")
+                ));
+            }
+            let result = winuser::SetWindowTextW(self.hwnd, title_name.as_ptr());
+            if trace {
+                let error = if result == 0 { winapi::um::errhandlingapi::GetLastError() } else { 0 };
+                crate::u23_trace::event("SetWindowTextW.end", format_args!("ok={} last_error={error}", result != 0));
+            }
         }
     }
 
